@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
+    # Hugging Face Hub token — optional; raises rate limits and speeds model
+    # downloads. Read here so nothing else touches the environment (rule 12).
+    HF_TOKEN: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -95,3 +95,16 @@ another host) where torch's native libs are permitted. The database is
 unaffected: Neon is cloud-hosted, so the same `DATABASE_URL` works unchanged
 from the new environment. Phase 2 deps are pre-staged in pyproject/uv.lock so
 the move is a `uv sync` away. ROADMAP Phase 2 stays "not started".
+
+## 2026-07-25 — WDAC block resolved on the new machine; ruff now verified
+Supersedes the operational status (not the analysis) of the 2026-07-24
+WDAC entry. Backend development moved to an unrestricted macOS host. All
+three Phase 2 environment gates pass here: Postgres reachable (Neon,
+unchanged `DATABASE_URL`), `import torch` (2.13.0) loads, `bge-small`
+embeds (384-d), and the `bge-reranker-v2-m3` CrossEncoder predicts — the
+exact `torch._C` DLL/policy block from 2026-07-24 is gone. The native
+binaries WDAC previously blocked now run: `ruff check .` executes and is
+clean (three trivial Phase 0/1 findings — UP035, I001, B905 — fixed in
+one commit), and `mypy app` runs on the normal compiled (`mypyc`) build,
+not the pure-Python fallback. The Phase 0/1 "ruff deferred / WDAC" notes
+in ROADMAP are cleared accordingly. Phase 2 build proceeds.

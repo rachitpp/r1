@@ -72,21 +72,18 @@ Done when:
       loads config, attempts Redis connection.
 - [x] `pnpm dev` renders the placeholder page — verified (page served with
       project title; `pnpm build` also compiles clean).
-- [~] `ruff check`, `mypy app`, `pytest` all pass — `pytest` ✓, `mypy` ✓;
-      **`ruff` is blocked by this machine's Application Control (WDAC)
-      policy** (its native binary won't execute). Runs on an unrestricted
-      host.
+- [x] `ruff check`, `mypy app`, `pytest` all pass — `pytest` ✓, `mypy` ✓,
+      `ruff` ✓ (all verified on the unrestricted machine; the earlier WDAC
+      block on ruff's native binary is resolved — see DECISIONS 2026-07-25).
 
 Do not: write any ingestion/retrieval/agent logic; add dependencies beyond
 the scaffold set.
 
-> **Phase 0 environment notes (this dev machine):** Docker is not installed,
-> so the two compose-dependent checks above are code-complete but unrun here.
-> `ruff`'s prebuilt binary and `mypy`'s compiled `mypyc` extension are blocked
-> by a Windows Application Control policy; `mypy` was run from a pure-Python
-> build and passes, `ruff` could not be executed. All of this is host
-> restriction, not project defect — everything runs on an unrestricted machine
-> with Docker.
+> **Phase 0 environment notes:** The two compose-dependent checks above remain
+> code-complete but unrun (verify on a Docker host). The earlier WDAC block on
+> `ruff` and `mypy`'s `mypyc` extension no longer applies: backend development
+> moved to an unrestricted machine (2026-07-25) where both run natively —
+> `ruff check .` and `mypy app` (compiled build) are clean. See DECISIONS.
 
 ---
 
@@ -135,11 +132,10 @@ Done when:
 Do not: touch the database; embed anything; start TypeScript grammar
 support; gold-plate the header format before retrieval numbers exist.
 
-> **Phase 1 environment note (this dev machine):** `ruff` remains blocked by
-> the Windows Application Control (WDAC) policy (os error 4551) exactly as in
-> Phase 0; code was written ruff-clean and the check is deferred to an
-> unrestricted host. tree-sitter's native extension loads fine under WDAC, so
-> the Step 0.5 environment gate passed and backend work stayed on this machine.
+> **Phase 1 environment note:** Phase 1 code was written ruff-clean; the check
+> was deferred under the earlier WDAC block. On the unrestricted machine
+> (2026-07-25) `ruff check .` now runs and is clean (three trivial findings
+> across Phase 0/1 fixed in one commit). See DECISIONS.
 
 ---
 
