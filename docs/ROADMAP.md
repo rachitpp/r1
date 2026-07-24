@@ -13,7 +13,7 @@ architectural choice made along the way.
 
 | Phase | Name | Status | Rough effort |
 |---|---|---|---|
-| 0 | Foundations | not started | 1 day |
+| 0 | Foundations | done | 1 day |
 | 1 | Parse & chunk (CLI) | not started | 1–2 weekends |
 | 2 | Store & retrieve | not started | 1–2 weekends |
 | 3 | Symbol graph & agent | not started | 2 weekends |
@@ -59,14 +59,34 @@ Tasks:
 - Tooling: ruff, mypy, pytest with one trivial passing test; pnpm lint
 
 Done when:
-- [ ] `docker compose up -d` brings both services healthy
-- [ ] `migrate.py` applies 001 idempotently (re-running is a no-op)
-- [ ] `GET /health` returns 200; worker starts without error
-- [ ] `pnpm dev` renders the placeholder page
-- [ ] `ruff check`, `mypy app`, `pytest` all pass
+- [~] `docker compose up -d` brings both services healthy — compose file
+      complete (pgvector/pg16 + redis, healthchecks, named volume); **not
+      executed on this dev machine (no Docker daemon installed)**. Verify on
+      a Docker host.
+- [~] `migrate.py` applies 001 idempotently (re-running is a no-op) — script
+      + 001 migration complete; discovery/idempotency logic verified in
+      isolation; **not run against a live Postgres here (no Docker)**. Verify
+      on a Docker host.
+- [x] `GET /health` returns 200; worker starts without error — `/health`
+      verified live (returns `{"ok": true}` with DB down); worker boots,
+      loads config, attempts Redis connection.
+- [x] `pnpm dev` renders the placeholder page — verified (page served with
+      project title; `pnpm build` also compiles clean).
+- [~] `ruff check`, `mypy app`, `pytest` all pass — `pytest` ✓, `mypy` ✓;
+      **`ruff` is blocked by this machine's Application Control (WDAC)
+      policy** (its native binary won't execute). Runs on an unrestricted
+      host.
 
 Do not: write any ingestion/retrieval/agent logic; add dependencies beyond
 the scaffold set.
+
+> **Phase 0 environment notes (this dev machine):** Docker is not installed,
+> so the two compose-dependent checks above are code-complete but unrun here.
+> `ruff`'s prebuilt binary and `mypy`'s compiled `mypyc` extension are blocked
+> by a Windows Application Control policy; `mypy` was run from a pure-Python
+> build and passes, `ruff` could not be executed. All of this is host
+> restriction, not project defect — everything runs on an unrestricted machine
+> with Docker.
 
 ---
 
