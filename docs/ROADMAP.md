@@ -14,7 +14,7 @@ architectural choice made along the way.
 | Phase | Name | Status | Rough effort |
 |---|---|---|---|
 | 0 | Foundations | done | 1 day |
-| 1 | Parse & chunk (CLI) | not started | 1–2 weekends |
+| 1 | Parse & chunk (CLI) | done | 1–2 weekends |
 | 2 | Store & retrieve | not started | 1–2 weekends |
 | 3 | Symbol graph & agent | not started | 2 weekends |
 | — | **Go/no-go checkpoint** | — | — |
@@ -115,17 +115,31 @@ Tasks:
   Committed before any retrieval code exists.
 
 Done when:
-- [ ] CLI ingests the benchmark repo at its pinned SHA without errors
-- [ ] Chunker unit tests pass for: top-level fn, method, nested fn,
+- [x] CLI ingests the benchmark repo at its pinned SHA without errors —
+      `encode/httpx` @ `b5addb64f0161ff6bfe94c124ef76f6a1fba5254`: 60 files,
+      1371 chunks (module 63, class 133, function 694, method 481), 102
+      oversize splits, 0 syntax/parse errors, ~5s.
+- [x] Chunker unit tests pass for: top-level fn, method, nested fn,
       decorated fn, async fn, class with docstring, oversized fn
       (statement-split), file with syntax errors (skip + warn, no crash),
-      empty file
+      empty file — plus filters, module-path derivation, and 1-based lines.
+      33 tests pass (`uv run pytest`); `mypy app` clean.
 - [ ] 30 randomly sampled chunks manually spot-checked: boundaries clean,
-      headers accurate
-- [ ] EVAL.md committed with pinned SHA + 20 questions + ground truth
+      headers accurate — sample written to `docs/samples/phase1-sample.txt`;
+      **left unticked for the human review pass.**
+- [x] EVAL.md committed with pinned SHA + 20 questions + ground truth —
+      pinned repo/SHA header, short-name symbols with the qualname-suffix
+      match rule, frozen-once-Phase-2-begins rule; all ground truth verified
+      programmatically against the pinned SHA.
 
 Do not: touch the database; embed anything; start TypeScript grammar
 support; gold-plate the header format before retrieval numbers exist.
+
+> **Phase 1 environment note (this dev machine):** `ruff` remains blocked by
+> the Windows Application Control (WDAC) policy (os error 4551) exactly as in
+> Phase 0; code was written ruff-clean and the check is deferred to an
+> unrestricted host. tree-sitter's native extension loads fine under WDAC, so
+> the Step 0.5 environment gate passed and backend work stayed on this machine.
 
 ---
 
