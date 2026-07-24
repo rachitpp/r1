@@ -1,0 +1,503 @@
+============================================================
+repo:        encode/httpx
+head_sha:    b5addb64f0161ff6bfe94c124ef76f6a1fba5254
+branch:      master
+------------------------------------------------------------
+candidates:  125
+kept:        60
+skipped:     non-python=65 ignored-dir=0 too-large=0 binary=0 decode-error=0 syntax-error=0
+------------------------------------------------------------
+chunks:      1371 total
+  by kind:   module=63 class=133 function=694 method=481
+  oversize:  102 chunk(s) split into 170 extra part(s)
+------------------------------------------------------------
+elapsed:     5.10s
+============================================================
+
+wrote 1371 chunks to ..\docs\samples\phase1-httpx.jsonl
+
+----- sample 1/30 [tests/client/test_redirects.py:243-249] -----
+# File: tests/client/test_redirects.py
+# Symbol: tests.client.test_redirects.test_async_too_many_redirects
+# Kind: function
+# Signature: async def test_async_too_many_redirects()
+# Imports: import typing; import pytest; import httpx
+---
+@pytest.mark.anyio
+async def test_async_too_many_redirects():
+    async with httpx.AsyncClient(transport=httpx.MockTransport(redirects)) as client:
+        with pytest.raises(httpx.TooManyRedirects):
+            await client.get(
+                "https://example.org/multiple_redirects?count=21", follow_redirects=True
+            )
+
+----- sample 2/30 [httpx/_config.py:226-233] -----
+# File: httpx/_config.py
+# Symbol: httpx._config.Proxy.raw_auth
+# Kind: method
+# Signature: def raw_auth(self) -> tuple[bytes, bytes] | None: # The proxy authentication as raw bytes.
+# Imports: import os; import typing; from ._models import Headers; from ._types import CertTypes, HeaderTypes, TimeoutTypes; from ._urls import URL
+---
+@property
+def raw_auth(self) -> tuple[bytes, bytes] | None:
+    # The proxy authentication as raw bytes.
+    return (
+        None
+        if self.auth is None
+        else (self.auth[0].encode("utf-8"), self.auth[1].encode("utf-8"))
+    )
+
+----- sample 3/30 [httpx/_api.py:364-385] -----
+# File: httpx/_api.py
+# Symbol: httpx._api.patch
+# Kind: function
+# Signature: def patch( url: URL | str, *, content: RequestContent | None = None, data: RequestData | None = None, files: RequestFiles | None = None, json: typing.Any | None = None, params: QueryParamTypes | None = None, headers: HeaderTypes | None = None, cookies: CookieTypes | None = None, auth: AuthTypes | None = None, proxy: ProxyTypes | None = None, follow_redirects: bool = False, verify: ssl.SSLContext | str | bool = True, timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG, trust_env: bool = True, ) -> Response
+# Imports: import typing; from contextlib import contextmanager; from ._client import Client; from ._config import DEFAULT_TIMEOUT_CONFIG; from ._models import Response; from ._types import ( AuthTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestFiles, TimeoutTypes, ); from ._urls import URL
+# Part: 1/2
+---
+def patch(
+    url: URL | str,
+    *,
+    content: RequestContent | None = None,
+    data: RequestData | None = None,
+    files: RequestFiles | None = None,
+    json: typing.Any | None = None,
+    params: QueryParamTypes | None = None,
+    headers: HeaderTypes | None = None,
+    cookies: CookieTypes | None = None,
+    auth: AuthTypes | None = None,
+    proxy: ProxyTypes | None = None,
+    follow_redirects: bool = False,
+    verify: ssl.SSLContext | str | bool = True,
+    timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG,
+    trust_env: bool = True,
+) -> Response:
+    """
+    Sends a `PATCH` request.
+
+    **Parameters**: See `httpx.request`.
+    """
+
+----- sample 4/30 [httpx/_client.py:1426-1429] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.AsyncClient.__init__
+# Kind: method
+# Signature: def __init__( self, *, auth: AuthTypes | None = None, params: QueryParamTypes | None = None, headers: HeaderTypes | None = None, cookies: CookieTypes | None = None, verify: ssl.SSLContext | str | bool = True, cert: CertTypes | None = None, http1: bool = True, http2: bool = False, proxy: ProxyTypes | None = None, mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None, timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG, follow_redirects: bool = False, limits: Limits = DEFAULT_LIMITS, max_redirects: int = DEFAULT_MAX_REDIRECTS, event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None, base_url: URL | str = "", transport: AsyncBaseTransport | None = None, trust_env: bool = True, default_encoding: str | typing.Callable[[bytes], str] = "utf-8", ) -> None
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+# Part: 7/8
+---
+    if mounts is not None:
+        self._mounts.update(
+            {URLPattern(key): transport for key, transport in mounts.items()}
+        )
+
+----- sample 5/30 [tests/test_asgi.py:167-172] -----
+# File: tests/test_asgi.py
+# Symbol: tests.test_asgi.test_asgi_exc
+# Kind: function
+# Signature: async def test_asgi_exc()
+# Imports: import json; import pytest; import httpx
+---
+@pytest.mark.anyio
+async def test_asgi_exc():
+    transport = httpx.ASGITransport(app=raise_exc)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(RuntimeError):
+            await client.get("http://www.example.org/")
+
+----- sample 6/30 [httpx/_client.py:234-237] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.BaseClient._enforce_trailing_slash
+# Kind: method
+# Signature: def _enforce_trailing_slash(self, url: URL) -> URL
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+---
+def _enforce_trailing_slash(self, url: URL) -> URL:
+    if url.raw_path.endswith(b"/"):
+        return url
+    return url.copy_with(raw_path=url.raw_path + b"/")
+
+----- sample 7/30 [httpx/_client.py:1359-1362] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.AsyncClient
+# Kind: class
+# Signature: class AsyncClient(BaseClient)
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+# Part: 6/13
+---
+    async def send( self, request: Request, *, stream: bool = False, auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT, follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT, ) -> Response: ...
+    async def _send_handling_auth( self, request: Request, auth: Auth, follow_redirects: bool, history: list[Response], ) -> Response: ...
+    async def _send_handling_redirects( self, request: Request, follow_redirects: bool, history: list[Response], ) -> Response: ...
+    async def _send_single_request(self, request: Request) -> Response: ...
+
+----- sample 8/30 [httpx/_client.py:1629-1643] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.AsyncClient.send
+# Kind: method
+# Signature: async def send( self, request: Request, *, stream: bool = False, auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT, follow_redirects: bool | UseClientDefault = USE_CLIENT_DEFAULT, ) -> Response
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+# Part: 3/3
+---
+    response = await self._send_handling_auth(
+        request,
+        auth=auth,
+        follow_redirects=follow_redirects,
+        history=[],
+    )
+    try:
+        if not stream:
+            await response.aread()
+
+        return response
+
+    except BaseException as exc:
+        await response.aclose()
+        raise exc
+
+----- sample 9/30 [tests/client/test_auth.py:28-30] -----
+# File: tests/client/test_auth.py
+# Symbol: tests.client.test_auth.App.__init__
+# Kind: method
+# Signature: def __init__(self, auth_header: str = "", status_code: int = 200) -> None
+# Imports: import hashlib; import netrc; import os; import sys; import threading; import typing; from urllib.request import parse_keqv_list; import anyio; import pytest; import httpx; from ..common import FIXTURES_DIR
+---
+def __init__(self, auth_header: str = "", status_code: int = 200) -> None:
+    self.auth_header = auth_header
+    self.status_code = status_code
+
+----- sample 10/30 [httpx/_models.py:1205-1208] -----
+# File: httpx/_models.py
+# Symbol: httpx._models.Cookies.update
+# Kind: method
+# Signature: def update(self, cookies: CookieTypes | None = None) -> None: # type: ignore
+# Imports: import codecs; import datetime; import email.message; import json as jsonlib; import re; import typing; import urllib.request; from collections.abc import Mapping; from http.cookiejar import Cookie, CookieJar; from ._content import ByteStream, UnattachedStream, encode_request, encode_response; from ._decoders import ( SUPPORTED_DECODERS, ByteChunker, ContentDecoder, IdentityDecoder, LineDecoder, MultiDecoder, TextChunker, TextDecoder, ); from ._exceptions import ( CookieConflict, HTTPStatusError, RequestNotRead, ResponseNotRead, StreamClosed, StreamConsumed, request_context, ); from ._multipart import get_multipart_boundary_from_content_type; from ._status_codes import codes; from ._types import ( AsyncByteStream, CookieTypes, HeaderTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, ResponseContent, ResponseExtensions, SyncByteStream, ); from ._urls import URL; from ._utils import to_bytes_or_str, to_str
+---
+def update(self, cookies: CookieTypes | None = None) -> None:  # type: ignore
+    cookies = Cookies(cookies)
+    for cookie in cookies.jar:
+        self.jar.set_cookie(cookie)
+
+----- sample 11/30 [httpx/_auth.py:187-191] -----
+# File: httpx/_auth.py
+# Symbol: httpx._auth.DigestAuth.__init__
+# Kind: method
+# Signature: def __init__(self, username: str | bytes, password: str | bytes) -> None
+# Imports: import hashlib; import os; import re; import time; import typing; from base64 import b64encode; from urllib.request import parse_http_list; from ._exceptions import ProtocolError; from ._models import Cookies, Request, Response; from ._utils import to_bytes, to_str, unquote
+---
+def __init__(self, username: str | bytes, password: str | bytes) -> None:
+    self._username = to_bytes(username)
+    self._password = to_bytes(password)
+    self._last_challenge: _DigestAuthChallenge | None = None
+    self._nonce_count = 1
+
+----- sample 12/30 [httpx/_client.py:228-234] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.BaseClient
+# Kind: class
+# Signature: class BaseClient
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+# Part: 5/6
+---
+    def _merge_queryparams( self, params: QueryParamTypes | None = None ) -> QueryParamTypes | None: ...
+    def _build_auth(self, auth: AuthTypes | None) -> Auth | None: ...
+    def _build_request_auth( self, request: Request, auth: AuthTypes | UseClientDefault | None = USE_CLIENT_DEFAULT, ) -> Auth: ...
+    def _build_redirect_request(self, request: Request, response: Response) -> Request: ...
+    def _redirect_method(self, request: Request, response: Response) -> str: ...
+    def _redirect_url(self, request: Request, response: Response) -> URL: ...
+    def _redirect_headers(self, request: Request, url: URL, method: str) -> Headers: ...
+
+----- sample 13/30 [httpx/_auth.py:157-167] -----
+# File: httpx/_auth.py
+# Symbol: httpx._auth.NetRCAuth.auth_flow
+# Kind: method
+# Signature: def auth_flow(self, request: Request) -> typing.Generator[Request, Response, None]
+# Imports: import hashlib; import os; import re; import time; import typing; from base64 import b64encode; from urllib.request import parse_http_list; from ._exceptions import ProtocolError; from ._models import Cookies, Request, Response; from ._utils import to_bytes, to_str, unquote
+---
+def auth_flow(self, request: Request) -> typing.Generator[Request, Response, None]:
+    auth_info = self._netrc_info.authenticators(request.url.host)
+    if auth_info is None or not auth_info[2]:
+        # The netrc file did not have authentication credentials for this host.
+        yield request
+    else:
+        # Build a basic auth header with credentials from the netrc file.
+        request.headers["Authorization"] = self._build_auth_header(
+            username=auth_info[0], password=auth_info[2]
+        )
+        yield request
+
+----- sample 14/30 [tests/client/test_async_client.py:138-143] -----
+# File: tests/client/test_async_client.py
+# Symbol: tests.client.test_async_client.test_head
+# Kind: function
+# Signature: async def test_head(server)
+# Imports: import typing; from datetime import timedelta; import pytest; import httpx
+---
+@pytest.mark.anyio
+async def test_head(server):
+    async with httpx.AsyncClient() as client:
+        response = await client.head(server.url)
+    assert response.status_code == 200
+    assert response.text == ""
+
+----- sample 15/30 [tests/test_multipart.py:423-439] -----
+# File: tests/test_multipart.py
+# Symbol: tests.test_multipart.test_multipart_rewinds_files
+# Kind: function
+# Signature: def test_multipart_rewinds_files()
+# Imports: import io; import tempfile; import typing; import pytest; import httpx
+---
+def test_multipart_rewinds_files():
+    with tempfile.TemporaryFile() as upload:
+        upload.write(b"Hello, world!")
+
+        transport = httpx.MockTransport(echo_request_content)
+        client = httpx.Client(transport=transport)
+
+        files = {"file": upload}
+        response = client.post("http://127.0.0.1:8000/", files=files)
+        assert response.status_code == 200
+        assert b"\r\nHello, world!\r\n" in response.content
+
+        # POSTing the same file instance a second time should have the same content.
+        files = {"file": upload}
+        response = client.post("http://127.0.0.1:8000/", files=files)
+        assert response.status_code == 200
+        assert b"\r\nHello, world!\r\n" in response.content
+
+----- sample 16/30 [tests/test_decoders.py:204-212] -----
+# File: tests/test_decoders.py
+# Symbol: tests.test_decoders.test_empty_content
+# Kind: function
+# Signature: def test_empty_content(header_value)
+# Imports: import io; import typing; import zlib; import chardet; import pytest; import zstandard as zstd; import httpx
+---
+@pytest.mark.parametrize("header_value", (b"deflate", b"gzip", b"br", b"identity"))
+def test_empty_content(header_value):
+    headers = [(b"Content-Encoding", header_value)]
+    response = httpx.Response(
+        200,
+        headers=headers,
+        content=b"",
+    )
+    assert response.content == b""
+
+----- sample 17/30 [tests/models/test_requests.py:19-21] -----
+# File: tests/models/test_requests.py
+# Symbol: tests.models.test_requests.test_content_length_header
+# Kind: function
+# Signature: def test_content_length_header()
+# Imports: import pickle; import typing; import pytest; import httpx
+---
+def test_content_length_header():
+    request = httpx.Request("POST", "http://example.org", content=b"test 123")
+    assert request.headers["Content-Length"] == "8"
+
+----- sample 18/30 [tests/test_content.py:498-504] -----
+# File: tests/test_content.py
+# Symbol: tests.test_content.test_separators_for_compact_json
+# Kind: function
+# Signature: def test_separators_for_compact_json()
+# Imports: import io; import typing; import pytest; import httpx
+---
+def test_separators_for_compact_json():
+    data = {"clé": "valeur", "liste": [1, 2, 3]}
+    response = httpx.Response(200, json=data)
+    assert response.text == '{"clé":"valeur","liste":[1,2,3]}', (
+        "separators=(',', ':') should produce a compact representation"
+    )
+    assert response.headers["Content-Type"] == "application/json"
+
+----- sample 19/30 [tests/models/test_cookies.py:8-20] -----
+# File: tests/models/test_cookies.py
+# Symbol: tests.models.test_cookies.test_cookies
+# Kind: function
+# Signature: def test_cookies()
+# Imports: import http; import pytest; import httpx
+---
+def test_cookies():
+    cookies = httpx.Cookies({"name": "value"})
+    assert cookies["name"] == "value"
+    assert "name" in cookies
+    assert len(cookies) == 1
+    assert dict(cookies) == {"name": "value"}
+    assert bool(cookies) is True
+
+    del cookies["name"]
+    assert "name" not in cookies
+    assert len(cookies) == 0
+    assert dict(cookies) == {}
+    assert bool(cookies) is False
+
+----- sample 20/30 [httpx/_decoders.py:321-378] -----
+# File: httpx/_decoders.py
+# Symbol: httpx._decoders.LineDecoder
+# Kind: class
+# Signature: class LineDecoder
+# Imports: import codecs; import io; import typing; import zlib; from ._exceptions import DecodingError
+---
+class LineDecoder:
+    """
+        Handles incrementally reading lines from text.
+
+        Has the same behaviour as the stdllib splitlines,
+        but handling the input iteratively.
+        """
+    def __init__(self) -> None: ...
+    def decode(self, text: str) -> list[str]: # See https://docs.python.org/3/library/stdtypes.html#str.splitlines: ...
+    def flush(self) -> list[str]: ...
+
+----- sample 21/30 [httpx/_client.py:1430-1430] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.AsyncClient.__init__
+# Kind: method
+# Signature: def __init__( self, *, auth: AuthTypes | None = None, params: QueryParamTypes | None = None, headers: HeaderTypes | None = None, cookies: CookieTypes | None = None, verify: ssl.SSLContext | str | bool = True, cert: CertTypes | None = None, http1: bool = True, http2: bool = False, proxy: ProxyTypes | None = None, mounts: None | (typing.Mapping[str, AsyncBaseTransport | None]) = None, timeout: TimeoutTypes = DEFAULT_TIMEOUT_CONFIG, follow_redirects: bool = False, limits: Limits = DEFAULT_LIMITS, max_redirects: int = DEFAULT_MAX_REDIRECTS, event_hooks: None | (typing.Mapping[str, list[EventHook]]) = None, base_url: URL | str = "", transport: AsyncBaseTransport | None = None, trust_env: bool = True, default_encoding: str | typing.Callable[[bytes], str] = "utf-8", ) -> None
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+# Part: 8/8
+---
+    self._mounts = dict(sorted(self._mounts.items()))
+
+----- sample 22/30 [httpx/_models.py:74-82] -----
+# File: httpx/_models.py
+# Symbol: httpx._models._normalize_header_value
+# Kind: function
+# Signature: def _normalize_header_value(value: str | bytes, encoding: str | None = None) -> bytes
+# Imports: import codecs; import datetime; import email.message; import json as jsonlib; import re; import typing; import urllib.request; from collections.abc import Mapping; from http.cookiejar import Cookie, CookieJar; from ._content import ByteStream, UnattachedStream, encode_request, encode_response; from ._decoders import ( SUPPORTED_DECODERS, ByteChunker, ContentDecoder, IdentityDecoder, LineDecoder, MultiDecoder, TextChunker, TextDecoder, ); from ._exceptions import ( CookieConflict, HTTPStatusError, RequestNotRead, ResponseNotRead, StreamClosed, StreamConsumed, request_context, ); from ._multipart import get_multipart_boundary_from_content_type; from ._status_codes import codes; from ._types import ( AsyncByteStream, CookieTypes, HeaderTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, ResponseContent, ResponseExtensions, SyncByteStream, ); from ._urls import URL; from ._utils import to_bytes_or_str, to_str
+---
+def _normalize_header_value(value: str | bytes, encoding: str | None = None) -> bytes:
+    """
+    Coerce str/bytes into a strictly byte-wise HTTP header value.
+    """
+    if isinstance(value, bytes):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"Header value must be str or bytes, not {type(value)}")
+    return value.encode(encoding or "ascii")
+
+----- sample 23/30 [httpx/_config.py:173-182] -----
+# File: httpx/_config.py
+# Symbol: httpx._config.Limits.__init__
+# Kind: method
+# Signature: def __init__( self, *, max_connections: int | None = None, max_keepalive_connections: int | None = None, keepalive_expiry: float | None = 5.0, ) -> None
+# Imports: import os; import typing; from ._models import Headers; from ._types import CertTypes, HeaderTypes, TimeoutTypes; from ._urls import URL
+---
+def __init__(
+    self,
+    *,
+    max_connections: int | None = None,
+    max_keepalive_connections: int | None = None,
+    keepalive_expiry: float | None = 5.0,
+) -> None:
+    self.max_connections = max_connections
+    self.max_keepalive_connections = max_keepalive_connections
+    self.keepalive_expiry = keepalive_expiry
+
+----- sample 24/30 [httpx/_auth.py:139-142] -----
+# File: httpx/_auth.py
+# Symbol: httpx._auth.BasicAuth._build_auth_header
+# Kind: method
+# Signature: def _build_auth_header(self, username: str | bytes, password: str | bytes) -> str
+# Imports: import hashlib; import os; import re; import time; import typing; from base64 import b64encode; from urllib.request import parse_http_list; from ._exceptions import ProtocolError; from ._models import Cookies, Request, Response; from ._utils import to_bytes, to_str, unquote
+---
+def _build_auth_header(self, username: str | bytes, password: str | bytes) -> str:
+    userpass = b":".join((to_bytes(username), to_bytes(password)))
+    token = b64encode(userpass).decode()
+    return f"Basic {token}"
+
+----- sample 25/30 [tests/models/test_responses.py:233-244] -----
+# File: tests/models/test_responses.py
+# Symbol: tests.models.test_responses.test_response_no_charset_with_iso_8859_1_content
+# Kind: function
+# Signature: def test_response_no_charset_with_iso_8859_1_content()
+# Imports: import json; import pickle; import typing; import chardet; import pytest; import httpx
+---
+def test_response_no_charset_with_iso_8859_1_content():
+    """
+    A response with ISO 8859-1 encoded content should decode correctly,
+    even with no charset specified, if autodetect is enabled.
+    """
+    content = "Accented: Österreich abcdefghijklmnopqrstuzwxyz".encode("iso-8859-1")
+    headers = {"Content-Type": "text/plain"}
+    response = httpx.Response(
+        200, content=content, headers=headers, default_encoding=autodetect
+    )
+    assert response.text == "Accented: Österreich abcdefghijklmnopqrstuzwxyz"
+    assert response.charset_encoding is None
+
+----- sample 26/30 [tests/models/test_requests.py:60-65] -----
+# File: tests/models/test_requests.py
+# Symbol: tests.models.test_requests.test_json_encoded_data
+# Kind: function
+# Signature: def test_json_encoded_data()
+# Imports: import pickle; import typing; import pytest; import httpx
+---
+def test_json_encoded_data():
+    request = httpx.Request("POST", "http://example.org", json={"test": 123})
+    request.read()
+
+    assert request.headers["Content-Type"] == "application/json"
+    assert request.content == b'{"test":123}'
+
+----- sample 27/30 [httpx/_multipart.py:244-256] -----
+# File: httpx/_multipart.py
+# Symbol: httpx._multipart.MultipartStream._iter_fields
+# Kind: method
+# Signature: def _iter_fields( self, data: RequestData, files: RequestFiles ) -> typing.Iterator[FileField | DataField]
+# Imports: import io; import mimetypes; import os; import re; import typing; from pathlib import Path; from ._types import ( AsyncByteStream, FileContent, FileTypes, RequestData, RequestFiles, SyncByteStream, ); from ._utils import ( peek_filelike_length, primitive_value_to_str, to_bytes, )
+---
+def _iter_fields(
+    self, data: RequestData, files: RequestFiles
+) -> typing.Iterator[FileField | DataField]:
+    for name, value in data.items():
+        if isinstance(value, (tuple, list)):
+            for item in value:
+                yield DataField(name=name, value=item)
+        else:
+            yield DataField(name=name, value=value)
+
+    file_items = files.items() if isinstance(files, typing.Mapping) else files
+    for name, value in file_items:
+        yield FileField(name=name, value=value)
+
+----- sample 28/30 [httpx/_client.py:760-769] -----
+# File: httpx/_client.py
+# Symbol: httpx._client.Client._transport_for_url
+# Kind: method
+# Signature: def _transport_for_url(self, url: URL) -> BaseTransport
+# Imports: import datetime; import enum; import logging; import time; import typing; import warnings; from contextlib import asynccontextmanager, contextmanager; from types import TracebackType; from .__version__ import __version__; from ._auth import Auth, BasicAuth, FunctionAuth; from ._config import ( DEFAULT_LIMITS, DEFAULT_MAX_REDIRECTS, DEFAULT_TIMEOUT_CONFIG, Limits, Proxy, Timeout, ); from ._decoders import SUPPORTED_DECODERS; from ._exceptions import ( InvalidURL, RemoteProtocolError, TooManyRedirects, request_context, ); from ._models import Cookies, Headers, Request, Response; from ._status_codes import codes; from ._transports.base import AsyncBaseTransport, BaseTransport; from ._transports.default import AsyncHTTPTransport, HTTPTransport; from ._types import ( AsyncByteStream, AuthTypes, CertTypes, CookieTypes, HeaderTypes, ProxyTypes, QueryParamTypes, RequestContent, RequestData, RequestExtensions, RequestFiles, SyncByteStream, TimeoutTypes, ); from ._urls import URL, QueryParams; from ._utils import URLPattern, get_environment_proxies
+---
+def _transport_for_url(self, url: URL) -> BaseTransport:
+    """
+    Returns the transport instance that should be used for a given URL.
+    This will either be the standard connection pool, or a proxy.
+    """
+    for pattern, transport in self._mounts.items():
+        if pattern.matches(url):
+            return self._transport if transport is None else transport
+
+    return self._transport
+
+----- sample 29/30 [tests/test_wsgi.py:132-138] -----
+# File: tests/test_wsgi.py
+# Symbol: tests.test_wsgi.test_wsgi_generator
+# Kind: function
+# Signature: def test_wsgi_generator()
+# Imports: import sys; import typing; import wsgiref.validate; from functools import partial; from io import StringIO; import pytest; import httpx
+---
+def test_wsgi_generator():
+    output = [b"", b"", b"Some content", b" and more content"]
+    transport = httpx.WSGITransport(app=application_factory(output))
+    client = httpx.Client(transport=transport)
+    response = client.get("http://www.example.org/")
+    assert response.status_code == 200
+    assert response.text == "Some content and more content"
+
+----- sample 30/30 [tests/models/test_url.py:271-273] -----
+# File: tests/models/test_url.py
+# Symbol: tests.models.test_url.test_url_leading_dot_prefix_on_absolute_url
+# Kind: function
+# Signature: def test_url_leading_dot_prefix_on_absolute_url()
+# Imports: import pytest; import httpx
+---
+def test_url_leading_dot_prefix_on_absolute_url():
+    url = httpx.URL("https://example.com/../abc")
+    assert url.path == "/abc"
