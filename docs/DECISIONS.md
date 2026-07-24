@@ -43,3 +43,28 @@ re-embedding passes.
 ## 2026-07-24 — Shallow clone (depth 1)
 Commit-history indexing is deferred to v2, so v1 clones with
 `--depth 1 --single-branch`.
+
+## 2026-07-24 — Symbol uses the full dotted qualname everywhere
+SPEC §2.4's example header previously showed a class-relative symbol
+(`AuthMiddleware.verify_token`), which contradicted §3's definition of
+`qualname` as the full dotted path (`pkg.module.Class.method`).
+Reconciled in favor of the **full dotted qualname everywhere**: both
+chunk `symbol` fields and header `Symbol:` lines carry it. Module-path
+rule: `a/b/c.py` → `a.b.c`, `a/b/__init__.py` → `a.b`; a module chunk's
+symbol is that module path, a method's is `<module>.<Class>.<method>`.
+Edited the §2.4 example to match.
+
+## 2026-07-24 — Heuristic token counter in Phase 1 (len//4)
+The real embedding tokenizer ships with sentence-transformers in Phase 2
+(native deps we are not installing in Phase 1). Phase 1's oversize-split
+logic (SPEC §2.5) needs a `token_len`, so `app/ingest/tokens.py` provides
+a `TokenCounter` protocol with a `HeuristicTokenCounter` (`len(text)//4`).
+Phase 2 swaps in the model tokenizer via the same protocol and re-checks
+oversize splits against `CHUNK_TOKEN_MAX`. Chunk boundaries (AST nodes)
+are unaffected — only the oversize threshold is approximate until then.
+
+## 2026-07-24 — Phase 1 benchmark repo: encode/httpx
+Picked `encode/httpx` as the pinned benchmark: well-known, mid-size, pure
+Python, clean package layout, exercises decorators/async/classes. Fallback
+`pallets/flask` if httpx fails structurally. SHA recorded in docs/EVAL.md
+when the benchmark run is approved.

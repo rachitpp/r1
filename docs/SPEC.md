@@ -65,7 +65,7 @@ The embedded text is `header + "\n---\n" + code`:
 
 ```
 # File: src/auth/middleware.py
-# Symbol: AuthMiddleware.verify_token
+# Symbol: src.auth.middleware.AuthMiddleware.verify_token
 # Kind: method
 # Signature: def verify_token(self, token: str) -> User | None
 # Imports: jwt; from .models import User; from .config import SECRET
@@ -73,12 +73,18 @@ The embedded text is `header + "\n---\n" + code`:
 <decorators + def line + docstring + body>
 ```
 
+- `Symbol:` is the **full dotted qualname** (§3), never class-relative:
+  `<module path>.<Class>.<method>`. The module path derives from the
+  repo-relative file path — `a/b/c.py` → `a.b.c`, `a/b/__init__.py` →
+  `a.b` — so a method of `AuthMiddleware` in `src/auth/middleware.py` is
+  `src.auth.middleware.AuthMiddleware.verify_token`. Chunk `symbol`
+  fields and header `Symbol:` lines both use this form.
 - `Imports:` lists the *file-level* import statements (semicolon-joined),
   because they need no resolution. Per-symbol caller info ("Called by:")
   is **not** embedded — it is attached at context-assembly time in §7.4,
   once the symbol graph exists. Rationale: keeps embeddings stable when
   the graph changes; no re-embedding pass.
-- Module chunks: `Symbol` is the module path, `Kind: module`, no
+- Module chunks: `Symbol` is the module path itself, `Kind: module`, no
   signature line.
 
 ### 2.5 Oversize handling
