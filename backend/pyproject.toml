@@ -49,6 +49,15 @@ warn_unused_ignores = true
 module = ["asyncpg", "arq", "arq.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# numpy 2.x ships PEP 695 `type` aliases in its stubs, which mypy rejects under
+# python_version 3.11 (our support floor). pgvector / sentence-transformers pull
+# numpy in transitively; we never type-check against its internals, so skip
+# following into it rather than lowering the target to 3.12.
+module = ["numpy", "numpy.*"]
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
