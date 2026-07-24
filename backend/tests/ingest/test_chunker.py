@@ -66,7 +66,7 @@ def test_oversize_splits_on_statement_boundaries() -> None:
 def test_oversize_parts_have_contiguous_line_ranges() -> None:
     parts = [c for c in _chunks("big.py", _oversized_function()) if c.kind == "function"]
     assert parts[0].start_line == 3  # the def line
-    for a, b in zip(parts, parts[1:]):
+    for a, b in zip(parts, parts[1:], strict=False):
         assert b.start_line == a.end_line + 1
 
 

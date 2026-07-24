@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from git import Repo
 
-from app.ingest.parser import ParsedFile, parse_file
 from app.ingest.filters import SourceFile
+from app.ingest.parser import ParsedFile, parse_file
 
 
 @pytest.fixture
