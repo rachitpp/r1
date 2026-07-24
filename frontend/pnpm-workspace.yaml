@@ -1,0 +1,6 @@
+# Native postinstall build scripts for these deps are not needed for the app
+# (and are blocked by the host Application Control policy). Set to false so
+# `pnpm install` proceeds cleanly instead of pausing for build-script approval.
+allowBuilds:
+  sharp: false
+  unrs-resolver: false
