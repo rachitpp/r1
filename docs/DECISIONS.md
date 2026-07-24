@@ -68,3 +68,30 @@ Picked `encode/httpx` as the pinned benchmark: well-known, mid-size, pure
 Python, clean package layout, exercises decorators/async/classes. Fallback
 `pallets/flask` if httpx fails structurally. SHA recorded in docs/EVAL.md
 when the benchmark run is approved.
+
+## 2026-07-24 — Phase 2 blocked on this host by WDAC; backend moves machines
+**What failed.** Phase 2's Gate B: `import torch` (the backend for
+`sentence-transformers`, used for both embeddings and the reranker) raised
+`ImportError: DLL load failed while importing _C: An Application Control
+policy has blocked this file.` The block happens at import of torch's
+compiled `_C` extension, *before* any model download — so it is a Windows
+Application Control (WDAC) policy block, not a network/HuggingFace issue.
+Gate A (Postgres via Neon) passed; Gate C (reranker, ~2 GB) was not run
+because it rides on the same torch backend and would fail identically.
+
+**Why no workaround.** The Phase 2 prompt's Gate B rule is explicit: a
+DLL/policy error means stop, not improvise. CPU-only wheel swaps, vendored
+builds, code-signing, or substituting a non-torch embedder would all either
+violate the locked stack (CLAUDE.md) or the frozen retrieval design, so none
+was attempted.
+
+**Contrast with Phase 1.** tree-sitter's native extension passed the same
+class of gate and loaded fine under WDAC; torch did not. WDAC blocks specific
+unsigned native binaries (ruff and mypyc in Phase 0, torch here) while
+allowing others (tree-sitter) — so "native" alone doesn't predict the block.
+
+**Resolution.** Backend development moves to an unrestricted machine (WSL2 or
+another host) where torch's native libs are permitted. The database is
+unaffected: Neon is cloud-hosted, so the same `DATABASE_URL` works unchanged
+from the new environment. Phase 2 deps are pre-staged in pyproject/uv.lock so
+the move is a `uv sync` away. ROADMAP Phase 2 stays "not started".

@@ -145,6 +145,13 @@ support; gold-plate the header format before retrieval numbers exist.
 
 ## Phase 2 — Store & retrieve
 
+> **Blocked attempt (2026-07-24):** Phase 2 was started on the Windows dev host
+> but stopped at the environment gate — `torch` (embeddings/reranker backend)
+> is blocked by this machine's WDAC policy at `import torch._C`. Deps are
+> pre-staged in pyproject/uv.lock but no Phase 2 code exists yet; backend
+> development moves to an unrestricted machine (Neon DB is unaffected). See
+> DECISIONS.md. Status stays "not started".
+
 **Goal:** hybrid retrieval with measured quality.
 
 Tasks:
