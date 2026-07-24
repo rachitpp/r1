@@ -1,0 +1,48 @@
+[project]
+name = "codebase-assistant-backend"
+version = "0.1.0"
+description = "Codebase Onboarding Assistant — backend (API + ARQ worker)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic-settings",
+    "asyncpg",
+    "arq",
+]
+
+[dependency-groups]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "pytest-asyncio",
+    "httpx",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+files = ["app"]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = true
+
+[[tool.mypy.overrides]]
+module = ["asyncpg", "arq", "arq.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
