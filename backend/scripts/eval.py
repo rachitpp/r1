@@ -36,7 +36,7 @@ from app.retrieval.hybrid import (  # noqa: E402
 )
 
 EVAL_MD = Path(__file__).resolve().parent.parent.parent / "docs" / "EVAL.md"
-KS = (5, 10)
+KS = (3, 5, 10)  # hit@3 shows reranker precision; hit@10 the recall gate
 MAX_K = max(KS)
 
 
@@ -61,14 +61,21 @@ def _parse_eval_md() -> tuple[str, str | None, list[dict]]:
     return url, sha, questions
 
 
-def _hit(hits: list[SearchHit], files: set[str], symbols: list[str], k: int) -> bool:
-    """True if any of the top-``k`` hits satisfies file or symbol ground truth."""
-    for h in hits[:k]:
-        if h["file_path"] in files:
-            return True
-        if any(qualname_matches(h["symbol"], s) for s in symbols):
-            return True
-    return False
+def _first_hit_rank(
+    hits: list[SearchHit], files: set[str], symbols: list[str]
+) -> int | None:
+    """1-based rank of the first hit satisfying file/symbol ground truth, else None.
+
+    One rank drives every metric: hit@k = ``rank <= k``; reciprocal rank = ``1/rank``
+    (0 on a miss), whose mean over questions is MRR. A reranker's job is to make
+    this rank small, which hit@3 / MRR reward and hit@10 barely reflects.
+    """
+    for i, h in enumerate(hits, start=1):
+        if h["file_path"] in files or any(
+            qualname_matches(h["symbol"], s) for s in symbols
+        ):
+            return i
+    return None
 
 
 async def _truth_file_guard(
@@ -117,8 +124,9 @@ async def run(modes: list[Mode], repo_ref: str) -> int:
 
             await _truth_file_guard(conn, repo_id, questions)
 
-            # results[mode][k] = number of questions that hit; plus a per-q grid.
+            # hits[mode][k] = #questions hitting within top-k; rr_sum -> MRR.
             hits: dict[Mode, dict[int, int]] = {m: {k: 0 for k in KS} for m in modes}
+            rr_sum: dict[Mode, float] = {m: 0.0 for m in modes}
             grid: dict[str, dict[Mode, bool]] = {}
             for q in questions:
                 truth = q.get("truth", {})
@@ -129,17 +137,19 @@ async def run(modes: list[Mode], repo_ref: str) -> int:
                     found = await search(
                         conn, repo_id, q["question"], k=MAX_K, mode=mode
                     )
+                    rank = _first_hit_rank(found, files, symbols)
                     for k in KS:
-                        if _hit(found, files, symbols, k):
+                        if rank is not None and rank <= k:
                             hits[mode][k] += 1
-                    grid[q["id"]][mode] = _hit(found, files, symbols, MAX_K)
+                    rr_sum[mode] += 1.0 / rank if rank is not None else 0.0
+                    grid[q["id"]][mode] = rank is not None and rank <= MAX_K
     finally:
         await close_pool(pool)
 
     total = len(questions)
-    report = _format_report(modes, hits, grid, url, head_sha, n_chunks, total)
+    report = _format_report(modes, hits, rr_sum, grid, url, head_sha, n_chunks, total)
     print(report)
-    _append_results(modes, hits, grid, url, head_sha, n_chunks, total)
+    _append_results(modes, hits, rr_sum, grid, url, head_sha, n_chunks, total)
     print(f"\nappended results block to {EVAL_MD}")
     return 0
 
@@ -149,13 +159,21 @@ def _rate(n: int, total: int) -> str:
 
 
 def _summary_table(
-    modes: list[Mode], hits: dict[Mode, dict[int, int]], total: int
+    modes: list[Mode],
+    hits: dict[Mode, dict[int, int]],
+    rr_sum: dict[Mode, float],
+    total: int,
 ) -> list[str]:
-    lines = ["| Mode | hit@5 | hit@10 |", "|---|---|---|"]
+    lines = [
+        "| Mode | hit@3 | hit@5 | hit@10 | MRR |",
+        "|---|---|---|---|---|",
+    ]
     for mode in modes:
+        mrr = rr_sum[mode] / total if total else 0.0
         lines.append(
-            f"| {mode} | {_rate(hits[mode][5], total)} | "
-            f"{_rate(hits[mode][10], total)} |"
+            f"| {mode} | {_rate(hits[mode][3], total)} | "
+            f"{_rate(hits[mode][5], total)} | {_rate(hits[mode][10], total)} | "
+            f"{mrr:.3f} |"
         )
     return lines
 
@@ -175,6 +193,7 @@ def _grid_table(
 def _format_report(
     modes: list[Mode],
     hits: dict[Mode, dict[int, int]],
+    rr_sum: dict[Mode, float],
     grid: dict[str, dict[Mode, bool]],
     url: str,
     head_sha: str | None,
@@ -187,8 +206,8 @@ def _format_report(
         f"eval: {url} @ {sha_short}  ({n_chunks} chunks, {total} questions)",
         "=" * 60,
         "",
-        "hit@k summary:",
-        *_summary_table(modes, hits, total),
+        "hit@k / MRR summary:",
+        *_summary_table(modes, hits, rr_sum, total),
         "",
         "per-question hit@10:",
         *_grid_table(modes, grid),
@@ -199,6 +218,7 @@ def _format_report(
 def _append_results(
     modes: list[Mode],
     hits: dict[Mode, dict[int, int]],
+    rr_sum: dict[Mode, float],
     grid: dict[str, dict[Mode, bool]],
     url: str,
     head_sha: str | None,
@@ -214,7 +234,7 @@ def _append_results(
         f"**Repo:** {url} @ `{sha_short}` — {n_chunks} chunks, "
         f"{total} questions. Modes: {', '.join(modes)}.",
         "",
-        *_summary_table(modes, hits, total),
+        *_summary_table(modes, hits, rr_sum, total),
         "",
         "Per-question hit@10:",
         "",

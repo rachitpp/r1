@@ -264,16 +264,15 @@ async def search(
 
     ``hybrid+rerank`` is the production pipeline; the other modes exist for the
     eval/debug diagnostics. Vector and hybrid modes embed the query; FTS does
-    not. Only ``hybrid+rerank`` performs symbol injection and reranking.
+    not — and does not load the embedder, so ``--mode fts`` runs model-free.
+    Only ``hybrid+rerank`` performs symbol injection and reranking.
     """
-    embedder = get_embedder()
-
     if mode == "fts":
         scored = await _fts_leg(conn, repo_id, query, k)
         rows = await _fetch_rows(conn, [i for i, _ in scored])
         return [_hit(rows[i], s) for i, s in scored if i in rows]
 
-    qvec = embedder.encode([query])[0]
+    qvec = get_embedder().encode([query])[0]
 
     if mode == "vector":
         async with conn.transaction():

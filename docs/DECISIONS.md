@@ -178,3 +178,35 @@ and a SPEC §5.3 reconciliation + DECISIONS entry before adoption):**
    fusion hits survive), making the pipeline monotonically ≥ hybrid.
 No fix is applied yet: applying an unvalidated algorithm change and re-declaring
 the metric passed would be papering over the result.
+
+## 2026-07-25 — FTS leg is dead (plainto_tsquery AND), not just weak; plumbing sound
+Follow-up bug hunt on the FTS score (0.05, 1/20). Direct DB inspection via `psql`
+(no models) rules out a plumbing bug and pins the cause on query construction:
+- **Plumbing OK:** `chunks.tsv` is populated (`Timeout` chunk 722 chars,
+  `urlparse` 1193, non-null), the GIN index `chunks_tsv` exists, `repo_id` typing
+  is fine, the fusion FTS CTE runs.
+- **Cause:** `plainto_tsquery` (SPEC §5.1) **ANDs every query term**. A full NL
+  question becomes an unsatisfiable conjunction — q01 → `'request' & 'timeout' &
+  'configur' & 'class' & 'defin'` matches **0** chunks; q03's five-term AND also
+  0. But the key term alone matches lots (`to_tsquery('timeout')` → 295,
+  `'urlparse'` → 73) and the truth chunks *do* contain their key term. So the
+  FTS CTE returns 0 rows for ~every question and RRF collapses to vector-only —
+  which is why `fusion == vector == 0.85` to the decimal.
+- **Fix direction (not yet applied):** OR-combine the salient lexemes instead of
+  ANDing. `to_tsquery('request | timeout | …')` → 845 rows (truth #21);
+  `'url | pars | … | urlpars | …'` → 1227 (truth #10) — both within `FTS_K = 40`,
+  so RRF would fuse a real lexical signal. This is a §5.1 change → needs a SPEC
+  reconciliation + a rerun before adoption, but it is likely the highest-value
+  lever (it is *why* hybrid never beats vector) and it is iterable without the
+  reranker (`--mode fts` / `--mode hybrid`). Recorded as Option E in
+  `docs/phase-2-rerank-review.md`. Not applied here (bug-hunt, not a tuning pass).
+
+## 2026-07-25 — eval.py reports hit@3 and MRR alongside hit@5/@10
+Added hit@3 and MRR columns to `scripts/eval.py` (hit@5/@10 unchanged). A single
+first-relevant-hit rank now drives every metric: `hit@k = rank ≤ k`, `RR = 1/rank`
+(0 on miss), MRR = mean RR. Rationale: a reranker optimizes the *position* of the
+first relevant hit, which hit@3/MRR reward and hit@10 (a recall metric on a fixed
+pool) barely reflects — so the earlier done-when tested the reranker where it is
+weakest. This is a generic metric addition, not a gate change; the recall gate
+(hit@10) is untouched. Metric math is unit-tested (`test_eval_parsing.py`), and
+`search()` now loads the embedder lazily so `--mode fts` runs fully model-free.

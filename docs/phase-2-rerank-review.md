@@ -1,0 +1,256 @@
+# Phase 2 retrieval — failure analysis & options (for review)
+
+**Status:** Phase 2 ("Store & retrieve") of a codebase-onboarding RAG app is
+built and runs, but its acceptance gate ("done-when") is **not met**. This
+document explains precisely what failed, the evidence, why, and the concrete
+options to move forward. It is self-contained — no repo access needed to review.
+
+---
+
+## 1. What Phase 2 is supposed to do
+
+Ingest a public GitHub repo (Python only, v1), then answer questions about it
+with citations. Phase 2 is the **retrieval** layer only (no LLM agent yet — that
+is Phase 3). The pipeline:
+
+1. **Chunk** the code on AST boundaries (tree-sitter): one chunk per function /
+   method / class-skeleton / module, each with an enrichment header
+   (file path, dotted symbol name, signature, imports).
+2. **Embed** each chunk with a bi-encoder (`BAAI/bge-small-en-v1.5`, 384-dim,
+   cosine) and store in Postgres + `pgvector` (HNSW index), alongside a Postgres
+   full-text-search (FTS) `tsvector` column.
+3. **Retrieve** via one hybrid query — `hybrid_search()`:
+   - **vector** leg: top-40 by cosine similarity.
+   - **FTS** leg: top-40 by `ts_rank` using `plainto_tsquery` (AND semantics).
+   - **RRF fusion**: combine the two ranked lists with Reciprocal Rank Fusion
+     (`score = Σ 1/(60 + rank)`), one SQL statement. → fusion top-40.
+   - **Exact-symbol injection**: pull identifier-like tokens from the query
+     (things with `_`, a dot, or CamelCase) and add any chunks whose dotted
+     symbol matches, to catch "where is `verify_token` defined".
+   - **Rerank**: score every candidate `(query, header+code)` pair with a
+     cross-encoder (`BAAI/bge-reranker-v2-m3`), return the top-10.
+
+## 2. The benchmark and the metric
+
+- **Corpus:** `encode/httpx` pinned at commit `b5addb64…`. The ingest cloned
+  the repo and, by luck, `master`'s HEAD is *still exactly that pinned commit*,
+  so there is **no version drift** (a path-drift guard confirmed every
+  ground-truth file is present). 60 files → **1522 chunks**.
+- **Ground truth:** 20 frozen questions, each with ≥1 acceptable answer file
+  (and optional symbol names). Three tiers: `locate` (q01–q07, easy — the
+  identifier is in the question), `conceptual` (q08–q15, "how does X work"),
+  `flow` (q16–q20, "what happens when…"). 11 of 20 have **zero lexical overlap**
+  between question and answer symbols — deliberately, to punish pure keyword
+  search.
+- **Metric:** `hit@k` (k = 5, 10). A question "hits" if any of the top-k results
+  is in the answer file set (or matches an answer symbol). This is a **recall**
+  metric: did the right chunk make the top-k at all.
+- **Acceptance gate (done-when):** *"hybrid+rerank hit@10 ≥ every single-signal
+  mode."* Single-signal = vector-only and FTS-only. In plain terms: **the full
+  pipeline must not do worse than its simplest part.**
+
+## 3. The result
+
+Eval over all 20 questions, four modes:
+
+| Mode                     | hit@5        | hit@10         |
+|--------------------------|--------------|----------------|
+| vector (single-signal)   | 0.80 (16/20) | **0.85 (17/20)** |
+| fts (single-signal)      | 0.05 (1/20)  | 0.05 (1/20)    |
+| hybrid (RRF, no rerank)  | 0.80 (16/20) | 0.85 (17/20)   |
+| **hybrid+rerank** (prod) | 0.75 (15/20) | **0.80 (16/20)** |
+
+**Gate fails:** `hybrid+rerank@10 = 0.80` is **below** `vector@10 = 0.85`.
+The full pipeline is *worse* than the vector leg alone.
+
+Per-question hit@10 (✓ = hit): the only differences are
+
+- `vector`/`hybrid` hit **17**: everything except **q09, q10, q15**.
+- `hybrid+rerank` hits **16**: everything except **q09, q10, q14, q15**.
+
+So the pipeline loses exactly **one** question versus vector: **q14**
+("How does httpx turn a streamed byte body into a string as chunks arrive?",
+answer: `TextDecoder` in `httpx/_decoders.py`). It also loses one at hit@5
+(15 vs 16).
+
+## 4. What actually failed — diagnosis
+
+**(a) Fusion, injection, and the vector leg are all sound; the reranker is the
+hit@10 regression — but the FTS leg is separately, more seriously broken (below).**
+`hybrid` (RRF fusion, *no* rerank) equals `vector` at 0.85. The hit@10 regression
+(17 → 16) is entirely the cross-encoder rerank. But `fusion == vector` *to the
+decimal* is itself a red flag — investigated in §4bis.
+
+### 4bis. The FTS leg contributes nothing — confirmed root cause
+
+FTS-only scores 0.05 (1/20). Direct DB inspection (via `psql`, no models) shows
+the **plumbing is sound** and the cause is **query construction**:
+
+- The `tsv` column is populated (`Timeout` chunk 722 chars, `urlparse` 1193, both
+  non-null) and the GIN index exists (`chunks_tsv … USING gin (tsv)`). No type
+  mismatch, no NULL tsquery.
+- The query builder uses **`plainto_tsquery`, which ANDs every term.** A full
+  question becomes a conjunction of *all* its stemmed words:
+  - q01 → `'request' & 'timeout' & 'configur' & 'class' & 'defin'` → **0 chunks**
+    match all five (no code chunk contains every sentence word).
+  - q03 → `'url' & 'pars' & 'function' & 'urlpars' & 'implement'` → **0**.
+- Yet the *key* term alone matches plenty: `to_tsquery('timeout')` → 295 chunks;
+  `to_tsquery('urlparse')` → 73. The truth chunks **do** contain their key term
+  (`Timeout` chunk matches `timeout`, `urlparse` chunk matches `urlparse`) — they
+  are only excluded because the surrounding question words are ANDed in.
+- Consequence: **fusion's FTS CTE returns 0 rows for essentially every question**,
+  so RRF degenerates to vector-only — hence `fusion == vector == 0.85` exactly.
+- `websearch_to_tsquery` also ANDs unquoted terms → also 0. **OR-combining the
+  same lexemes** (`to_tsquery('request | timeout | … ')`) returns 845 (q01) / 1227
+  (q03) chunks, with the truth chunk ranked #21 / #10 — inside `FTS_K = 40`, so
+  RRF *would* get a real lexical signal.
+
+**This is not "weak FTS," it is a dead FTS leg** caused by `plainto_tsquery`'s
+AND semantics being unsatisfiable for verbose NL questions over code. The
+`locate` tier isn't rescued by it either, because the question is a full sentence,
+not a bare symbol — literal-symbol matching is the job of §5.2 **injection**
+(which matches `chunks.symbol` directly), not FTS. Fixing the FTS query
+construction (OR-combine, or extract salient terms, possibly weighted) is likely
+the **highest-value change available** — it is why the hybrid never beats vector,
+and it would give the reranker a lexical signal to fuse rather than a vector-only
+pool. See Option E.
+
+**(b) The reranker had the right chunk and still demoted it.**
+For q14, the `TextDecoder` chunk is ranked in the **top-10 by the vector leg**
+(vector hits q14), so it is unquestionably in the reranker's candidate pool. The
+cross-encoder then scored 10+ other chunks higher, pushing it past rank 10. In
+other words: **the bi-encoder's cosine similarity was a better top-10 signal for
+this question than the cross-encoder's relevance score.** (An earlier spot-check
+on the easy q01 showed the same shape: the reranker put `BaseClient` above the
+obviously-correct `Timeout` class.)
+
+**(c) Why a reranker is structurally unlikely to *win* hit@10.**
+A reranker does not add candidates — it only **re-orders a fixed pool**. It can
+therefore only *improve* hit@k if its ordering places a truth chunk in the top-k
+that the fusion ordering placed *below* k. At k=10 that head-room is tiny
+(fusion already gets 17/20 into the top-10), while the **downside** — demoting a
+correct chunk from rank ≤10 to rank >10 — is fully available. Cross-encoders are
+built to win at **low k / MRR** (getting the single best answer to rank 1–3),
+which is precisely the signal Phase 3's agent needs to pick an entry point — and
+which **this gate does not measure.** So the metric is, arguably, testing the
+reranker where it is weakest.
+
+**(d) The three questions everything misses are a different problem.**
+`q09, q10, q15` are missed by **every** mode including vector — their answer
+chunk is not even in the fused pool. These are the hard "conceptual/flow"
+questions (e.g. compression handling, multipart body building, charset origin).
+Retrieval alone cannot reach them; closing this gap is exactly the thesis of
+**Phase 3** (an agent that traverses the symbol graph — imports/calls — to reach
+code the retriever missed). They are out of scope for the Phase 2 gate and are
+*not* the reranker's fault.
+
+**Summary:** nothing is broken in fusion/embedding/injection. The reranker, a
+general-purpose multilingual passage model applied to Python code, mildly
+mis-orders borderline conceptual-query chunks and nets **−1 question at hit@10,
+−1 at hit@5** relative to plain fusion. The gate as written can essentially only
+be met if the reranker *never* demotes a top-10 truth chunk — a high bar for a
+recall metric.
+
+## 5. A second, environmental failure (verification blocked)
+
+The dev machine has **8 GB RAM**. The embedding model is small (~130 MB) and
+fine, but the **reranker is ~2.4 GB in memory**. The first eval run completed
+(~8 min, slow from swapping). After that, the machine stayed swap-saturated
+(~1.9 GB swap in use, near-zero free RAM), and **every subsequent process that
+loads the reranker blocked at import/startup** — sleeping at ~0 % CPU with torch
+never resident, i.e. thrashing on swap I/O, not computing.
+
+Consequences:
+- `debug_search.py` (the per-signal inspector) could not finish a run here.
+- The **unit + integration tests could not be executed** on this host (even the
+  no-torch tests stalled once swap was saturated). They are **written** and
+  ruff-clean; they need a run on a healthier machine.
+- Mitigation applied: the embedder module now imports `sentence_transformers`
+  **lazily** inside its factory functions, so importing the retrieval code or
+  the pure-logic tests no longer drags in torch. This makes the unit tests
+  runnable without the 2.4 GB load; only the marked integration test needs it.
+
+This is an environment limitation, not a code defect, but it means **any fix
+below must be validated on a host that can hold the reranker in RAM** (≥16 GB,
+or a GPU box, or a smaller reranker).
+
+## 6. Options to continue (for the reviewer to weigh)
+
+All model-running options require a capable host.
+
+**Option A — Fusion floor / score blend (make the pipeline monotonic).**
+Change the rerank step so the returned top-k can never be *worse* than pure
+fusion: e.g. final order = `α·norm(cross_encoder) + (1−α)·norm(rrf)`, or simply
+guarantee the top-N fusion hits are retained. This makes `hybrid+rerank ≥ hybrid`
+by construction, so the gate would pass. *Cost:* deviates from the current spec
+("return top-k by cross-encoder score") — needs a design decision recorded, and
+a value for `α` chosen on a validation signal (not hand-tuned to q14). Re-run the
+full eval to confirm.
+
+**Option B — Measure the reranker where it can win (low-k / MRR).**
+Add `hit@1`, `hit@3`, and MRR to the eval and re-run. If the reranker improves
+those (very likely — that's what cross-encoders do), you have evidence its value
+is precision for the Phase 3 agent's entry point, and you can consciously accept
+that it doesn't help hit@10. This reframes the gate rather than changing the
+algorithm.
+
+**Option C — Accept fusion-only hybrid as the Phase 2 baseline.**
+`hybrid` (no rerank) already meets the bar (0.85 ≥ 0.85). Ship Phase 2 with
+rerank *off* (or behind a flag) and revisit reranking in Phase 3 where low-k
+precision actually matters and can be measured against agent answer quality.
+Cheapest path; defers the reranker question.
+
+**Option D — Swap the reranker.** The current model is general-purpose and
+multilingual. A code-aware or smaller reranker might both fit in less RAM and
+rank code better. Larger change; needs the same validation.
+
+**Option E — Fix the FTS query construction (likely the biggest lever).**
+Replace `plainto_tsquery` (AND) with an OR-combination of the query's salient
+lexemes (or extract identifier/keyword terms and OR them, optionally weighted by
+`setweight`/`ts_rank_cd`). Evidence (§4bis) shows this turns the FTS leg from 0
+rows into a ranked list that contains the truth chunk within `FTS_K`, so RRF
+finally fuses a real lexical signal instead of collapsing to vector-only. This is
+a §5.1 change (needs a SPEC reconciliation + DECISIONS entry) and a full re-run,
+but it is the most likely way to make `hybrid` actually beat `vector` — and it
+gives the reranker a better pool to work from. **This does *not* need the
+reranker to iterate** (measure `--mode fts` and `--mode hybrid`), so it can be
+developed on the 8 GB host.
+
+**Recommended sequence:** **E first** (fix the dead FTS leg — highest value, and
+iterable without the reranker), then **B** (measure the reranker at hit@3/MRR now
+that eval.py reports them), then **A or C** for the reranker decision. Avoid
+changing the reranker before FTS is fixed and low-k numbers exist, or you risk
+optimizing the wrong component against the wrong metric.
+
+> **Note:** `eval.py` now reports **hit@3, hit@5, hit@10, and MRR** (added
+> 2026-07-25; hit@5/@10 unchanged). hit@3/MRR are the columns that reveal
+> reranker behavior; they need a capable host to populate for the rerank mode,
+> but the metric code is unit-tested and runs model-free for `--mode fts`.
+
+## 7. Specific questions for the reviewer
+
+1. Is hit@10 the right acceptance gate for a component whose job is low-k
+   precision? Should the done-when be restated (e.g. "rerank must not *reduce*
+   hit@10, and must *improve* MRR")?
+2. Is a "fusion floor" (Option A) a principled fix or a metric hack? (It
+   guarantees monotonicity but partially neuters the reranker.)
+3. Given the 8 GB constraint, is a smaller reranker (Option D) worth prioritizing
+   so the whole loop is iterable on modest hardware?
+4. Are q09/q10/q15 acceptable to leave to Phase 3, or should Phase 2 retrieval be
+   pushed (e.g. query expansion, larger pools) to reach some of them first?
+
+## 8. Reproduce on a capable host
+
+```bash
+cd backend
+uv sync
+uv run python scripts/migrate.py                              # applies 001+002
+uv run python -m app.ingest.cli https://github.com/encode/httpx --db
+uv run python scripts/eval.py --mode all                      # appends to docs/EVAL.md
+uv run python scripts/debug_search.py --repo https://github.com/encode/httpx \
+    --query "How does httpx turn a streamed byte body into a string as chunks arrive?"
+uv run pytest -m "not integration"                            # unit tests (no model)
+uv run pytest -m integration                                  # needs DB + reranker RAM
+```
+
+The gate check is the `hybrid+rerank` vs `vector` row of the `--mode all` table.
