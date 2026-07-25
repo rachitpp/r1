@@ -210,3 +210,30 @@ pool) barely reflects — so the earlier done-when tested the reranker where it 
 weakest. This is a generic metric addition, not a gate change; the recall gate
 (hit@10) is untouched. Metric math is unit-tested (`test_eval_parsing.py`), and
 `search()` now loads the embedder lazily so `--mode fts` runs fully model-free.
+
+## 2026-07-25 — §5.1 FTS leg: OR-combine content lexemes (fixes the dead FTS leg)
+Applies the fix identified in the "FTS leg is dead" entry above (references it;
+supersedes nothing else). The §5.1 FTS CTE and `_fts_leg` now build the tsquery
+as `to_tsquery('english', replace(plainto_tsquery('english', $q)::text, ' & ',
+' | '))` — i.e. take `plainto_tsquery`'s english-stopword-stripped, stemmed
+lexemes and OR them instead of ANDing. Everything else in §5.1 is unchanged:
+FTS_K=40, RRF_K=60, the vector leg, and §5.2 injection. SPEC §5.1 updated.
+
+**Mechanism verified on q01/q03 (not fitted to them).** Direct DB checks: the OR
+query for q01 is `'request' | 'timeout' | 'configur' | 'class' | 'defin'`,
+matching 845 chunks with the `Timeout` truth chunk at ts_rank #21; q03 matches
+1227 with `urlparse` at #10 — both inside FTS_K=40, versus **0** rows under the
+old AND. Note the truth ranks equal the earlier bare-OR (#21/#10): `plainto`
+already removes english stopwords, so "content lexemes, english-stopwords
+removed" *is* that OR — the residual rank dilution comes from generic content
+words (`class`, `function`, `implement`) that are **not** english stopwords and
+so are out of scope for an english-config fix (removing them would need a custom
+code stoplist — deferred, and tuning-adjacent).
+
+**Honest expectation vs the acceptance signal.** FTS is now a real recall signal
+(0 rows → hundreds), but on this benchmark it is unlikely to make `hybrid` beat
+`vector` at hit@10: the vector-missed questions are semantic, and FTS surfaces
+their truth files only at mid-ranks (q09 #32, q15 #14, q10 #176 — too generic),
+where an FTS-only RRF contribution rarely reaches the fused top-10. The eval run
+is the arbiter; numbers recorded in EVAL.md and reported as-is. Reranker mode is
+left wired but un-benchmarked (8 GB host swap-stalls on the 2.4 GB model).

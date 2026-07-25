@@ -250,8 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--mode",
         default="all",
-        choices=["all", *MODES],
-        help="retrieval mode to evaluate (default: all)",
+        help="'all', one mode, or a comma list (e.g. vector,fts,hybrid). "
+        f"Modes: {', '.join(MODES)}.",
     )
     parser.add_argument(
         "--repo",
@@ -259,7 +259,14 @@ def main(argv: list[str] | None = None) -> int:
         help="repo url or id (default: the benchmark repo from EVAL.md)",
     )
     args = parser.parse_args(argv)
-    modes: list[Mode] = list(MODES) if args.mode == "all" else [args.mode]
+    if args.mode == "all":
+        modes: list[Mode] = list(MODES)
+    else:
+        requested = [m.strip() for m in args.mode.split(",") if m.strip()]
+        unknown = [m for m in requested if m not in MODES]
+        if unknown:
+            parser.error(f"unknown mode(s): {unknown}; valid: {list(MODES)}")
+        modes = [m for m in MODES if m in requested]  # canonical order, deduped
     return asyncio.run(run(modes, args.repo))
 
 

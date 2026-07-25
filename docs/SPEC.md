@@ -211,9 +211,11 @@ WITH vec AS (
 ),
 fts AS (
   SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC) AS rnk
-  FROM chunks, plainto_tsquery('english', $3) AS q
+  FROM chunks,
+       to_tsquery('english',
+         replace(plainto_tsquery('english', $3)::text, ' & ', ' | ')) AS q
   WHERE repo_id = $2 AND tsv @@ q
-  LIMIT 40
+  ORDER BY ts_rank(tsv, q) DESC LIMIT 40
 )
 SELECT COALESCE(v.id, f.id) AS chunk_id,
        COALESCE(1.0/(60 + v.rnk), 0) + COALESCE(1.0/(60 + f.rnk), 0) AS rrf
@@ -224,6 +226,18 @@ LIMIT 40;
 Set `SET LOCAL hnsw.ef_search = 100;` before the query — HNSW applies the
 `repo_id` filter post-scan, and the default ef_search starves filtered
 results on multi-repo databases.
+
+**FTS tsquery construction (OR, not AND).** The FTS leg **OR-combines** the
+query's content lexemes rather than ANDing them. `plainto_tsquery('english', …)`
+already strips english stopwords and stems; we take its output and swap `&` for
+`|` (`replace(…::text, ' & ', ' | ')`, re-parsed with `to_tsquery`). A bare
+`plainto_tsquery` ANDs every term, which is unsatisfiable for a full
+natural-language question over code (no single chunk contains all of
+`request & timeout & class & defined`), so the FTS CTE returned zero rows and
+RRF silently degenerated to vector-only. OR-combining makes FTS a lexical
+**recall** signal; exact-symbol matching stays with §5.2 injection, not FTS. An
+all-stopword query yields an empty tsquery that matches nothing (no error).
+(Superseded `plainto_tsquery`; see DECISIONS 2026-07-25 "FTS leg is dead".)
 
 ### 5.2 Exact-symbol injection
 Extract identifier-like tokens from the query

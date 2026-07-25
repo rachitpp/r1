@@ -204,7 +204,16 @@ Cheapest path; defers the reranker question.
 multilingual. A code-aware or smaller reranker might both fit in less RAM and
 rank code better. Larger change; needs the same validation.
 
-**Option E — Fix the FTS query construction (likely the biggest lever).**
+**Option E — Fix the FTS query construction (likely the biggest lever). [APPLIED
+2026-07-25]** Implemented: the §5.1 FTS leg now OR-combines `plainto_tsquery`'s
+english-stopword-stripped, stemmed lexemes (swap `&`→`|`) instead of ANDing them.
+Result: **fts hit@10 0.05 → 0.65 (13/20)**, MRR 0.273 — the leg is now a real
+recall signal. Caveat proven on q01/q03: the truth-chunk rank stays #21/#10
+because the residual diluters (`class`, `function`, `defined`, …) are *content
+words*, not english stopwords; the single-salient-term rank is #2/#9. Whether
+this makes `hybrid` beat `vector` at hit@10 is **not yet measured** — vector and
+hybrid need the embedder (torch), which the 8 GB host can't load. Original
+proposal follows.
 Replace `plainto_tsquery` (AND) with an OR-combination of the query's salient
 lexemes (or extract identifier/keyword terms and OR them, optionally weighted by
 `setweight`/`ts_rank_cd`). Evidence (§4bis) shows this turns the FTS leg from 0

@@ -186,10 +186,15 @@ Done when:
 
 > **Phase 2 status (2026-07-25):** store + retrieve + eval are built and
 > ruff-clean; store path and all four retrieval modes were exercised live.
-> The build is blocked at the done-when gate by the rerank regression above,
-> and local test execution is blocked by the 8 GB host swap-thrashing on the
-> reranker. Phase 2 stays **in progress** until the reranker gate is resolved
-> on a capable host. Do not start Phase 3.
+> Two diagnoses landed after the first eval: (1) the FTS leg was *dead*, not
+> weak — `plainto_tsquery` ANDs terms, so it returned 0 rows and hybrid
+> collapsed to vector-only; fixed by OR-combining the stopword-stripped
+> lexemes (SPEC §5.1 updated), which lifts **fts hit@10 from 0.05 → 0.65**
+> (measured — fts is model-free). (2) eval.py now also reports hit@3 + MRR.
+> **Still unmeasured on this host:** `vector`/`hybrid`/`hybrid+rerank` all need
+> a model load, and this 8 GB box swap-thrashes on torch — so hybrid-vs-vector
+> and the rerank gate must be run on a capable host. Phase 2 stays
+> **in progress** until that run confirms the done-when. Do not start Phase 3.
 
 Do not: write any agent code; hand-tune against individual EVAL questions
 (script only); add a dedicated vector DB; expose anything over HTTP.

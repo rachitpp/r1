@@ -136,6 +136,24 @@ async def _inject_symbol_ids(
 # ---------------------------------------------------------------------------
 
 
+def _fts_query_sql(param: str) -> str:
+    """SQL expression building the FTS tsquery from bind ``param`` (SPEC §5.1).
+
+    ``plainto_tsquery`` strips english stopwords and stems, but ANDs every term —
+    unsatisfiable for a full NL question over code, so the FTS leg returned zero
+    rows and hybrid collapsed to vector-only (see DECISIONS 2026-07-25, FTS
+    finding). We OR the same content lexemes instead by swapping ``&`` for ``|``,
+    making FTS a lexical *recall* signal. Exact-symbol matching stays with §5.2
+    injection, not FTS. Returns an empty tsquery (matches nothing, no error) when
+    the query is all stopwords. The fragment carries only a placeholder — the
+    query text always arrives as a bind parameter.
+    """
+    return (
+        "to_tsquery('english', "
+        f"replace(plainto_tsquery('english', {param})::text, ' & ', ' | '))"
+    )
+
+
 async def _vector_leg(
     conn: asyncpg.Connection, repo_id: UUID, qvec: list[float], limit: int
 ) -> list[tuple[int, float]]:
@@ -159,9 +177,9 @@ async def _fts_leg(
 ) -> list[tuple[int, float]]:
     """Top-``limit`` chunk ids by FTS ts_rank, with rank scores."""
     rows = await conn.fetch(
-        """
+        f"""
         SELECT c.id, ts_rank(c.tsv, q) AS score
-        FROM chunks c, plainto_tsquery('english', $1) AS q
+        FROM chunks c, {_fts_query_sql("$1")} AS q
         WHERE c.repo_id = $2 AND c.tsv @@ q
         ORDER BY score DESC
         LIMIT $3
@@ -183,7 +201,7 @@ async def _fusion(
     starves filtered results on multi-repo databases.
     """
     rows = await conn.fetch(
-        """
+        f"""
         WITH vec AS (
           SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1) AS rnk
           FROM chunks WHERE repo_id = $2
@@ -191,7 +209,7 @@ async def _fusion(
         ),
         fts AS (
           SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC) AS rnk
-          FROM chunks, plainto_tsquery('english', $3) AS q
+          FROM chunks, {_fts_query_sql("$3")} AS q
           WHERE repo_id = $2 AND tsv @@ q
           ORDER BY ts_rank(tsv, q) DESC LIMIT $5
         )
