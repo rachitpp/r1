@@ -15,7 +15,7 @@ architectural choice made along the way.
 |---|---|---|---|
 | 0 | Foundations | done | 1 day |
 | 1 | Parse & chunk (CLI) | done | 1–2 weekends |
-| 2 | Store & retrieve | not started | 1–2 weekends |
+| 2 | Store & retrieve | in progress | 1–2 weekends |
 | 3 | Symbol graph & agent | not started | 2 weekends |
 | — | **Go/no-go checkpoint** | — | — |
 | 4 | API & worker | not started | 1–2 weekends |
@@ -167,11 +167,29 @@ Tasks:
   results block into EVAL.md
 
 Done when:
-- [ ] Benchmark repo ingested to Postgres; chunk count recorded
-- [ ] eval.py runs all four modes and records numbers in EVAL.md
+- [x] Benchmark repo ingested to Postgres; chunk count recorded — httpx @
+      `b5addb64` (== EVAL pinned SHA), 60 files, **1522 chunks** (real
+      tokenizer; 1371 heuristic + 151). status `ready`.
+- [x] eval.py runs all four modes and records numbers in EVAL.md — dated
+      results block appended 2026-07-25 (vector/fts/hybrid/hybrid+rerank).
 - [ ] hybrid+rerank ≥ every single-signal mode on hit-rate@10; if not,
-      diagnose with debug_search.py before proceeding
-- [ ] Idempotent re-ingest verified by test
+      diagnose with debug_search.py before proceeding — **NOT met:**
+      hybrid+rerank@10 = 0.80 (16/20) < vector@10 = 0.85 (17/20). Diagnosed
+      (single-question rerank regression on q14; see DECISIONS 2026-07-25).
+      Fix deferred — needs a host that can run the 2.4 GB reranker (this 8 GB
+      machine swap-thrashes on it) plus a SPEC §5.3 reconciliation.
+- [~] Idempotent re-ingest verified by test — integration test written
+      (`tests/retrieval/test_integration_db.py`: ingest twice, counts stable,
+      one repo row, search smoke); delete-and-replace verified **manually**
+      during ingest, but the automated test could not be executed on this
+      swap-thrashed host (loads the reranker). Run on a healthy machine.
+
+> **Phase 2 status (2026-07-25):** store + retrieve + eval are built and
+> ruff-clean; store path and all four retrieval modes were exercised live.
+> The build is blocked at the done-when gate by the rerank regression above,
+> and local test execution is blocked by the 8 GB host swap-thrashing on the
+> reranker. Phase 2 stays **in progress** until the reranker gate is resolved
+> on a capable host. Do not start Phase 3.
 
 Do not: write any agent code; hand-tune against individual EVAL questions
 (script only); add a dedicated vector DB; expose anything over HTTP.

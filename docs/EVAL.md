@@ -191,3 +191,40 @@ the repo root.
 ## Results
 
 _None yet. `scripts/eval.py` (Phase 2) appends dated result blocks here._
+
+### Results — 2026-07-25
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks, 20 questions. Modes: vector, fts, hybrid, hybrid+rerank.
+
+| Mode | hit@5 | hit@10 |
+|---|---|---|
+| vector | 0.80 (16/20) | 0.85 (17/20) |
+| fts | 0.05 (1/20) | 0.05 (1/20) |
+| hybrid | 0.80 (16/20) | 0.85 (17/20) |
+| hybrid+rerank | 0.75 (15/20) | 0.80 (16/20) |
+
+Per-question hit@10:
+
+| q | vector | fts | hybrid | hybrid+rerank |
+|---|---|---|---|---|
+| q01 | ✓ | · | ✓ | ✓ |
+| q02 | ✓ | ✓ | ✓ | ✓ |
+| q03 | ✓ | · | ✓ | ✓ |
+| q04 | ✓ | · | ✓ | ✓ |
+| q05 | ✓ | · | ✓ | ✓ |
+| q06 | ✓ | · | ✓ | ✓ |
+| q07 | ✓ | · | ✓ | ✓ |
+| q08 | ✓ | · | ✓ | ✓ |
+| q09 | · | · | · | · |
+| q10 | · | · | · | · |
+| q11 | ✓ | · | ✓ | ✓ |
+| q12 | ✓ | · | ✓ | ✓ |
+| q13 | ✓ | · | ✓ | ✓ |
+| q14 | ✓ | · | ✓ | · |
+| q15 | · | · | · | · |
+| q16 | ✓ | · | ✓ | ✓ |
+| q17 | ✓ | · | ✓ | ✓ |
+| q18 | ✓ | · | ✓ | ✓ |
+| q19 | ✓ | · | ✓ | ✓ |
+| q20 | ✓ | · | ✓ | ✓ |
+

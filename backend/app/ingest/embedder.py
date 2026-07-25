@@ -5,16 +5,17 @@ hard rule 3), including the CrossEncoder used for reranking. Everything else
 goes through the ``get_embedder()`` / ``get_reranker()`` factory singletons
 below; ``retrieval/`` imports those factories, never the library.
 
-Both models load once per process (lazily, on first ``get_*`` call) and are
-cached for the lifetime of the process — never per request. Model ids and the
-optional HF token come from ``app.config``.
+The ``sentence_transformers`` import is deferred into the constructors so that
+merely importing this module (or ``retrieval``, or the pure helpers/tests that
+depend on it) does not drag in torch. Both models load once per process
+(lazily, on first ``get_*`` call) and are cached for the lifetime of the
+process — never per request. Model ids and the optional HF token come from
+``app.config``.
 """
 
 from __future__ import annotations
 
 from typing import Protocol
-
-from sentence_transformers import CrossEncoder, SentenceTransformer
 
 from app.config import RERANK_PASSAGE_TOKENS, get_settings
 
@@ -37,6 +38,8 @@ class SentenceTransformerEmbedder:
     """``Embedder`` backed by a sentence-transformers bi-encoder."""
 
     def __init__(self, model_name: str, token: str | None = None) -> None:
+        from sentence_transformers import SentenceTransformer
+
         self._model = SentenceTransformer(model_name, token=token)
         dim = self._model.get_sentence_embedding_dimension()
         if dim is None:  # pragma: no cover — every real ST model reports a dim
@@ -70,6 +73,8 @@ class Reranker:
     """
 
     def __init__(self, model_name: str, token: str | None = None) -> None:
+        from sentence_transformers import CrossEncoder
+
         self._model = CrossEncoder(
             model_name, max_length=RERANK_PASSAGE_TOKENS, token=token
         )

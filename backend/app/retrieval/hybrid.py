@@ -48,6 +48,31 @@ class SearchHit(TypedDict):
     preview: str
 
 
+def rrf_fuse(rank_lists: list[list[int]], k: int = RRF_K) -> list[tuple[int, float]]:
+    """Reciprocal-rank fusion over per-signal ranked id lists (SPEC §5.1 formula).
+
+    Each list is ranked best-first (rank 1 = index 0); an id's score is the sum
+    of ``1/(k + rank)`` across the lists it appears in. Returns ``(id, score)``
+    sorted by score descending.
+
+    Production fuses in a single SQL statement (see :func:`_fusion`); this pure
+    mirror of the same formula exists for unit tests and any non-SQL caller.
+    """
+    scores: dict[int, float] = {}
+    for ids in rank_lists:
+        for rank, cid in enumerate(ids, start=1):
+            scores[cid] = scores.get(cid, 0.0) + 1.0 / (k + rank)
+    return sorted(scores.items(), key=lambda t: (-t[1], t[0]))
+
+
+def qualname_matches(qualname: str | None, short_name: str) -> bool:
+    """EVAL symbol-match rule: ``qualname`` equals ``short_name`` or ends with
+    ``"." + short_name`` (e.g. ``Timeout`` matches ``httpx._config.Timeout``)."""
+    if qualname is None:
+        return False
+    return qualname == short_name or qualname.endswith(f".{short_name}")
+
+
 # ---------------------------------------------------------------------------
 # Exact-symbol injection (SPEC §5.2, Reconciliation 1)
 # ---------------------------------------------------------------------------

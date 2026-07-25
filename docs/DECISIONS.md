@@ -108,3 +108,73 @@ clean (three trivial Phase 0/1 findings — UP035, I001, B905 — fixed in
 one commit), and `mypy app` runs on the normal compiled (`mypyc`) build,
 not the pure-Python fallback. The Phase 0/1 "ruff deferred / WDAC" notes
 in ROADMAP are cleared accordingly. Phase 2 build proceeds.
+
+## 2026-07-25 — Phase 2 reconciliations (§5.2 injection, real tokenizer, eval guard)
+The three reconciliations mandated by the Phase 2 prompt, applied:
+1. **§5.2 without a symbols table.** The symbols table is Phase 3, so exact-
+   symbol injection matches against `chunks.symbol`: a candidate identifier
+   `name` matches where `symbol = name` OR `symbol LIKE '%.' || name`. Identifier
+   extraction keeps query tokens that have an underscore, a dot, or mixed case
+   (CamelCase); plain lowercase words and all-caps acronyms are left to FTS.
+   Phase 3 may migrate this to `symbols(repo_id, name)` if it proves better.
+2. **Real token counter.** The ingestion pipeline now uses the embedder's
+   tokenizer (`SentenceTransformerEmbedder.token_len`) for oversize-split
+   decisions, replacing Phase 1's `HeuristicTokenCounter` (which is kept for the
+   model-free unit tests). This supersedes the count in the 2026-07-24 heuristic-
+   counter entry: httpx re-chunked 1371 → **1522** chunks (+151), because BPE
+   counts code as more tokens than `len//4` estimated, tripping more §2.5 splits.
+3. **Eval path guard.** `scripts/eval.py` warns loudly if any `truth.files`
+   entry is absent from the `files` table, catching path-format drift before it
+   silently zeroes a question.
+
+## 2026-07-25 — Phase 2 done-when NOT met: rerank underperforms vector at hit@10
+**Result.** `scripts/eval.py --mode all` on httpx @ `b5addb64` (1522 chunks,
+20 questions) — the head clone landed exactly on the EVAL-pinned SHA, so there
+is no version drift and the truth-file guard reported none:
+
+| Mode | hit@5 | hit@10 |
+|---|---|---|
+| vector | 0.80 (16/20) | **0.85 (17/20)** |
+| fts | 0.05 (1/20) | 0.05 (1/20) |
+| hybrid (RRF, no rerank) | 0.80 (16/20) | 0.85 (17/20) |
+| hybrid+rerank | 0.75 (15/20) | **0.80 (16/20)** |
+
+The done-when ("hybrid+rerank hit@10 ≥ every single-signal mode") **fails**:
+0.80 < 0.85. Per the ROADMAP/prompt rule, Phase 2 is **not** marked done.
+
+**Diagnosis (from the per-question grid + the q01 smoke test).** `hybrid`
+(fusion, no rerank) equals `vector` at 0.85, so RRF fusion, symbol injection and
+the vector leg are all sound — the regression is entirely the cross-encoder
+rerank, which evicts exactly one truth chunk (q14, `httpx._decoders.TextDecoder`)
+from the top-10 that fusion had ranked inside it; at hit@5 it likewise drops one
+(16 → 15). Two compounding facts:
+- **Structural.** A reranker only reorders its input pool; it cannot add recall.
+  So `hybrid+rerank hit@k ≤ hybrid hit@k` for any k, and the done-when can be met
+  only if the rerank never pushes a top-k truth chunk past rank k. hit@10 is thus
+  a metric a reranker can at best tie, never win — its value is precision at low k
+  (hit@1/@3/MRR), which this check does not measure.
+- **Empirical.** On this Python corpus, `bge-reranker-v2-m3` (a general-purpose
+  multilingual passage reranker) mis-orders borderline conceptual-query chunks
+  (q14, and the q01 smoke test put `BaseClient` above the obvious `Timeout`).
+- q09/q10/q15 are missed by *every* mode including vector — retrieval-hard
+  questions whose truth chunk is not even in the fused pool; not a rerank issue,
+  and the kind of gap the Phase 3 agent's graph traversal is meant to close.
+
+**Environment constraint (why this wasn't iterated to a fix here).** The dev
+machine has 8 GB RAM. Loading the ~2.4 GB reranker thrashes swap; after the first
+(successful, ~8 min) eval, subsequent model-loading processes block on swap I/O
+at startup (sleeping, ~0 % CPU, torch never resident). `debug_search.py` and the
+unit-test run could not complete for this reason — an environmental limit, not a
+code defect. (Mitigation applied: `embedder.py` now imports `sentence_transformers`
+lazily inside the factories, so importing `retrieval`/helpers/tests no longer
+drags in torch.)
+
+**Proposed fixes (deferred — need a host that can run the reranker + a rerun,
+and a SPEC §5.3 reconciliation + DECISIONS entry before adoption):**
+1. Evaluate the reranker at **hit@1/@3 and MRR**, the metrics it can actually
+   improve, to judge its worth for the agent's entry points.
+2. Add a **fusion floor / score blend** so the returned top-k is never worse than
+   pure fusion (e.g. `final = α·norm(ce) + (1−α)·norm(rrf)`, or guarantee the top
+   fusion hits survive), making the pipeline monotonically ≥ hybrid.
+No fix is applied yet: applying an unvalidated algorithm change and re-declaring
+the metric passed would be papering over the result.
