@@ -237,3 +237,75 @@ their truth files only at mid-ranks (q09 #32, q15 #14, q10 #176 — too generic)
 where an FTS-only RRF contribution rarely reaches the fused top-10. The eval run
 is the arbiter; numbers recorded in EVAL.md and reported as-is. Reranker mode is
 left wired but un-benchmarked (8 GB host swap-stalls on the 2.4 GB model).
+
+## 2026-07-26 — Test shadowing: retrieval targets implementation by default
+**The finding.** The first eval on a host that can hold the reranker failed the
+Phase 2 gate harder than the 8 GB partial run: `hybrid+rerank` hit@10 **0.75** vs
+`vector` **0.85**, `hybrid` **0.80**. Fixing the FTS leg (2026-07-25) raised it
+standalone 0.05 → 0.65 yet *lowered* both fused modes. Per-signal inspection of
+the two regressing questions found a single cause — **test chunks systematically
+outrank implementation chunks for natural-language questions**:
+- **q14** (`TextDecoder`): 9 of the FTS top-10 were `tests/`; vector hit only via
+  a file-level match at rank 10 exactly; RRF displaced it. Lost at *fusion*.
+- **q08** (`BasicAuth`): after rerank `BasicAuth` was absent from the top-10 and
+  the cross-encoder's #1 was
+  `tests/test_auth.py::test_digest_auth_with_401_nonce_counting`. Lost at *rerank*.
+
+Mechanism: tests are written in user vocabulary ("chunk", "stream", "auth") in
+prose-like names and assertions; implementation is terse and identifier-dense.
+Both the lexical leg and a general-purpose passage-relevance cross-encoder score
+tests as more relevant to an NL question than the code implementing the answer.
+On `encode/httpx`, **697 of 1522 chunks (46 %) are test code**. The FTS fix did
+not cause this — it exposed it, by giving test chunks their first path into
+fusion.
+
+**The decision (product-level, not tuning).** Retrieval targets implementation by
+default; tests stay in the corpus, flagged and filtered. Implemented as
+flag-and-filter: `003_is_test.sql` adds `chunks.is_test`; a corpus-wide path rule
+classifies at ingest (SPEC §2.6, no per-file judgment); `hybrid_search(
+include_tests=False)` excludes flagged chunks from **both fusion CTEs and §5.2
+injection**, filtering inside each CTE *before* the per-leg LIMIT (SPEC §5.4).
+The `files` table is untouched — `read_file`/`list_directory` still see tests.
+Phase 3's symbols migration becomes `004`.
+
+**The caveat, stated plainly.** All 20 EVAL truth files are implementation, so
+this change raises measured scores **by construction**. The justification is
+product intent ("how does X work" should answer with the implementation, not a
+test asserting it) and the generality of the mechanism — not the score. The
+counterfactual remains measurable rather than asserted: `--include-tests`
+reproduces the shadowed condition, and both are recorded in the same EVAL.md
+block.
+
+**Pre-registered prediction, and how it fared.** Written into
+`docs/phase-2-rerank-review.md` §6bis *before* the run, with an explicit
+falsifier (if `vector` gained as much as the fused modes, the mechanism story
+would be weak). Measured Δ hit@10, shadowed → implementation-only:
+`fts` +0.15, `hybrid` +0.15, `hybrid+rerank` +0.10, **`vector` +0.05 (smallest)**;
+`fts` hit@3 +0.30 (0.25 → 0.55), the largest single delta. **Falsifier not
+triggered; the mechanism holds.** One prediction missed in the favourable
+direction: q09 and q15 — written off as Phase-3-only — were partly test-shadowed
+and recovered. q10 remains missed by every mode.
+
+**The gate still fails, and Phase 2 stays not-done.**
+`hybrid+rerank` hit@10 **0.85 < `vector` 0.90**. Exclusion moved every mode up
+but did not close the gap, because the regression relocated: `hybrid` alone is
+now **0.95 (19/20)** and the cross-encoder knocks it down to 0.85 (17/20),
+demoting q09 and q14 out of a top-10 that fusion had already found. Stopping here
+per instruction — no further retrieval changes without sign-off.
+
+**Notable consequence for the next decision:** `hybrid` (0.95) now clears every
+single-signal mode (`vector` 0.90, `fts` 0.80), so the gate as written would pass
+with rerank **off** — an option that was dead before exclusion. Recorded as
+evidence, not adopted.
+
+## 2026-07-26 — §5.2 CamelCase test requires a non-initial capital
+Injection was extracting `How` from "How does httpx…" and `When` from "When I
+pass auth…" — sentence-initial capitals read as identifiers (observed in the
+q08/q14 debug runs). A token now counts as CamelCase only with an uppercase
+letter at a **non-initial** position *and* at least one lowercase letter.
+`BasicAuth`, `URLPattern`, `TextDecoder` pass; `How`/`When` and pure acronyms
+(`URL`) fail. **Accepted cost:** single-capital class names (`Timeout`,
+`Response`) are indistinguishable from sentence-initial words and lose §5.2
+injection; the vector and FTS legs still reach them, so injection is a lost
+*extra* signal, not the only path. Superseded the previous mixed-case test; SPEC
+§5.2 carries the rule table.

@@ -93,10 +93,27 @@ top-level statement boundaries into parts. Each part repeats the full
 header with `# Part: 2/3` appended. Never split mid-statement, never
 split on raw character counts.
 
+### 2.6 Test classification (`is_test`)
+Every chunk carries `is_test`, computed from its `file_path` by
+`filters.is_test_path()` at ingest. The rule is corpus-wide and purely
+positional — no per-file judgment, no content inspection:
+
+- any **directory** segment (at any depth) in `TEST_DIR_SEGMENTS` (§12), or
+- the filename is `test_*.py`, `*_test.py`, or in `TEST_FILE_NAMES` (§12).
+
+Only directory segments count for the first rule, so `httpx/test.py` is *not*
+test code while `httpx/tests/thing.py` is. Substrings never match: `protest.py`
+and `contest.py` are implementation.
+
+**This classifies; it does not exclude.** Selection (§2.2) is unchanged, test
+files are still stored in `files`, and `read_file` / `list_directory` still see
+them. Only retrieval filters on the flag (§5.4).
+
 ## §3 Database schema
 
 Migrations are plain SQL in `backend/app/db/migrations/`:
-`001_init.sql` (repos) → `002_files_chunks.sql` → `003_symbols.sql`.
+`001_init.sql` (repos) → `002_files_chunks.sql` → `003_is_test.sql` →
+`004_symbols.sql` (Phase 3).
 
 ```sql
 -- 001
@@ -149,6 +166,11 @@ CREATE INDEX chunks_tsv  ON chunks USING gin (tsv);
 CREATE INDEX chunks_repo_file ON chunks (repo_id, file_path);
 
 -- 003
+-- Test chunks stay in the corpus but are flagged, so retrieval can target
+-- implementation by default (§2.6 classification, §5.4 filter).
+ALTER TABLE chunks ADD COLUMN is_test BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- 004
 CREATE TABLE symbols (
   id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   repo_id    UUID NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
@@ -244,7 +266,45 @@ Extract identifier-like tokens from the query
 (`[A-Za-z_][A-Za-z0-9_]*`, keeping those with an underscore, CamelCase,
 or a dot). Look them up in `symbols(repo_id, name)`; add the chunks of
 any hits (≤10) to the candidate pool. This catches "where is
-verify_token defined" even when FTS stemming mangles it.
+verify_token defined" even when FTS stemming mangles it. Injection
+respects the §5.4 test filter.
+
+**CamelCase test.** A token counts as CamelCase only if it has an uppercase
+letter at a **non-initial** position *and* at least one lowercase letter.
+Without the non-initial requirement, an ordinary capitalised first word is read
+as an identifier — injection was extracting `How` from "How does httpx…" and
+`When` from "When I pass auth…" (observed 2026-07-26). Consequences of the rule,
+accepted deliberately:
+
+| Token | Kept | Why |
+|---|---|---|
+| `BasicAuth`, `URLPattern`, `TextDecoder` | yes | internal capital + lowercase |
+| `How`, `When`, `Where` | no | only capital is initial |
+| `URL`, `HTTP` | no | no lowercase letter |
+| `Timeout`, `Response` | no | indistinguishable from a sentence-initial capital |
+
+The last row is a real cost: single-capital class names lose §5.2 injection. It
+is accepted because the rule cannot separate them from sentence-initial words
+without a symbol-table lookup, and because the vector and FTS legs still reach
+those symbols — injection is an *extra* signal, not the only one.
+
+### 5.4 Corpus condition (test filtering)
+`hybrid_search(..., include_tests=False)` is the default and the production
+behaviour: chunks with `is_test` (§2.6) are excluded from **both fusion CTEs**
+and from §5.2 injection. Filtering happens inside each CTE, *before* the per-leg
+`LIMIT`, so a test chunk never consumes a top-`VEC_K`/`FTS_K` slot that
+implementation could have taken.
+
+Rationale: test files are written in user vocabulary while implementation is
+terse, so test chunks systematically outrank implementation for
+natural-language questions — in the lexical leg and in the cross-encoder alike
+(DECISIONS 2026-07-26). For an onboarding assistant, "how does X work" should
+answer with the implementation.
+
+`include_tests=True` restores the shadowed condition. It exists so the
+counterfactual stays measurable (`scripts/eval.py --both-conditions`) rather
+than merely asserted. The `files` table is untouched — `read_file` and
+`list_directory` still serve test files.
 
 ### 5.3 Rerank
 Candidates = fusion top-40 ∪ symbol-injected, deduped. Score each
@@ -459,6 +519,8 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | Name | Value | Used in |
 |---|---|---|
 | `IGNORE_DIRS` | `{".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache"}` | §2.2 |
+| `TEST_DIR_SEGMENTS` | `{"tests", "test", "testing"}` | §2.6 |
+| `TEST_FILE_NAMES` | `{"conftest.py"}` | §2.6 |
 | `MAX_FILE_BYTES` | 500_000 | §2.2 |
 | `MAX_FILES` | 10_000 | §2.2 |
 | `CHUNK_TOKEN_MAX` | 480 | §2.5 |

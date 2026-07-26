@@ -236,6 +236,109 @@ optimizing the wrong component against the wrong metric.
 > reranker behavior; they need a capable host to populate for the rerank mode,
 > but the metric code is unit-tested and runs model-free for `--mode fts`.
 
+## 6bis. Test shadowing — diagnosis and a PRE-REGISTERED prediction
+
+**Written 2026-07-26, BEFORE the exclusion eval was run.** Recorded in advance so
+the mechanism story is falsifiable rather than fitted after the fact.
+
+### The finding
+
+The 2026-07-26 full eval (first run on a host that can hold the reranker) failed
+the gate harder than §3's run: `hybrid+rerank` hit@10 **0.75** vs `vector`
+**0.85**, with `hybrid` at **0.80**. Fixing FTS raised the leg standalone
+(0.05 → 0.65) yet *lowered* both fused modes. Per-signal inspection of the two
+regressing questions found one cause:
+
+- **q14** (`TextDecoder`): 9 of the FTS top-10 are `tests/`. Vector hits only via
+  a file-level match at **rank 10 exactly** (`ByteChunker.decode`); RRF pulls test
+  noise in and displaces it. Lost at **fusion**.
+- **q08** (`BasicAuth`): vector top-10 is 8/10 `httpx/_auth.py`; FTS top-10 is
+  9/10 `tests/`. After rerank `BasicAuth` is **absent**, and the cross-encoder's
+  #1 is `tests/test_auth.py::test_digest_auth_with_401_nonce_counting`. Lost at
+  **rerank**.
+
+**Mechanism:** test files are written in *user vocabulary* ("chunk", "stream",
+"auth") in prose-like names and assertions; implementation code is terse and
+identifier-dense. Both the lexical leg and a general-purpose passage-relevance
+cross-encoder therefore score tests as more relevant to a natural-language
+question than the code that implements the answer. The FTS fix did not cause
+this — it *exposed* it, by giving test chunks their first real path into fusion.
+
+### The intervention
+
+Flag-and-filter (SPEC §2.6 + §5.4): classify chunks as `is_test` by a
+corpus-wide path rule at ingest; exclude them from both fusion CTEs and from
+§5.2 injection by default. Tests remain in the corpus and in `files`.
+
+### The prediction (falsifiable)
+
+If test shadowing is the mechanism, exclusion should produce:
+
+1. **`fts` rises sharply, most at low k** — its top ranks were nearly all tests,
+   so removing them promotes implementation into the visible window.
+2. **`hybrid` and `hybrid+rerank` rise the most** — they were the *polluted*
+   modes; both regressions above occur in fused/reranked stages.
+3. **`vector` stays roughly flat, or rises slightly** — the vector leg was never
+   test-dominated (q08: 8/10 implementation; q14: implementation throughout), so
+   it has little pollution to remove. Small gains are expected where a test chunk
+   held a top-10 slot, but not gains comparable to the fused modes.
+
+**Falsifier:** *if `vector` jumps as much as the fused modes, the mechanism story
+is weak* — that would indicate exclusion is simply shrinking the candidate space
+in the benchmark's favour (all 20 truth files are implementation), not correcting
+a fusion/rerank-specific pathology. Report it straight either way.
+
+**Not predicted / out of scope:** q09, q10, q15 are missed by every mode because
+their answer chunk is not in the pool at all. Exclusion is not expected to fix
+them; that is Phase 3's graph traversal.
+
+**Caveat recorded up front:** all 20 truth files are implementation, so this
+change raises measured scores *by construction*. The justification is product
+intent and mechanism generality, not the score. The `--include-tests` flag keeps
+the counterfactual measurable.
+
+### 6ter. OUTCOME — how the prediction fared (added after the run, 2026-07-26)
+
+Both conditions measured in one run (`--both-conditions`), same corpus, 1522
+chunks (825 implementation / 697 test). Δ = implementation-only − shadowed.
+
+| Mode | hit@10 shadowed | hit@10 impl-only | Δ@10 | Δ@3 | Δ MRR |
+|---|---|---|---|---|---|
+| vector | 0.85 | 0.90 | **+0.05** | +0.10 | +0.090 |
+| fts | 0.65 | 0.80 | +0.15 | **+0.30** | +0.194 |
+| hybrid | 0.80 | **0.95** | **+0.15** | +0.10 | +0.138 |
+| hybrid+rerank | 0.75 | 0.85 | +0.10 | +0.10 | +0.118 |
+
+1. **Confirmed.** `fts` rose sharply and most at low k — hit@3 0.25 → 0.55
+   (+0.30), the largest single delta in the table.
+2. **Confirmed.** The fused modes gained more than `vector` (+0.15 / +0.10 vs
+   +0.05 at hit@10); `hybrid` gained the most of any mode at hit@10.
+3. **Confirmed.** `vector` rose least of all four modes — exactly the "roughly
+   flat, slightly up" shape predicted.
+
+**Falsifier NOT triggered.** `vector` gained +0.05 against `hybrid`'s +0.15, so
+the gains are concentrated in the modes the mechanism says were polluted. The
+test-shadowing explanation stands on its own pre-registered terms.
+
+**One prediction missed, in the favourable direction.** q09 and q15 were written
+off above as pool-absent / Phase-3-only. Both were in fact partly test-shadowed:
+q15 now hits in **all four** modes and q09 in `fts`/`hybrid`. Only **q10** remains
+missed by every mode — genuinely Phase 3 territory. The §4(d) claim that all
+three were beyond retrieval was too pessimistic.
+
+**The gate still fails.** `hybrid+rerank` hit@10 **0.85 < `vector` 0.90**. The
+regression *relocated* rather than closed: `hybrid` alone is now **0.95 (19/20)**,
+missing only q10, and the cross-encoder demotes q09 and q14 back out of a top-10
+that fusion had already found — 0.95 → 0.85. This sharpens §4(c): with a clean
+implementation-only pool the reranker's downside is now the *only* thing between
+the pipeline and the gate.
+
+**New option, previously dead.** `hybrid` (0.95) clears every single-signal mode
+(`vector` 0.90, `fts` 0.80), so Option C — ship fusion-only, rerank off — would
+now **pass** the gate as written. It was dead before exclusion (§5 of this doc's
+earlier revision) because `hybrid` was 0.80 < `vector` 0.85. Recorded as
+evidence; not adopted without sign-off.
+
 ## 7. Specific questions for the reviewer
 
 1. Is hit@10 the right acceptance gate for a component whose job is low-k
