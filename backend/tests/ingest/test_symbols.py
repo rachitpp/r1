@@ -171,7 +171,7 @@ def test_edge_stats_track_sites_and_resolution(make_repo) -> None:
     repo = make_repo(CROSS_FILE_REPO)
     _, edges, stats = _symbols_and_edges(repo)
     assert sum(stats.sites.values()) > 0
-    assert sum(stats.resolved.values()) == len(edges)
+    assert stats.edges_written() == len(edges)
     assert 0.0 <= stats.unresolved_rate() <= 1.0
     assert stats.timed_out_files == []
 
@@ -209,3 +209,94 @@ def test_stats_separate_failures_from_external_drops(make_repo) -> None:
     _, _, stats = _symbols_and_edges(repo)
     assert sum(stats.out_of_repo.values()) > 0, "stdlib target should be dropped"
     assert stats.failure_rate() < stats.unresolved_rate()
+
+
+# --- name-agreement probe (SPEC §6.1 addendum) -----------------------------
+
+
+def test_recursion_keeps_its_self_edge(make_repo) -> None:
+    """Genuine recursion is a real call edge — names agree, so it survives.
+
+    There is deliberately no self-edge ban: the name probe is what separates
+    recursion from local-variable fabrication, so a blanket ban would throw
+    away true edges to catch false ones.
+    """
+    repo = make_repo(
+        {
+            "pkg/__init__.py": "",
+            "pkg/rec.py": (
+                "def countdown(n):\n"
+                "    if n <= 0:\n"
+                "        return 0\n"
+                "    return countdown(n - 1)\n"
+            ),
+        }
+    )
+    symbols, edges, _ = _symbols_and_edges(repo)
+    key = next(
+        (s.file_path, s.start_line) for s in symbols if s.qualname == "pkg.rec.countdown"
+    )
+    assert (key, key, KIND_CALLS) in {(e.from_key, e.to_key, e.kind) for e in edges}
+
+
+def test_local_variable_call_does_not_fabricate_a_self_edge(make_repo) -> None:
+    """Calling a local binding must not become an edge to the enclosing def.
+
+    Innermost containment maps the resolved local to the function surrounding
+    it; without the name probe that becomes a bogus self-edge. This is the
+    pattern found on httpx (`digest`/`hash_func` in DigestAuth).
+    """
+    repo = make_repo(
+        {
+            "pkg/__init__.py": "",
+            "pkg/local.py": (
+                "def outer(flag):\n"
+                "    handler = str if flag else repr\n"
+                "    return handler(flag)\n"
+            ),
+        }
+    )
+    symbols, edges, stats = _symbols_and_edges(repo)
+    key = next(
+        (s.file_path, s.start_line) for s in symbols if s.qualname == "pkg.local.outer"
+    )
+    assert (key, key, KIND_CALLS) not in {
+        (e.from_key, e.to_key, e.kind) for e in edges
+    }
+    assert sum(stats.stray.values()) > 0, "local-variable call should count as stray"
+
+
+def test_module_import_exempt_from_name_probe(make_repo) -> None:
+    """Importing a module-level binding yields an edge to the module.
+
+    `TYPE_ALIAS` is not a chunked symbol, so containment maps it to the module
+    — one candidate, nothing for the probe to discriminate. The edge is kept
+    and counted under `module_import`, not `resolved` and not `stray`.
+    """
+    repo = make_repo(
+        {
+            "pkg/__init__.py": "",
+            "pkg/types.py": "TYPE_ALIAS = int\n",
+            "pkg/user.py": (
+                "from pkg.types import TYPE_ALIAS\n"
+                "\n"
+                "\n"
+                "def use(x: TYPE_ALIAS):\n"
+                "    return x\n"
+            ),
+        }
+    )
+    symbols, edges, stats = _symbols_and_edges(repo)
+    by_key = {(s.file_path, s.start_line): s for s in symbols}
+    targets = {
+        by_key[e.to_key].file_path for e in edges if e.kind == KIND_IMPORTS
+    }
+    assert "pkg/types.py" in targets
+    assert sum(stats.module_import.values()) > 0
+    assert stats.stray.get(KIND_IMPORTS, 0) == 0
+
+
+def test_edges_written_counts_both_validated_and_module_imports(make_repo) -> None:
+    repo = make_repo(CROSS_FILE_REPO)
+    _, edges, stats = _symbols_and_edges(repo)
+    assert stats.edges_written() == len(edges)

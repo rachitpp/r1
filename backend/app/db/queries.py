@@ -260,3 +260,79 @@ async def clear_repo_graph(conn: asyncpg.Connection, repo_id: UUID) -> None:
         "UPDATE chunks SET symbol_id = NULL WHERE repo_id = $1", repo_id
     )
     await conn.execute("DELETE FROM symbols WHERE repo_id = $1", repo_id)
+
+
+async def resolve_symbol_id(
+    conn: asyncpg.Connection,
+    repo_id: UUID,
+    *,
+    symbol_id: int | None,
+    file_path: str,
+    qualname: str | None,
+) -> int | None:
+    """Symbol id for a chunk, falling back for oversize parts 2..n.
+
+    ``backfill_chunk_symbol_ids`` only links ``part = 1``, so a multi-part
+    function's later parts carry ``symbol_id IS NULL`` by design. Every
+    consumer that joins through ``symbol_id`` — §7.4 called-by assembly in
+    particular — must come through here, or a long function silently loses its
+    caller annotations on every part but the first.
+
+    The fallback keys on ``(repo_id, file_path, qualname)``: parts share both
+    with their definition, and the pair is unique per definition in practice.
+    """
+    if symbol_id is not None:
+        return symbol_id
+    if not qualname:
+        return None
+    row = await conn.fetchrow(
+        """
+        SELECT id FROM symbols
+         WHERE repo_id = $1 AND file_path = $2 AND qualname = $3
+         ORDER BY start_line
+         LIMIT 1
+        """,
+        repo_id,
+        file_path,
+        qualname,
+    )
+    return None if row is None else int(row["id"])
+
+
+async def implementation_callers(
+    conn: asyncpg.Connection, repo_id: UUID, symbol_id: int, limit: int
+) -> tuple[list[tuple[str, int, str]], int]:
+    """Incoming call/import edges from **implementation** symbols (SPEC §7.4).
+
+    Returns ``(rows, total)`` where each row is ``(file_path, line, name)`` and
+    ``total`` is the unclipped count, so the caller can render "+N more".
+    Test-side callers are excluded (§6.3): on a well-tested repo they outnumber
+    the real call sites and would bury the answer.
+    """
+    rows = await conn.fetch(
+        """
+        SELECT s.file_path, COALESCE(e.line, s.start_line) AS line, s.name
+          FROM edges e
+          JOIN symbols s ON s.id = e.from_symbol
+         WHERE e.repo_id = $1
+           AND e.to_symbol = $2
+           AND NOT s.is_test
+         ORDER BY s.file_path, line
+         LIMIT $3
+        """,
+        repo_id,
+        symbol_id,
+        limit,
+    )
+    total = await conn.fetchval(
+        """
+        SELECT count(*)
+          FROM edges e JOIN symbols s ON s.id = e.from_symbol
+         WHERE e.repo_id = $1 AND e.to_symbol = $2 AND NOT s.is_test
+        """,
+        repo_id,
+        symbol_id,
+    )
+    return [(str(r["file_path"]), int(r["line"]), str(r["name"])) for r in rows], int(
+        total
+    )

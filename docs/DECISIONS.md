@@ -487,3 +487,57 @@ submitted data. The payload here is public repository code (`encode/httpx`)
 plus benchmark questions we authored — nothing proprietary. Recorded so the
 tradeoff is explicit rather than assumed; a private-repo deployment would
 need a paid tier or the Vertex path, where that clause does not apply.
+
+## 2026-07-26 — Symbol mapping: innermost containment, validated by a name probe
+**Decision.** A Jedi resolution is mapped to a symbol by **innermost-span
+containment**, not exact line match; the mapping is then validated by
+**name agreement** (Jedi's resolved name vs the symbol's short name), with one
+exemption: an **import** site landing on a **module** symbol keeps its edge
+without the name check, counted separately as `module_import`.
+
+**Why containment rather than exact line.** Jedi reports a definition's *name*
+line; our spans start at the first **decorator** (SPEC §2.3). Exact-line
+matching would therefore miss every decorated definition — and httpx is
+decorator-dense. Containment also yields the enclosing symbol of a call site
+for free, which is what the `from` side of every edge needs.
+
+**Why the probe.** Containment is tolerant by construction, so it can attribute
+a resolution to the function merely *surrounding* the true target. The probe
+checks that tolerance: on disagreement the edge is dropped rather than guessed.
+Measured on httpx it caught **110 call sites resolving to local variables** —
+e.g. `digest` and `hash_func` inside `DigestAuth._build_auth_header`, which
+without the probe become fabricated self-edges. That is the probe's proof of
+value, and the reason calls stay strict.
+
+**Why imports-to-module are exempt.** The probe validates *candidate
+selection* — whether containment chose correctly among several plausible
+symbols. A module-level binding (`AuthTypes = Union[...]`, `__title__`) is not
+a chunked symbol, so at our granularity there is exactly **one** candidate: the
+module. Disagreement there is **structural, not diagnostic** — a module's short
+name is never the name of the thing imported from it. Under the strict rule
+these 54 sites were dropped as stray, discarding true `_api → _types` import
+edges and pushing the overall rate to 3.43%. Exempting them yields **2.30%**.
+
+**No self-edge ban.** Recursion is a legitimate call relationship, and the name
+probe already separates it from local-variable fabrication: a recursive call
+agrees on name and is kept; a call to a local binding disagrees and is dropped.
+A blanket ban would discard true edges to catch false ones. Pinned by two tests
+(`test_recursion_keeps_its_self_edge`,
+`test_local_variable_call_does_not_fabricate_a_self_edge`).
+
+**Measured outcome table** (httpx, 4778 sites):
+
+| kind | sites | resolved | module_import | external | unmapped | failed | stray |
+|---|---|---|---|---|---|---|---|
+| imports | 511 | 136 | 87 | 262 | 0 | 14 | 0 |
+| calls | 4189 | 2014 | 0 | 1874 | 0 | 169 | 110 |
+| extends | 78 | 67 | 0 | 11 | 0 | 0 | 0 |
+| **total** | **4778** | **2217** | **87** | **2147** | **0** | **183 (3.8%)** | **110 (2.3%)** |
+
+**Residual risk, accepted.** A Jedi import resolution that lands in the *wrong
+file* passes the exemption unchallenged — the module symbol will be whatever
+module Jedi named, and the probe is not consulted. This is accepted: the import
+failure rate is independently measured at 3%, the exemption is narrow (import
+sites only, module targets only), and `module_import` is a separate column
+precisely so the unvalidated class stays visible in the audit rather than
+hiding inside `resolved`.

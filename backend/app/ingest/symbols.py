@@ -29,7 +29,7 @@ from tree_sitter import Node
 
 from app.config import JEDI_FILE_TIMEOUT_S
 from app.ingest.filters import SourceFile, is_test_path
-from app.ingest.parser import ParsedFile, parse_tree
+from app.ingest.parser import KIND_MODULE, ParsedFile, parse_tree
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +72,33 @@ class EdgeStats:
     A site that yields no edge is **not** automatically a failure. Outcomes:
 
     ``resolved``       in-repo target found; an edge was written.
+    ``module_import``  an *import* site whose target is a **module** symbol.
+                       An edge was written, but it is counted separately: the
+                       name probe cannot apply here (see below), so folding it
+                       into ``resolved`` would hide an unvalidated class of
+                       edge. Kept out of ``stray`` for the same reason.
     ``out_of_repo``    Jedi resolved it, but to stdlib/site-packages. Dropped
                        by design (§6.1) — a *correct* outcome, not a miss.
     ``no_target``      Jedi returned nothing, or raised. A genuine failure.
     ``unmapped``       resolved in-repo, but the target line falls inside no
                        symbol span (module-level constant, bare assignment).
+    ``stray``          mapped to a symbol whose short name disagrees with the
+                       name Jedi resolved. Innermost containment is deliberately
+                       tolerant (it has to be — a decorated def's span starts at
+                       the decorator, not the ``def``), so it can attribute a
+                       resolution to the function merely *surrounding* the true
+                       target. Name agreement is the check on that tolerance:
+                       on disagreement the edge is dropped rather than guessed.
+
+    **Why imports-to-module are exempt from the name probe.** The probe
+    validates *candidate selection* — whether containment picked the right
+    symbol among several plausible ones. A module-level binding
+    (``AuthTypes = Union[...]``) is not itself a chunked symbol, so at our
+    granularity there is exactly one candidate: the module. Disagreement there
+    is structural, not diagnostic — a module's short name is never the name of
+    the thing imported from it. Calls stay strict, where the tolerance is real
+    and the probe earns its keep (measured on httpx: 110 local-variable
+    fabrications caught).
 
     Reporting these separately matters: SPEC's "~20% unresolved is expected"
     budgets *failures*, and a codebase that calls `len()` a thousand times
@@ -85,9 +107,12 @@ class EdgeStats:
 
     sites: dict[str, int] = field(default_factory=dict)
     resolved: dict[str, int] = field(default_factory=dict)
+    module_import: dict[str, int] = field(default_factory=dict)
     out_of_repo: dict[str, int] = field(default_factory=dict)
     no_target: dict[str, int] = field(default_factory=dict)
     unmapped: dict[str, int] = field(default_factory=dict)
+    stray: dict[str, int] = field(default_factory=dict)
+    stray_examples: list[tuple[str, str, str]] = field(default_factory=list)
     timed_out_files: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
@@ -109,13 +134,24 @@ class EdgeStats:
         """Share of sites Jedi could not resolve at all — the SPEC §6.1 metric."""
         return self._rate(self.no_target, kind)
 
+    def stray_rate(self, kind: str | None = None) -> float:
+        """Share dropped for name disagreement — the containment-tolerance check."""
+        return self._rate(self.stray, kind)
+
     def out_of_repo_rate(self, kind: str | None = None) -> float:
         """Share correctly dropped as external. Not a failure."""
         return self._rate(self.out_of_repo, kind)
 
+    def edges_written(self, kind: str | None = None) -> int:
+        """Sites that produced an edge — name-validated plus module-import."""
+        if kind is None:
+            return sum(self.resolved.values()) + sum(self.module_import.values())
+        return self.resolved.get(kind, 0) + self.module_import.get(kind, 0)
+
     def unresolved_rate(self, kind: str | None = None) -> float:
         """Share of sites that produced no edge, for any reason (superset)."""
-        return 1.0 - self._rate(self.resolved, kind)
+        total = sum(self.sites.values()) if kind is None else self.sites.get(kind, 0)
+        return 0.0 if total == 0 else 1.0 - (self.edges_written(kind) / total)
 
 
 # ---------------------------------------------------------------------------
@@ -177,8 +213,8 @@ class _SpanIndex:
             f: [r.start_line for r in rows] for f, rows in self._by_file.items()
         }
 
-    def at(self, file_path: str, line: int) -> tuple[str, int] | None:
-        """Key of the narrowest symbol whose span contains ``line``."""
+    def row_at(self, file_path: str, line: int) -> SymbolRow | None:
+        """Narrowest symbol whose span contains ``line``."""
         rows = self._by_file.get(file_path)
         if not rows:
             return None
@@ -191,7 +227,12 @@ class _SpanIndex:
                     best.end_line - best.start_line
                 ):
                     best = r
-        return None if best is None else (best.file_path, best.start_line)
+        return best
+
+    def at(self, file_path: str, line: int) -> tuple[str, int] | None:
+        """Key of the narrowest symbol whose span contains ``line``."""
+        row = self.row_at(file_path, line)
+        return None if row is None else (row.file_path, row.start_line)
 
 
 # ---------------------------------------------------------------------------
@@ -358,16 +399,45 @@ def extract_edges(
                 rel = _rel_path(Path(t.module_path), repo_dir)
                 if rel is None:
                     continue  # outside the repo — dropped by design (§6.1)
-                to_key = index.at(rel, t.line or 0)
-                if to_key is None:
+                to_row = index.row_at(rel, t.line or 0)
+                if to_row is None:
                     outcome = "unmapped"  # in-repo, but no symbol owns that line
                     continue
-                if to_key == from_key:
-                    outcome = "resolved"  # self-reference; edge intentionally omitted
-                    break
+
+                # An import landing on a module symbol has exactly one
+                # candidate at our granularity, so the name probe has nothing
+                # to discriminate between — exempt, but counted separately so
+                # the audit stays complete.
+                is_module_import = (
+                    site.kind == KIND_IMPORTS and to_row.kind == KIND_MODULE
+                )
+                if not is_module_import:
+                    # Name-agreement probe. Containment is tolerant by
+                    # necessity; this is what keeps that tolerance from
+                    # inventing edges. Genuine recursion survives it (a
+                    # function calling itself agrees on name); a call to a
+                    # local variable does not.
+                    jedi_name = (t.name or "").strip()
+                    if jedi_name and jedi_name != to_row.name:
+                        outcome = "stray"
+                        if len(stats.stray_examples) < 20:
+                            stats.stray_examples.append(
+                                (
+                                    f"{source.path}:{site.line} ({site.kind})",
+                                    jedi_name,
+                                    f"{to_row.qualname} @ {to_row.file_path}:"
+                                    f"{to_row.start_line}-{to_row.end_line}",
+                                )
+                            )
+                        continue
+
+                # No self-edge ban: recursion is a real call relationship and
+                # the name probe already separates it from local-variable
+                # fabrication.
+                to_key = (to_row.file_path, to_row.start_line)
+                outcome = "module_import" if is_module_import else "resolved"
                 dedupe = (from_key, to_key, site.kind, site.line)
                 if dedupe in seen:
-                    outcome = "resolved"
                     break
                 seen.add(dedupe)
                 edges.append(
@@ -378,14 +448,18 @@ def extract_edges(
                         line=site.line,
                     )
                 )
-                stats.hit(site.kind)
-                outcome = "resolved"
+                if is_module_import:
+                    stats._bump(stats.module_import, site.kind)
+                else:
+                    stats.hit(site.kind)
                 break  # first in-repo target wins
 
             if outcome == "out_of_repo":
                 stats._bump(stats.out_of_repo, site.kind)
             elif outcome == "unmapped":
                 stats._bump(stats.unmapped, site.kind)
+            elif outcome == "stray":
+                stats._bump(stats.stray, site.kind)
 
     stats.elapsed_s = time.perf_counter() - run_start
     return edges, stats
