@@ -185,3 +185,27 @@ def test_zero_timeout_budget_skips_edges(make_repo) -> None:
     edges, stats = extract_edges(repo, selection.files, symbols, timeout_s=-1)
     assert edges == []
     assert stats.timed_out_files, "expected files to report a blown budget"
+
+
+def test_stats_separate_failures_from_external_drops(make_repo) -> None:
+    """A stdlib call is an external drop, not a resolution failure.
+
+    Guards the metric bug found on the first httpx run: counting external
+    drops as "unresolved" reported 52% against SPEC §6.1's ~20% budget, when
+    the real failure rate was 4%.
+    """
+    repo = make_repo(
+        {
+            "pkg/__init__.py": "",
+            "pkg/uses_stdlib.py": (
+                "import json\n"
+                "\n"
+                "\n"
+                "def dump(x):\n"
+                "    return json.dumps(x)\n"
+            ),
+        }
+    )
+    _, _, stats = _symbols_and_edges(repo)
+    assert sum(stats.out_of_repo.values()) > 0, "stdlib target should be dropped"
+    assert stats.failure_rate() < stats.unresolved_rate()

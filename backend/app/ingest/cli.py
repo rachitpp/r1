@@ -339,17 +339,23 @@ def format_db_stats(result: DbIngestResult) -> str:
             f"({impl} implementation / {result.n_symbols_test} test)",
             f"edges:       {result.n_edges} stored",
         ]
+        lines.append(
+            "  site outcomes  (resolved / external-dropped / unmapped / failed)"
+        )
         for kind in ("imports", "calls", "extends"):
             seen = st.sites.get(kind, 0)
-            got = st.resolved.get(kind, 0)
-            if seen:
-                lines.append(
-                    f"  {kind:<9}{got}/{seen} resolved "
-                    f"({st.unresolved_rate(kind) * 100:.0f}% unresolved)"
-                )
+            if not seen:
+                continue
+            lines.append(
+                f"  {kind:<9}{seen:>5} sites: "
+                f"{st.resolved.get(kind, 0)} / {st.out_of_repo.get(kind, 0)} / "
+                f"{st.unmapped.get(kind, 0)} / {st.no_target.get(kind, 0)}"
+                f"   fail {st.failure_rate(kind) * 100:.0f}%"
+            )
         lines += [
-            f"  overall:  {st.unresolved_rate() * 100:.0f}% unresolved "
-            f"(~20% expected, SPEC §6.1)",
+            f"  overall:  fail {st.failure_rate() * 100:.0f}% "
+            f"(~20% budget, SPEC §6.1) · "
+            f"external-dropped {st.out_of_repo_rate() * 100:.0f}%",
             f"  timeouts: {len(st.timed_out_files)} file(s) hit the "
             f"{JEDI_FILE_TIMEOUT_S}s budget",
             f"chunks linked: {result.n_chunks_linked} to a symbol",

@@ -225,10 +225,14 @@ async def insert_edges(
 async def backfill_chunk_symbol_ids(conn: asyncpg.Connection, repo_id: UUID) -> int:
     """Link chunks to their defining symbol; return the number linked.
 
-    Joins on ``(file_path, start_line)`` for unsplit chunks. An oversize chunk's
-    later parts carry a shifted ``start_line`` (SPEC §2.5), so they match on
-    ``part = 1`` only — parts 2..n stay NULL rather than pointing at the wrong
-    symbol. Deliberate: a wrong link is worse than a missing one.
+    Joins on ``(file_path, start_line)`` and is **restricted to ``part = 1``**.
+
+    An oversize chunk's later parts carry a shifted ``start_line`` (SPEC §2.5)
+    that can land exactly on a *different* symbol's start line — measured on
+    httpx: 6 parts mislinked to the `__init__` they happened to begin at.
+    Parts 2..n therefore stay NULL rather than pointing at the wrong symbol; a
+    wrong link is worse than a missing one, and part 1 already carries the
+    definition's identity.
     """
     result = await conn.execute(
         """
@@ -237,6 +241,7 @@ async def backfill_chunk_symbol_ids(conn: asyncpg.Connection, repo_id: UUID) -> 
           FROM symbols s
          WHERE c.repo_id = $1
            AND s.repo_id = $1
+           AND c.part = 1
            AND c.file_path = s.file_path
            AND c.start_line = s.start_line
         """,

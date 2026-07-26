@@ -67,10 +67,27 @@ class EdgeRow:
 
 @dataclass
 class EdgeStats:
-    """Per-run resolution accounting (SPEC §6.1 — log the rate, move on)."""
+    """Per-run resolution accounting (SPEC §6.1 — log the rate, move on).
+
+    A site that yields no edge is **not** automatically a failure. Outcomes:
+
+    ``resolved``       in-repo target found; an edge was written.
+    ``out_of_repo``    Jedi resolved it, but to stdlib/site-packages. Dropped
+                       by design (§6.1) — a *correct* outcome, not a miss.
+    ``no_target``      Jedi returned nothing, or raised. A genuine failure.
+    ``unmapped``       resolved in-repo, but the target line falls inside no
+                       symbol span (module-level constant, bare assignment).
+
+    Reporting these separately matters: SPEC's "~20% unresolved is expected"
+    budgets *failures*, and a codebase that calls `len()` a thousand times
+    would blow a combined metric while resolving perfectly.
+    """
 
     sites: dict[str, int] = field(default_factory=dict)
     resolved: dict[str, int] = field(default_factory=dict)
+    out_of_repo: dict[str, int] = field(default_factory=dict)
+    no_target: dict[str, int] = field(default_factory=dict)
+    unmapped: dict[str, int] = field(default_factory=dict)
     timed_out_files: list[str] = field(default_factory=list)
     elapsed_s: float = 0.0
 
@@ -80,14 +97,25 @@ class EdgeStats:
     def hit(self, kind: str) -> None:
         self.resolved[kind] = self.resolved.get(kind, 0) + 1
 
+    def _bump(self, bucket: dict[str, int], kind: str) -> None:
+        bucket[kind] = bucket.get(kind, 0) + 1
+
+    def _rate(self, bucket: dict[str, int], kind: str | None) -> float:
+        total = sum(self.sites.values()) if kind is None else self.sites.get(kind, 0)
+        got = sum(bucket.values()) if kind is None else bucket.get(kind, 0)
+        return 0.0 if total == 0 else got / total
+
+    def failure_rate(self, kind: str | None = None) -> float:
+        """Share of sites Jedi could not resolve at all — the SPEC §6.1 metric."""
+        return self._rate(self.no_target, kind)
+
+    def out_of_repo_rate(self, kind: str | None = None) -> float:
+        """Share correctly dropped as external. Not a failure."""
+        return self._rate(self.out_of_repo, kind)
+
     def unresolved_rate(self, kind: str | None = None) -> float:
-        if kind is None:
-            total = sum(self.sites.values())
-            got = sum(self.resolved.values())
-        else:
-            total = self.sites.get(kind, 0)
-            got = self.resolved.get(kind, 0)
-        return 0.0 if total == 0 else 1.0 - (got / total)
+        """Share of sites that produced no edge, for any reason (superset)."""
+        return 1.0 - self._rate(self.resolved, kind)
 
 
 # ---------------------------------------------------------------------------
@@ -317,20 +345,30 @@ def extract_edges(
                     site.line, site.column, follow_imports=True
                 )
             except Exception:  # noqa: BLE001 — resolution is best-effort
+                stats._bump(stats.no_target, site.kind)
+                continue
+            if not targets:
+                stats._bump(stats.no_target, site.kind)
                 continue
 
+            outcome = "out_of_repo"  # until proven otherwise
             for t in targets:
                 if t.module_path is None:
                     continue
                 rel = _rel_path(Path(t.module_path), repo_dir)
                 if rel is None:
-                    continue  # outside the repo — drop
+                    continue  # outside the repo — dropped by design (§6.1)
                 to_key = index.at(rel, t.line or 0)
-                if to_key is None or to_key == from_key:
+                if to_key is None:
+                    outcome = "unmapped"  # in-repo, but no symbol owns that line
                     continue
+                if to_key == from_key:
+                    outcome = "resolved"  # self-reference; edge intentionally omitted
+                    break
                 dedupe = (from_key, to_key, site.kind, site.line)
                 if dedupe in seen:
-                    continue
+                    outcome = "resolved"
+                    break
                 seen.add(dedupe)
                 edges.append(
                     EdgeRow(
@@ -341,7 +379,13 @@ def extract_edges(
                     )
                 )
                 stats.hit(site.kind)
+                outcome = "resolved"
                 break  # first in-repo target wins
+
+            if outcome == "out_of_repo":
+                stats._bump(stats.out_of_repo, site.kind)
+            elif outcome == "unmapped":
+                stats._bump(stats.unmapped, site.kind)
 
     stats.elapsed_s = time.perf_counter() - run_start
     return edges, stats
