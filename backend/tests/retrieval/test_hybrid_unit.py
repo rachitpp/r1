@@ -31,7 +31,6 @@ def test_extract_identifiers_keeps_underscore_camelcase_dot() -> None:
     assert extract_identifiers("where is verify_token defined") == ["verify_token"]
     assert extract_identifiers("the DigestAuth class") == ["DigestAuth"]
     assert extract_identifiers("call httpx.get here") == ["httpx.get"]
-    assert extract_identifiers("the Timeout config") == ["Timeout"]
 
 
 def test_extract_identifiers_drops_plain_and_allcaps_words() -> None:
@@ -40,9 +39,31 @@ def test_extract_identifiers_drops_plain_and_allcaps_words() -> None:
     assert extract_identifiers("URL handling logic") == []
 
 
+def test_extract_identifiers_drops_sentence_initial_capitals() -> None:
+    """The bug this rule fixes: a capitalised first word is not an identifier.
+
+    Injection previously extracted ``How``/``When`` from ordinary question text
+    (observed in the 2026-07-26 debug runs on q08/q14). CamelCase now requires an
+    uppercase letter at a *non-initial* position plus a lowercase letter.
+    """
+    assert extract_identifiers("How does httpx decode a body?") == []
+    assert extract_identifiers("When I pass auth, what is added?") == []
+    assert extract_identifiers("Where is the timeout set?") == []
+    # Trade-off of the same rule: a single-capital class name is indistinguishable
+    # from a sentence-initial capital, so `Timeout`/`Response` are dropped too.
+    # FTS and the vector leg still cover them; only §5.2 injection is forgone.
+    assert extract_identifiers("the Timeout config") == []
+
+
+def test_extract_identifiers_keeps_internal_capital_identifiers() -> None:
+    assert extract_identifiers("How does BasicAuth work?") == ["BasicAuth"]
+    assert extract_identifiers("the URLPattern matcher") == ["URLPattern"]
+    assert extract_identifiers("What does TextDecoder do?") == ["TextDecoder"]
+
+
 def test_extract_identifiers_dedupes_preserving_order() -> None:
-    assert extract_identifiers("Timeout then Timeout again DigestAuth") == [
-        "Timeout",
+    assert extract_identifiers("BasicAuth then BasicAuth again DigestAuth") == [
+        "BasicAuth",
         "DigestAuth",
     ]
 
