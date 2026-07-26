@@ -4,15 +4,24 @@
 
 Streams tool calls as they happen and prints the final answer with validated
 citations. ``--json`` emits one machine-readable object instead, for eval.
+
+**Every run also writes its complete trace to ``var/traces/``** (gitignored).
+A model call is a metered resource — on some free tiers, one of twenty per day
+— so a trace lost to a terminal pipe costs real quota to recreate. Learned the
+hard way in M2: the first live run's tool trace was truncated by a `tail` and
+the quota to reproduce it was already gone.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import json
+import re
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
@@ -22,6 +31,21 @@ from app.agent.model import build_chat_model, provider_for
 from app.config import AGENT_TOOL_CAP, get_settings
 from app.db.pool import close_pool, create_pool
 from app.db.queries import resolve_repo_id
+
+TRACE_DIR = Path(__file__).resolve().parents[2] / "var" / "traces"
+
+
+def _slug(text: str, n: int = 40) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:n] or "question"
+
+
+def write_trace(model: str, question: str, body: str) -> Path:
+    """Persist a run's full trace; returns the path written."""
+    TRACE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = TRACE_DIR / f"{stamp}-{_slug(model, 24)}-{_slug(question)}.txt"
+    path.write_text(body, encoding="utf-8")
+    return path
 
 
 def _summarize(payload: str, limit: int = 160) -> str:
@@ -98,32 +122,49 @@ async def run(ref: str, question: str, *, as_json: bool, tool_cap: int) -> int:
             entry["result"] = _summarize(str(m.content))
             trace.append(entry)
 
-    if as_json:
-        print(
-            json.dumps(
-                {
-                    "model": model_name,
-                    "question": question,
-                    "answer": answer,
-                    "citations": state["citations"],
-                    "tool_calls_used": state["tool_calls_used"],
-                    "trace": trace,
-                    "elapsed_s": round(elapsed, 2),
-                },
-                indent=2,
-            )
-        )
-        return 0
+    payload_obj = {
+        "model": model_name,
+        "question": question,
+        "answer": answer,
+        "citations": state["citations"],
+        "tool_calls_used": state["tool_calls_used"],
+        "trace": trace,
+        "elapsed_s": round(elapsed, 2),
+    }
 
+    lines = [
+        f"model:    {model_name}",
+        f"question: {question}",
+        "",
+    ]
     for i, entry in enumerate(trace, start=1):
         args = ", ".join(f"{k}={v!r}" for k, v in entry["args"].items())
-        print(f"  [{i}] {entry['tool']}({args})")
-        print(f"      -> {entry['result']}")
-    print(f"\n{'=' * 60}\n{answer}\n{'=' * 60}")
-    print(f"tool calls: {state['tool_calls_used']}/{tool_cap}   {elapsed:.1f}s")
-    print(f"citations:  {len(state['citations'])} validated")
-    for c in state["citations"]:
-        print(f"  {c['file_path']}:{c['start_line']}-{c['end_line']}")
+        lines.append(f"  [{i}] {entry['tool']}({args})")
+        lines.append(f"      -> {entry['result']}")
+    lines += [
+        "",
+        "=" * 60,
+        answer,
+        "=" * 60,
+        f"tool calls: {state['tool_calls_used']}/{tool_cap}   {elapsed:.1f}s",
+        f"citations:  {len(state['citations'])} validated",
+        *(
+            f"  {c['file_path']}:{c['start_line']}-{c['end_line']}"
+            for c in state["citations"]
+        ),
+    ]
+    human = "\n".join(lines)
+
+    # Always persist, whatever the output mode — see the module docstring.
+    trace_path = write_trace(
+        model_name, question, f"{human}\n\n{json.dumps(payload_obj, indent=2)}"
+    )
+
+    if as_json:
+        print(json.dumps(payload_obj, indent=2))
+    else:
+        print(human)
+        print(f"trace:      {trace_path}")
     return 0
 
 

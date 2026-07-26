@@ -417,3 +417,24 @@ uv run pytest -m integration                                  # needs DB + reran
 ```
 
 The gate check is the `hybrid+rerank` vs `vector` row of the `--mode all` table.
+
+
+---
+
+## Appendix — M2 trace backfill gap (2026-07-26)
+
+The first live agent run (`gemini-3.5-flash`, "How does httpx decide which
+transport to use for a request?") completed successfully: **8/8 tool calls, 16
+validated citations, 93.1s**, correctly identifying `_transport_for_url`, the
+mount-pattern match, the `None` → default-transport fallback, and
+specificity-ordered mounts across both the sync and async client paths.
+
+**Its tool-call trace was lost** — truncated by a `tail` on the way to the
+terminal — and the AI Studio daily quota (20 requests/model) was exhausted by
+the time the loss was noticed, so it could not be reproduced that day. The
+answer and citation list survive in the M2 report; the per-call trace does not.
+
+Fixed at the source rather than retried: the agent CLI now always writes the
+complete trace to `backend/var/traces/` before printing (DECISIONS 2026-07-26,
+"Agent traces are always persisted to disk"). A substitute full trace on
+`gemini-3.5-flash-lite` is recorded in the M2 report.

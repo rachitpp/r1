@@ -75,6 +75,12 @@ class Settings(BaseSettings):
     AGENT_MODEL: str | None = None
     GOOGLE_API_KEY: str | None = None
 
+    # Mistral — tuning and primary measurement. The AI Studio free tier's real
+    # limit is 20 requests/day/model, which an agent loop exhausts in two runs;
+    # Mistral's free tier is token-metered, which is the constraint that
+    # actually binds here (DECISIONS 2026-07-26, provider roles).
+    MISTRAL_API_KEY: str | None = None
+
     # Vertex — measurement runs and the strong-model cross-check only; default
     # tuning traffic never routes here. GOOGLE_APPLICATION_CREDENTIALS is read
     # by google-auth from the environment, so it needs no field of its own.

@@ -5,14 +5,20 @@ imports a provider package, so switching providers is a config change and the
 rest of the agent stays provider-agnostic (`.bind_tools` works on whatever
 this returns).
 
-    gemini*   -> ChatGoogleGenerativeAI   (GOOGLE_API_KEY)      free tier, default
+    mistral*  -> ChatMistralAI            (MISTRAL_API_KEY)     tuning + primary measurement
+    gemini*   -> ChatGoogleGenerativeAI   (GOOGLE_API_KEY)      smoke tests only
     claude*   -> ChatAnthropic            (ANTHROPIC_API_KEY)
     vertex:*  -> ChatVertexAI             (GOOGLE_APPLICATION_CREDENTIALS + GCP_PROJECT)
 
-**Usage policy** (DECISIONS 2026-07-26): tuning runs on the free AI Studio key;
-Vertex is for measurement runs and the strong-model cross-check only. Default
-traffic never routes through Vertex — trial credits are a measurement budget,
-not a tuning budget.
+**This list is closed.** Four providers is already more than the project needs;
+another one is a config problem masquerading as a code problem.
+
+**Role split** (DECISIONS 2026-07-26 "Provider roles", superseding the earlier
+provider-policy entry): Mistral's token-metered free tier carries tuning and
+primary measurement; the AI Studio key is demoted to smoke tests after its real
+limit turned out to be 20 requests/day/model — two agent runs; Vertex credits
+run confirmation measurement and the strong-model diagnostic, always, because
+credits expire whether or not they are spent.
 """
 
 from __future__ import annotations
@@ -41,9 +47,11 @@ def provider_for(model: str) -> str:
         return "gemini"
     if model.startswith("claude"):
         return "claude"
+    if model.startswith("mistral"):
+        return "mistral"
     raise AgentError(
         f"AGENT_MODEL={model!r} has no known provider prefix "
-        "(expected 'gemini…', 'claude…', or 'vertex:…')"
+        "(expected 'mistral…', 'gemini…', 'claude…', or 'vertex:…')"
     )
 
 
@@ -78,6 +86,24 @@ def build_chat_model(
             max_output_tokens=max_tokens,
             max_retries=DEFAULT_MAX_RETRIES,
             **({"temperature": temperature} if temperature is not None else {}),
+            **kwargs,
+        )
+
+    if provider == "mistral":
+        from langchain_mistralai import ChatMistralAI
+
+        if not settings.MISTRAL_API_KEY:
+            raise AgentError(
+                "MISTRAL_API_KEY is required for a 'mistral' AGENT_MODEL. "
+                "Get one at console.mistral.ai (free tier needs phone "
+                "verification), then add MISTRAL_API_KEY=... to backend/.env"
+            )
+        return ChatMistralAI(
+            model_name=name,
+            api_key=SecretStr(settings.MISTRAL_API_KEY),
+            max_tokens=max_tokens,
+            max_retries=DEFAULT_MAX_RETRIES,
+            temperature=0.0 if temperature is None else temperature,
             **kwargs,
         )
 

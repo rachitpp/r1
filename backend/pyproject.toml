@@ -20,6 +20,7 @@ dependencies = [
     "langchain-anthropic>=1.5.2",
     "jedi>=0.20.0",
     "langchain-google-vertexai>=3.2.4",
+    "langchain-mistralai>=1.1.6",
 ]
 
 [dependency-groups]

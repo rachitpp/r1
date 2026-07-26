@@ -36,3 +36,7 @@ credentials*.json
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Agent run traces — every model call is metered; traces are kept locally
+# for debugging but are not repo content.
+backend/var/

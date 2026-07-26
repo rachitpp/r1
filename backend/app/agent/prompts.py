@@ -41,11 +41,21 @@ Do not keep exploring to be thorough.
 """
 
 CITATIONS = """\
-Citations — this is a hard requirement:
+Citations — this is a hard requirement, and the format is exact:
 
-- Cite every claim about the code as `[path:start-end]`, inline, using real
-  line numbers from the tool output. Example: `[httpx/_auth.py:255-301]`.
-- An answer about code with no citation is wrong, even if the prose is right.
+    [path:START-END]
+
+CORRECT:   The Timeout class is defined in [httpx/_config.py:72-156].
+INCORRECT: The Timeout class is defined in [httpx/_config.py:90,101].
+
+The second is silently discarded: a citation is one contiguous line RANGE
+with a hyphen, never a comma-separated list of lines and never a single
+line. To cite several places, write several bracketed ranges:
+[httpx/_config.py:90-93] and [httpx/_config.py:101-104].
+
+- Cite every claim about the code, inline, using real line numbers taken from
+  tool output. An answer about code with no citation is wrong, even when the
+  prose is right.
 - Never cite a file or line range you have not seen in a tool result.
 - If you could not find something, say so plainly and state where you looked.
   A clear "not found" is more useful than a plausible guess.

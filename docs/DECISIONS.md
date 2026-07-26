@@ -541,3 +541,79 @@ failure rate is independently measured at 3%, the exemption is narrow (import
 sites only, module targets only), and `module_import` is a separate column
 precisely so the unvalidated class stays visible in the audit rather than
 hiding inside `resolved`.
+
+## 2026-07-26 — Provider roles, rebalanced around tokens/day (supersedes "provider-configurable agent model")
+**Supersedes** the provider-policy half of the 2026-07-26 entry
+"Phase 3 reconciliation 4: provider-configurable agent model" — that entry
+stands as the record of *why the factory is prefix-dispatched*; its
+"tuning on AI Studio, Vertex for measurement" split is replaced here. The
+factory gains a fourth branch and is then **closed**: `gemini`, `claude`,
+`vertex:`, `mistral`. A fifth provider would be a config problem wearing a
+code problem's clothes.
+
+**What forced the change.** The AI Studio free tier's real limit is not the
+~10–15 RPM the Phase 3 pacing rules were written against. Measured on the
+first live agent run:
+
+```
+quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier
+limit: 20, model: gemini-3.5-flash
+```
+
+**20 requests per day, per model.** One agent run costs up to 9 model calls
+(8 tool rounds + forced answer), so the tier affords ~2 runs/day. M3 needs
+~200 calls for the frozen 20 across both modes, before any tuning. `--pace`
+cannot help: the limit is daily, not rate-based.
+
+**The generalisation worth keeping.** For an agent loop, the binding
+constraint is **tokens per day, not requests per day**. A request-metered
+tier prices a 9-call agent run identically to a one-line chat completion, so
+agent workloads exhaust it in a way the number "20/day" does not advertise.
+The counter-example that makes this concrete: Groq's free tier is generous on
+requests (~14.4K/day) but caps tokens near ~500K/day — plenty of *calls*, not
+enough *context* for a loop that re-sends a growing message history every
+turn. Mistral's free tier is metered the other way (1 RPS, 500K TPM, ~1B
+tokens/month), which is the shape agent loops actually need. Evaluate a free
+tier by its token ceiling and its per-request context cost, not its request
+count.
+
+**Roles.**
+
+| Provider | Role | Why |
+|---|---|---|
+| **Mistral** (`mistral-medium-latest`) | **Tuning + primary measurement** | Token-metered free tier; 1 RPS pacing; same model for tuning and primary measurement keeps the within-model comparison rule intact |
+| **Vertex** (`vertex:gemini-3.5-flash`) | **Confirmation measurement + strong-model diagnostic — always run** | Trial credits expire whether or not they are spent, so a diagnostic held "in reserve" is a diagnostic wasted. Continuity with the successful M2 live run |
+| **AI Studio** (`gemini-*`) | **Smoke tests only** | 20 req/day/model cannot carry a measurement run; still the cheapest way to prove the factory and a key work |
+| **Anthropic** (`claude-*`) | Wired, unused | No key configured; the branch stays for portability |
+
+Fallback if `mistral-medium-latest` misbehaves in the sanity pass:
+`mistral-small-latest`.
+
+**Data handling.** Mistral's free tier requires phone verification and trains
+on submitted data unless opted out; opt-out is noted as a follow-up. As with
+the AI Studio note above, the payload is public repository code
+(`encode/httpx`) plus benchmark questions we wrote — nothing proprietary. A
+private-repo deployment would need a paid tier on any of these providers.
+
+**M3 measurement plan** (fixed here so the runs are not re-litigated mid-phase):
+1. Full frozen 20, both modes, on **`mistral-medium-latest`** — primary, same
+   model the prompts were tuned on.
+2. Full frozen 20, both modes, on **`vertex:gemini-3.5-flash`** — confirmation.
+   The step-15 sanity pass on dev questions runs first, since it is a
+   different model from the one tuned on.
+
+Both tables go into EVAL.md with their model ids. **The thesis claim rests on
+the pattern holding in both runs** — a stuffed-vs-agent delta that appears on
+one model and not the other is a model result, not a retrieval result.
+
+## 2026-07-26 — Agent traces are always persisted to disk
+Every agent run writes its complete trace to `backend/var/traces/`
+(gitignored) in addition to stdout, in both human and JSON form.
+
+A model call is a metered resource — on the AI Studio tier, one of twenty per
+day — so a trace lost to a terminal pipe costs real quota to recreate. This is
+not hypothetical: M2's first live run produced exactly the 8-tool-call trace
+the milestone report needed, and it was truncated by a `tail` on the way to
+the terminal. The quota to reproduce it was already spent, and the trace is
+gone (noted as a backfill gap in `docs/phase-2-rerank-review.md`). Persisting
+first and printing second removes the whole class of loss.

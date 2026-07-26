@@ -430,6 +430,7 @@ dependencies = [
     { name = "langchain-anthropic" },
     { name = "langchain-google-genai" },
     { name = "langchain-google-vertexai" },
+    { name = "langchain-mistralai" },
     { name = "langgraph" },
     { name = "pgvector" },
     { name = "pydantic-settings" },
@@ -459,6 +460,7 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.5.2" },
     { name = "langchain-google-genai", specifier = ">=4.3.1" },
     { name = "langchain-google-vertexai", specifier = ">=3.2.4" },
+    { name = "langchain-mistralai", specifier = ">=1.1.6" },
     { name = "langgraph", specifier = ">=1.2.9" },
     { name = "pgvector", specifier = ">=0.5.0" },
     { name = "pydantic-settings" },
@@ -1450,6 +1452,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/39/1c/4efdcfe094ef6711d9c130428c4c42af61a49a1580fa718dd1e1f6bd5fc3/langchain_google_vertexai-3.2.4.tar.gz", hash = "sha256:f0c16b4b639037f60357dbf6d4aa3b0f301f23be6b33b0688c75902235cb9434", size = 351222, upload-time = "2026-06-09T14:57:58.316Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/a2/af563ff45208d22abc28d0a0e44a7fb8aceaadac201afa6a11c77bfb6338/langchain_google_vertexai-3.2.4-py3-none-any.whl", hash = "sha256:65b5615e596fdabc2e149f0160fded88bebef2bbc1ea70095ff81714f7570183", size = 118884, upload-time = "2026-06-09T14:57:57.062Z" },
+]
+
+[[package]]
+name = "langchain-mistralai"
+version = "1.1.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+    { name = "httpx-sse" },
+    { name = "langchain-core" },
+    { name = "pydantic" },
+    { name = "tokenizers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/70/92/d15c0640bf77908b765d76f46d7123d7b82b34b04dfad2838b68143f38f7/langchain_mistralai-1.1.6.tar.gz", hash = "sha256:c2694828adee61a497c571e25eaba1472095cd1d1f260a7fe15a6e60f9ece039", size = 157112, upload-time = "2026-07-05T21:30:23.059Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/db/b727cd6e8083a48e4d0aba542f1454a50510d59b24476888af94b038be15/langchain_mistralai-1.1.6-py3-none-any.whl", hash = "sha256:0aa59b313b406ee934dc0431873b0e11849d8d746a6a7e281103c6848a9b1319", size = 22806, upload-time = "2026-07-05T21:30:21.84Z" },
 ]
 
 [[package]]
