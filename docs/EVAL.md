@@ -416,3 +416,48 @@ Per-question:
 | q19 | ✓ | ✓ |
 | q20 | ✓ | ✓ |
 
+
+### Answer-level results — 2026-07-26
+
+**Model:** `vertex:gemini-2.5-flash` · **Set:** frozen 20 (measurement) · **Model calls:** 105 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|
+| stuffed | 0.95 (19/20) | 1.00 (20/20) | 0.0 / 0 | 0 |
+| agent | 1.00 (20/20) | 1.00 (20/20) | 3.2 / 8 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| get_definition | 22 | 33% |
+| search_code | 20 | 30% |
+| expand_context | 16 | 24% |
+| read_file | 8 | 12% |
+| find_references | 1 | 1% |
+
+Per-question:
+
+| q | stuffed | agent |
+|---|---|---|
+| q01 | ✓ | ✓ |
+| q02 | ✓ | ✓ |
+| q03 | ✓ | ✓ |
+| q04 | ✓ | ✓ |
+| q05 | ✓ | ✓ |
+| q06 | ✓ | ✓ |
+| q07 | ✓ | ✓ |
+| q08 | ✓ | ✓ |
+| q09 | ✓ | ✓ |
+| q10 | · | ✓ |
+| q11 | ✓ | ✓ |
+| q12 | ✓ | ✓ |
+| q13 | ✓ | ✓ |
+| q14 | ✓ | ✓ |
+| q15 | ✓ | ✓ |
+| q16 | ✓ | ✓ |
+| q17 | ✓ | ✓ |
+| q18 | ✓ | ✓ |
+| q19 | ✓ | ✓ |
+| q20 | ✓ | ✓ |
+
