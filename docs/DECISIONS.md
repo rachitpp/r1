@@ -378,3 +378,29 @@ so `is_test` exclusion raises every mode's score by construction. The reranker
 comparison is unaffected by it — `hybrid` and `hybrid+rerank` are measured on
 the *same* pool in the *same* condition, so the ablation verdict is a
 within-condition comparison and holds in the shadowed condition too.
+
+## 2026-07-26 — §5.2 injection is dormant in the shipped pipeline (by design)
+**Addendum to "Reranker ablated" above.** The pipeline that measured `hybrid`
+hit@10 **0.95** has exact-symbol injection **dormant**: injected chunks carry no
+RRF score, so fusion-only mode has nothing to order them by, and disabling
+rerank disabled injection with it. **This is accepted as design, not debt.**
+
+**Why the benchmark cannot settle it.** EVAL's 20 questions are deliberately
+phrased in *user vocabulary* — 11 of 20 have zero lexical overlap between the
+question and the answer's symbol identifiers, specifically to punish keyword
+matching. So the benchmark contains almost no identifier-dense queries and is
+structurally incapable of measuring what injection is for. Its absence costs
+nothing measurable here, and its presence could not have been credited either.
+
+**Why the role is superseded in Phase 3.** Exact-identifier lookup becomes the
+job of `get_definition` / `find_references` against the `symbols` table (§6,
+migration `004`): direct index hits, no retrieval scoring involved, no ranking
+to lose against. That is a strictly better answer to "where is `verify_token`
+defined" than injecting a chunk into a fused pool and hoping it survives.
+`search_code` keeps its own, distinct job — **semantic entry-point finding** —
+which is exactly what fusion does well.
+
+**If it is ever re-attached.** Giving injected chunks an ordering signal in
+fusion-only mode is a new, unmeasured pipeline (it needs a synthetic rank or a
+score blend) and requires its own eval run. Logged in the v2 backlog beside the
+code-specific reranker; not a Phase 2 loose end.

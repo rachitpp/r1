@@ -355,6 +355,12 @@ Do not: add features. Anything tempting goes to the backlog below.
   at every k and MRR on Python code and is off by default (SPEC §5.3,
   DECISIONS 2026-07-26). A code-aware or smaller cross-encoder may earn its
   place — the ablation is still wired, so an A/B is `--mode hybrid+rerank`.
+- **Re-attach §5.2 injection to fusion-only retrieval, if ever needed.**
+  Injection is dormant in the shipped pipeline by design (DECISIONS
+  2026-07-26): injected chunks carry no RRF score, and Phase 3's
+  `get_definition` / `find_references` supersede its role with direct symbol
+  lookups. Giving them an ordering signal (synthetic rank or score blend) is a
+  new, unmeasured pipeline and needs its own eval run.
 - Incremental re-indexing on new commits
 
 ## Known risks
