@@ -50,9 +50,15 @@ class FakeChatModel(BaseChatModel):
         # A *fresh* message each call. `add_messages` keys on message id, so
         # replaying one instance makes the reducer overwrite instead of append
         # — the loop then sees a stale last message and exits early.
+        turn = len(self.calls)
         fresh = AIMessage(
             content=template.content,
-            tool_calls=[dict(tc) for tc in (template.tool_calls or [])],
+            # Unique call ids per turn, as real providers issue them — reusing
+            # one id makes request/response pairing ambiguous to assert on.
+            tool_calls=[
+                {**dict(tc), "id": f"{tc['id']}-{turn}"}
+                for tc in (template.tool_calls or [])
+            ],
         )
         return ChatResult(generations=[ChatGeneration(message=fresh)])
 
@@ -191,3 +197,49 @@ async def test_parallel_tool_calls_all_dispatch_and_count() -> None:
     final = await app.ainvoke(_state([]))
     assert final["tool_calls_used"] == 2
     assert len([m for m in final["messages"] if m.type == "tool"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_forced_answer_closes_unanswered_tool_calls() -> None:
+    """The cap trips after the model has already requested tools.
+
+    Leaving those calls unanswered makes the history malformed — function
+    calls with no responses. Gemini tolerated it; Mistral returns
+    `400 invalid_request_message_order`. Each refused call must be closed with
+    an explicit "not executed" result before the final call.
+    """
+    model = FakeChatModel(
+        responses=[_tool_call("list_directory", {"path": ""}, "loop")], calls=[]
+    )
+    app = build_graph(model, FakeConn(), REPO_ID, tool_cap=1)  # type: ignore[arg-type]
+    await app.ainvoke(_state([]))
+
+    # Assert on the payload actually sent to the final call — that is the
+    # message list the provider validates, and the one Mistral rejected.
+    sent = model.calls[-1]
+    requested = [
+        c["id"] for m in sent if isinstance(m, AIMessage) for c in (m.tool_calls or [])
+    ]
+    answered = [m.tool_call_id for m in sent if m.type == "tool"]
+    assert sorted(requested) == sorted(answered), (
+        "forced-answer payload has function calls with no responses"
+    )
+
+    # The closer explains itself rather than faking a result.
+    closers = [
+        json.loads(m.content)
+        for m in sent
+        if m.type == "tool" and "not executed" in str(m.content)
+    ]
+    assert closers and "limit" in closers[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_refused_calls_do_not_count_as_used() -> None:
+    """A call we declined to run is not a call we spent."""
+    model = FakeChatModel(
+        responses=[_tool_call("list_directory", {"path": ""}, "loop")], calls=[]
+    )
+    app = build_graph(model, FakeConn(), REPO_ID, tool_cap=2)  # type: ignore[arg-type]
+    final = await app.ainvoke(_state([]))
+    assert final["tool_calls_used"] == 2

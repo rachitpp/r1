@@ -147,10 +147,32 @@ def build_graph(
         return {"messages": out, "tool_calls_used": state["tool_calls_used"] + len(calls)}
 
     async def forced_answer_node(state: AgentState) -> dict[str, Any]:
-        """One final call with tools unbound — the cap is hard, not advisory."""
-        messages = [*state["messages"], HumanMessage(content=FORCED_ANSWER)]
-        response = await model.ainvoke(messages)
-        return {"messages": [HumanMessage(content=FORCED_ANSWER), response]}
+        """One final call with tools unbound — the cap is hard, not advisory.
+
+        The cap trips *after* the model has already requested tool calls, so
+        the history ends with an assistant turn whose calls we are refusing to
+        run. Left as-is that is malformed: function calls with no responses.
+        Some providers tolerate it, Mistral returns
+        ``400 invalid_request_message_order`` — and Mistral is right. Close
+        each unanswered call with an explicit "not executed" result, so the
+        conversation is well-formed *and* the model knows why it has no data
+        for them.
+        """
+        last = state["messages"][-1]
+        unanswered = getattr(last, "tool_calls", None) or []
+        closers: list[AnyMessage] = [
+            ToolMessage(
+                content=json.dumps(
+                    {"error": "not executed: tool call limit reached"}
+                ),
+                tool_call_id=call["id"],
+                name=call["name"],
+            )
+            for call in unanswered
+        ]
+        prompt = HumanMessage(content=FORCED_ANSWER)
+        response = await model.ainvoke([*state["messages"], *closers, prompt])
+        return {"messages": [*closers, prompt, response]}
 
     def route(state: AgentState) -> str:
         last = state["messages"][-1]
