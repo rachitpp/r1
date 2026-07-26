@@ -24,6 +24,7 @@ credits expire whether or not they are spent.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -129,6 +130,16 @@ def build_chat_model(
         raise AgentError(
             "GCP_PROJECT and GOOGLE_APPLICATION_CREDENTIALS are required for a "
             "'vertex:' AGENT_MODEL"
+        )
+    # google-auth reads the credentials path from os.environ, but
+    # pydantic-settings loads .env into Settings and never exports it — so a
+    # value living only in .env raises DefaultCredentialsError here even
+    # though it is configured. Bridge it, without clobbering a real env var.
+    if settings.GOOGLE_APPLICATION_CREDENTIALS and not os.environ.get(
+        "GOOGLE_APPLICATION_CREDENTIALS"
+    ):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = (
+            settings.GOOGLE_APPLICATION_CREDENTIALS
         )
     return ChatVertexAI(
         model_name=name.split(":", 1)[1],

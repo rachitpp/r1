@@ -372,3 +372,47 @@ Per-question hit@10:
 | q19 | ✓ | ✓ | ✓ | ✓ |
 | q20 | ✓ | ✓ | ✓ | ✓ |
 
+
+### Answer-level results — 2026-07-26
+
+**Model:** `mistral-medium-latest` · **Set:** frozen 20 (measurement) · **Model calls:** 133 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|
+| stuffed | 0.95 (19/20) | 0.95 (19/20) | 0.0 / 0 | 0 |
+| agent | 0.95 (19/20) | 0.95 (19/20) | 4.7 / 8 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| read_file | 58 | 60% |
+| search_code | 27 | 28% |
+| expand_context | 6 | 6% |
+| get_definition | 5 | 5% |
+
+Per-question:
+
+| q | stuffed | agent |
+|---|---|---|
+| q01 | ✓ | ✓ |
+| q02 | ✓ | ✓ |
+| q03 | ✓ | ✓ |
+| q04 | ✓ | ✓ |
+| q05 | ✓ | ✓ |
+| q06 | ✓ | ✓ |
+| q07 | ✓ | ✓ |
+| q08 | ✓ | ✓ |
+| q09 | ✓ | ✓ |
+| q10 | · | ✓ |
+| q11 | ✓ | ✓ |
+| q12 | ✓ | ✓ |
+| q13 | ✓ | ✓ |
+| q14 | ✓ | ✓ |
+| q15 | ✓ | · |
+| q16 | ✓ | ✓ |
+| q17 | ✓ | ✓ |
+| q18 | ✓ | ✓ |
+| q19 | ✓ | ✓ |
+| q20 | ✓ | ✓ |
+

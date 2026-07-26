@@ -82,10 +82,15 @@ class Settings(BaseSettings):
     MISTRAL_API_KEY: str | None = None
 
     # Vertex — measurement runs and the strong-model cross-check only; default
-    # tuning traffic never routes here. GOOGLE_APPLICATION_CREDENTIALS is read
-    # by google-auth from the environment, so it needs no field of its own.
+    # tuning traffic never routes here.
+    #
+    # GOOGLE_APPLICATION_CREDENTIALS needs a field even though google-auth
+    # reads it from os.environ: pydantic-settings loads .env into *this object*
+    # and never exports it, so a value that lives only in .env is invisible to
+    # google-auth. The model factory bridges the two (see app/agent/model.py).
     GCP_PROJECT: str | None = None
     GCP_LOCATION: str = "us-central1"
+    GOOGLE_APPLICATION_CREDENTIALS: str | None = None
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
