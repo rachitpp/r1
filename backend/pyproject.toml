@@ -15,6 +15,11 @@ dependencies = [
     "sentence-transformers>=5.6.1",
     "pgvector>=0.5.0",
     "pyyaml>=6.0.3",
+    "langgraph>=1.2.9",
+    "langchain-google-genai>=4.3.1",
+    "langchain-anthropic>=1.5.2",
+    "jedi>=0.20.0",
+    "langchain-google-vertexai>=3.2.4",
 ]
 
 [dependency-groups]

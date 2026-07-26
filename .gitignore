@@ -22,6 +22,17 @@ next-env.d.ts
 .env.*
 !.env.example
 
+# Credentials — never commit. GCP service-account keys carry a live private
+# key; prefer storing them OUTSIDE the repo entirely and pointing
+# GOOGLE_APPLICATION_CREDENTIALS at an absolute path.
+*.pem
+*.key
+service-account*.json
+*-service-account.json
+gcp-*.json
+Project_*.json
+credentials*.json
+
 # OS junk
 .DS_Store
 Thumbs.db

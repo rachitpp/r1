@@ -54,7 +54,7 @@ do not invent its contents.
 | Embeddings | sentence-transformers; model from env, default `BAAI/bge-small-en-v1.5` |
 | Store | Postgres 16 + pgvector (HNSW, cosine) + tsvector FTS; RRF fusion in one SQL query |
 | Rerank | `BAAI/bge-reranker-v2-m3` via CrossEncoder, CPU |
-| Agent | LangGraph state machine; model from env (Sonnet-class) |
+| Agent | LangGraph state machine; **provider-configurable via `AGENT_MODEL`** (Gemini / Claude / Vertex), built only by `app/agent/model.py` |
 | Queue | ARQ on Redis |
 | Transport | SSE via sse-starlette |
 | Frontend | Next.js 15, TS strict, pnpm, Tailwind + shadcn/ui, Vercel AI SDK (`useChat`), Shiki, TanStack Query |
@@ -128,7 +128,9 @@ pnpm install && pnpm dev                  # :3000
 | `DATABASE_URL` | Postgres DSN |
 | `REDIS_URL` | ARQ queue |
 | `ANTHROPIC_API_KEY` | Agent model |
-| `AGENT_MODEL` | Model id for the agent loop |
+| `AGENT_MODEL` | Model id for the agent loop; prefix selects the provider (`gemini` / `claude` / `vertex:`) |
+| `GOOGLE_API_KEY` | Gemini (AI Studio) — the default tuning provider |
+| `GOOGLE_APPLICATION_CREDENTIALS` / `GCP_PROJECT` / `GCP_LOCATION` | Vertex — measurement runs and the cross-check only |
 | `EMBEDDING_MODEL` | Default `BAAI/bge-small-en-v1.5` |
 | `RERANKER_MODEL` | Default `BAAI/bge-reranker-v2-m3` |
 

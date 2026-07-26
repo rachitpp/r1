@@ -180,9 +180,11 @@ CREATE TABLE symbols (
   file_path  TEXT NOT NULL,
   start_line INT NOT NULL,
   end_line   INT NOT NULL,
+  is_test    BOOLEAN NOT NULL DEFAULT FALSE,  -- from the file's §2.6 rule
   UNIQUE (repo_id, qualname, file_path, start_line)
 );
 CREATE INDEX symbols_name ON symbols (repo_id, name);
+CREATE INDEX symbols_repo_is_test ON symbols (repo_id, is_test);
 
 CREATE TABLE edges (
   id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -198,6 +200,7 @@ CREATE INDEX edges_to   ON edges (to_symbol);
 
 ALTER TABLE chunks ADD COLUMN symbol_id BIGINT REFERENCES symbols(id);
 -- backfilled during the symbol pass
+CREATE INDEX chunks_symbol_id ON chunks (symbol_id);
 ```
 
 Postgres FTS note: the default parser splits `verify_token` into `verify`
@@ -375,6 +378,26 @@ SearchHit = {
 `out` = edges where symbol is `from_symbol` (its callees/imports/bases);
 `in` = edges where symbol is `to_symbol` (its callers/importers/subclasses).
 
+### 6.3 Test symbols — flag-and-filter
+Symbols and edges are extracted from **all** files, tests included;
+`symbols.is_test` carries the file's §2.6 classification. Filtering happens
+at the tool layer, not at extraction — same philosophy as §2.6/§5.4:
+classify at ingest, decide at query time, keep the counterfactual measurable.
+
+Tool defaults exclude the test side:
+
+| Tool | Default behaviour | Override |
+|---|---|---|
+| `get_definition` | skips definitions in test files | `include_tests=True` |
+| `find_references` | excludes edges whose **from**-side symbol is a test | `include_tests=True` |
+| `expand_context(direction="in")` | same from-side exclusion | — |
+| `expand_context(direction="out")` | unaffected in practice — implementation rarely calls into tests | — |
+
+The asymmetry is deliberate: an incoming edge from a test tells you a test
+exercises the symbol, which is noise when the question is "who uses this?".
+Outgoing edges from implementation almost never land in tests, so filtering
+there would cost complexity for no measured benefit.
+
 ## §7 Agent
 
 ### 7.1 Tools — exact signatures
@@ -430,6 +453,14 @@ Graph: `model` → (has tool calls AND used < AGENT_TOOL_CAP) → `tools` →
 "Tool limit reached; answer now from what you have." — and make one final
 model call with tools disabled. Stream via `astream_events(version="v2")`.
 
+**The chat model is provider-configurable via `AGENT_MODEL`** (Gemini /
+Claude / Vertex), constructed only by `app/agent/model.py` — prefix-dispatched,
+with retry/backoff configured on the client. Tool binding stays
+provider-agnostic (`.bind_tools` on whatever the factory returns). See
+DECISIONS 2026-07-26 for the cost rationale and the measurement rules
+(model id recorded in every results block; stuffed-vs-agent comparisons are
+within-model only).
+
 ### 7.3 System prompt (outline — full text lives in `app/agent/prompts.py`)
 - Role: senior engineer explaining THIS repo (name, file count, top-level
   dirs injected).
@@ -445,6 +476,13 @@ Whenever a chunk/symbol body is placed into the model context (tool
 results), append its incoming edges as a trailing comment block:
 `# Called by: api/routes.py:34 (handle_login), api/routes.py:78 (refresh)`.
 This is the "Called by" data deferred out of embeddings in §2.4.
+
+**Implementation-side only, capped at 8.** The block draws from incoming
+edges whose from-side symbol is *not* a test (§6.3) — on a well-tested repo
+the callers of any given function are mostly its tests, which would crowd
+out the real call sites this block exists to surface. Cap at 8 callers,
+then `… +N more`; an unbounded list is a context-budget leak on hot symbols.
+Emit nothing when there are no implementation-side callers.
 
 ### 7.5 Citations
 The server regex-parses `[<path>:<start>-<end>]` markers from the final
@@ -556,6 +594,7 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `IGNORE_DIRS` | `{".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache"}` | §2.2 |
 | `TEST_DIR_SEGMENTS` | `{"tests", "test", "testing"}` | §2.6 |
 | `TEST_FILE_NAMES` | `{"conftest.py"}` | §2.6 |
+| `CALLED_BY_MAX` | 8 | §7.4 |
 | `MAX_FILE_BYTES` | 500_000 | §2.2 |
 | `MAX_FILES` | 10_000 | §2.2 |
 | `CHUNK_TOKEN_MAX` | 480 | §2.5 |

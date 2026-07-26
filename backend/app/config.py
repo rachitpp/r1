@@ -45,6 +45,7 @@ READ_MAX_LINES: int = 400
 EXPAND_MAX_DEPTH: int = 2
 EXPAND_TOKEN_BUDGET: int = 6_000
 AGENT_TOOL_CAP: int = 8
+CALLED_BY_MAX: int = 8  # §7.4 called-by block cap, then "+N more"
 JEDI_FILE_TIMEOUT_S: int = 10
 ZOMBIE_AFTER_S: int = 1_200
 PROGRESS_EVERY_N: int = 25
@@ -64,8 +65,21 @@ class Settings(BaseSettings):
     REDIS_URL: str
 
     # Optional / defaulted so Phase 0 runs without model keys.
+    #
+    # AGENT_MODEL is provider-configurable (SPEC §7.2, DECISIONS 2026-07-26):
+    # the prefix selects the client built by app/agent/model.py —
+    #   gemini*  -> ChatGoogleGenerativeAI  (GOOGLE_API_KEY)
+    #   claude*  -> ChatAnthropic           (ANTHROPIC_API_KEY)
+    #   vertex:* -> ChatVertexAI            (GOOGLE_APPLICATION_CREDENTIALS + GCP_PROJECT)
     ANTHROPIC_API_KEY: str | None = None
     AGENT_MODEL: str | None = None
+    GOOGLE_API_KEY: str | None = None
+
+    # Vertex — measurement runs and the strong-model cross-check only; default
+    # tuning traffic never routes here. GOOGLE_APPLICATION_CREDENTIALS is read
+    # by google-auth from the environment, so it needs no field of its own.
+    GCP_PROJECT: str | None = None
+    GCP_LOCATION: str = "us-central1"
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 

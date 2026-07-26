@@ -404,3 +404,86 @@ which is exactly what fusion does well.
 fusion-only mode is a new, unmeasured pipeline (it needs a synthetic rank or a
 score blend) and requires its own eval run. Logged in the v2 backlog beside the
 code-specific reranker; not a Phase 2 loose end.
+
+## 2026-07-26 — Phase 3 reconciliation 1: symbols/edges land in `004`
+`003` is `is_test` (test shadowing, above), so Phase 3's symbol graph is
+`004_symbols.sql`. The `chunks.symbol_id` backfill column moves there with it.
+SPEC §3's migration list reads `001 → 002 → 003_is_test → 004_symbols`.
+Mechanical, recorded only so the next reader doesn't hunt for a missing `003`.
+
+## 2026-07-26 — Phase 3 reconciliation 2: test symbols use flag-and-filter
+**Decision.** Extract symbols and edges from **all** files including tests;
+carry the file's §2.6 classification onto `symbols.is_test`; filter at the
+tool layer, not at extraction (SPEC §6.3). `get_definition` skips test-file
+definitions; `find_references` and `expand_context(direction="in")` exclude
+edges whose **from**-side symbol is a test; both take `include_tests=False`
+by default, mirroring `search_code`.
+
+**Why extract-then-filter rather than skip-at-ingest.** Identical reasoning
+to the Phase 2 chunk decision: a flag is reversible and measurable, a
+skipped extraction is neither. Re-including tests later is a query change,
+not a re-ingest. It also keeps the graph honest — the edges exist, we simply
+choose not to surface them by default.
+
+**Why the direction asymmetry.** Incoming edges from tests answer "a test
+exercises this", which is noise when the agent asks "who uses this?" — and on
+a well-tested repo the tests *outnumber* the real call sites, so unfiltered
+incoming edges bury the answer. Outgoing edges from implementation almost
+never land in tests, so filtering the `out` direction would add a branch for
+no measured benefit. Filtering only where the noise actually is.
+
+## 2026-07-26 — Phase 3 reconciliation 3: §7.4 called-by is implementation-only, capped at 8
+The called-by comment block appended to tool results draws from
+implementation-side incoming edges only, capped at **8** callers
+(`CALLED_BY_MAX`, SPEC §12) with a `… +N more` suffix; nothing is emitted
+when there are no implementation-side callers.
+
+Two failure modes this avoids. Without the test filter, the block on a
+well-tested symbol is mostly test functions — the same shadowing that cost
+Phase 2 its gate, resurfacing in the agent's context instead of the
+retriever's. Without the cap, a hot symbol (`Response.__init__`) emits a
+caller list longer than the code it annotates, spending context budget on
+data the agent didn't ask for.
+
+## 2026-07-26 — Phase 3 reconciliation 4: provider-configurable agent model
+**Decision.** `AGENT_MODEL` selects the chat provider by prefix — `gemini*`
+→ `ChatGoogleGenerativeAI`, `claude*` → `ChatAnthropic`, `vertex:*` →
+`ChatVertexAI` — constructed only by `app/agent/model.py`, with retry and
+exponential backoff configured on the client. Tool binding stays
+provider-agnostic (`.bind_tools` on whatever the factory returns). Default
+is **`gemini-3.5-flash`** on Google's AI Studio free tier.
+
+**Rationale.** Zero marginal cost per tuning iteration, which is what makes
+M3's iterate-measure loop affordable at all — a phase that tunes prompts and
+tool descriptions against dev questions would otherwise bill for every
+attempt. `AGENT_MODEL` has been env config since Phase 0, so this is a
+configuration choice the design already anticipated, not a stack change.
+
+**Model selection, measured not assumed.** `gemini-2.5-flash` appears in
+ListModels but returns 404 — *"no longer available to new users"* — so the
+listing is not proof of access. `gemini-3.6-flash` returned empty content at
+`max_output_tokens=32` (a thinking model consuming its whole budget before
+emitting text), a real constraint on agent-loop token sizing.
+`gemini-2.0-flash` 429'd on the first call. `gemini-3.5-flash` is GA rather
+than preview, responds correctly, and is a pinned concrete id — an alias like
+`gemini-flash-latest` would drift between runs and silently break the
+within-model comparison rule below.
+
+**Measurement rules.** The model id is recorded in **every** results block.
+Stuffed-vs-agent comparisons are **within-model only** — comparing a stuffed
+baseline on one model against an agent on another measures the models, not
+the thesis. A one-time strong-model cross-check (Claude Sonnet, or a Vertex
+Pro-class model while trial credits last) is the **pre-registered** diagnostic
+if the M3 delta is ambiguous; it is not a redesign trigger.
+
+**Vertex usage policy.** GCP service-account credentials are configured and
+the `vertex:` branch is real code rather than a stub. Policy: tuning stays on
+the free AI Studio key; Vertex Pro-class is for measurement runs and the
+cross-check only; **default traffic never routes through Vertex.** Trial
+credits are a finite measurement budget, not a tuning budget.
+
+**Data-handling note.** The AI Studio free tier permits Google to train on
+submitted data. The payload here is public repository code (`encode/httpx`)
+plus benchmark questions we authored — nothing proprietary. Recorded so the
+tradeoff is explicit rather than assumed; a private-repo deployment would
+need a paid tier or the Vertex path, where that clause does not apply.
