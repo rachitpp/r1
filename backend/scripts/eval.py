@@ -6,12 +6,18 @@ an existing block, never tunes against individual questions — it only measures
 
     uv run python scripts/eval.py --mode all
     uv run python scripts/eval.py --mode hybrid+rerank
+    uv run python scripts/eval.py --mode all --include-tests   # shadowed condition
+
+``--include-tests`` restores test chunks to the candidate pool (SPEC §5.4). The
+default condition excludes them; running both is what keeps the counterfactual
+measurable rather than asserted.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import datetime as dt
 import re
 import sys
@@ -101,11 +107,75 @@ async def _truth_file_guard(
         print("!" * 60)
 
 
-async def run(modes: list[Mode], repo_ref: str) -> int:
+@dataclasses.dataclass
+class ConditionResult:
+    """Measurements for one corpus condition (SPEC §5.4).
+
+    ``label`` names the condition in the report and the EVAL.md block, so a
+    reader can never confuse an implementation-only run with a shadowed one.
+    """
+
+    label: str
+    include_tests: bool
+    hits: dict[Mode, dict[int, int]]
+    rr_sum: dict[Mode, float]
+    grid: dict[str, dict[Mode, bool]]
+
+
+CONDITION_LABELS = {
+    False: "implementation-only (default, is_test excluded)",
+    True: "shadowed (--include-tests, is_test included)",
+}
+
+
+async def _measure(
+    conn: asyncpg.Connection,
+    repo_id: UUID,
+    questions: list[dict],
+    modes: list[Mode],
+    *,
+    include_tests: bool,
+) -> ConditionResult:
+    """Run every question through every mode under one corpus condition."""
+    # hits[mode][k] = #questions hitting within top-k; rr_sum -> MRR.
+    hits: dict[Mode, dict[int, int]] = {m: {k: 0 for k in KS} for m in modes}
+    rr_sum: dict[Mode, float] = {m: 0.0 for m in modes}
+    grid: dict[str, dict[Mode, bool]] = {}
+    for q in questions:
+        truth = q.get("truth", {})
+        files = set(truth.get("files", []))
+        symbols = list(truth.get("symbols", []))
+        grid[q["id"]] = {}
+        for mode in modes:
+            found = await search(
+                conn,
+                repo_id,
+                q["question"],
+                k=MAX_K,
+                mode=mode,
+                include_tests=include_tests,
+            )
+            rank = _first_hit_rank(found, files, symbols)
+            for k in KS:
+                if rank is not None and rank <= k:
+                    hits[mode][k] += 1
+            rr_sum[mode] += 1.0 / rank if rank is not None else 0.0
+            grid[q["id"]][mode] = rank is not None and rank <= MAX_K
+    return ConditionResult(
+        label=CONDITION_LABELS[include_tests],
+        include_tests=include_tests,
+        hits=hits,
+        rr_sum=rr_sum,
+        grid=grid,
+    )
+
+
+async def run(modes: list[Mode], repo_ref: str, conditions: list[bool]) -> int:
     url, sha, questions = _parse_eval_md()
     ref = repo_ref or url
     settings = get_settings()
     pool = await create_pool(settings.DATABASE_URL)
+    results: list[ConditionResult] = []
     try:
         async with pool.acquire() as conn:
             repo_id = await resolve_repo_id(conn, ref)
@@ -119,39 +189,36 @@ async def run(modes: list[Mode], repo_ref: str) -> int:
             n_chunks = await conn.fetchval(
                 "SELECT count(*) FROM chunks WHERE repo_id = $1", repo_id
             )
+            n_impl = await conn.fetchval(
+                "SELECT count(*) FROM chunks WHERE repo_id = $1 AND NOT is_test",
+                repo_id,
+            )
             if sha and head_sha and not head_sha.startswith(sha[:12]):
                 print(f"WARNING: ingested head {head_sha} != EVAL pinned {sha}")
 
             await _truth_file_guard(conn, repo_id, questions)
 
-            # hits[mode][k] = #questions hitting within top-k; rr_sum -> MRR.
-            hits: dict[Mode, dict[int, int]] = {m: {k: 0 for k in KS} for m in modes}
-            rr_sum: dict[Mode, float] = {m: 0.0 for m in modes}
-            grid: dict[str, dict[Mode, bool]] = {}
-            for q in questions:
-                truth = q.get("truth", {})
-                files = set(truth.get("files", []))
-                symbols = list(truth.get("symbols", []))
-                grid[q["id"]] = {}
-                for mode in modes:
-                    found = await search(
-                        conn, repo_id, q["question"], k=MAX_K, mode=mode
+            for include_tests in conditions:
+                print(f"\n>>> condition: {CONDITION_LABELS[include_tests]}")
+                results.append(
+                    await _measure(
+                        conn, repo_id, questions, modes, include_tests=include_tests
                     )
-                    rank = _first_hit_rank(found, files, symbols)
-                    for k in KS:
-                        if rank is not None and rank <= k:
-                            hits[mode][k] += 1
-                    rr_sum[mode] += 1.0 / rank if rank is not None else 0.0
-                    grid[q["id"]][mode] = rank is not None and rank <= MAX_K
+                )
     finally:
         await close_pool(pool)
 
     total = len(questions)
-    report = _format_report(modes, hits, rr_sum, grid, url, head_sha, n_chunks, total)
-    print(report)
-    _append_results(modes, hits, rr_sum, grid, url, head_sha, n_chunks, total)
+    corpus = _corpus_line(n_chunks, n_impl)
+    print(_format_report(modes, results, url, head_sha, corpus, total))
+    _append_results(modes, results, url, head_sha, corpus, total)
     print(f"\nappended results block to {EVAL_MD}")
     return 0
+
+
+def _corpus_line(n_chunks: int, n_impl: int) -> str:
+    """Chunk counts split by ``is_test`` — the corpus the numbers came from."""
+    return f"{n_chunks} chunks ({n_impl} implementation, {n_chunks - n_impl} test)"
 
 
 def _rate(n: int, total: int) -> str:
@@ -192,55 +259,66 @@ def _grid_table(
 
 def _format_report(
     modes: list[Mode],
-    hits: dict[Mode, dict[int, int]],
-    rr_sum: dict[Mode, float],
-    grid: dict[str, dict[Mode, bool]],
+    results: list[ConditionResult],
     url: str,
     head_sha: str | None,
-    n_chunks: int,
+    corpus: str,
     total: int,
 ) -> str:
     sha_short = (head_sha or "?")[:12]
     lines = [
         "=" * 60,
-        f"eval: {url} @ {sha_short}  ({n_chunks} chunks, {total} questions)",
+        f"eval: {url} @ {sha_short}  ({corpus}, {total} questions)",
         "=" * 60,
-        "",
-        "hit@k / MRR summary:",
-        *_summary_table(modes, hits, rr_sum, total),
-        "",
-        "per-question hit@10:",
-        *_grid_table(modes, grid),
     ]
+    for res in results:
+        lines += [
+            "",
+            f"--- {res.label} ---",
+            "",
+            "hit@k / MRR summary:",
+            *_summary_table(modes, res.hits, res.rr_sum, total),
+            "",
+            "per-question hit@10:",
+            *_grid_table(modes, res.grid),
+        ]
     return "\n".join(lines)
 
 
 def _append_results(
     modes: list[Mode],
-    hits: dict[Mode, dict[int, int]],
-    rr_sum: dict[Mode, float],
-    grid: dict[str, dict[Mode, bool]],
+    results: list[ConditionResult],
     url: str,
     head_sha: str | None,
-    n_chunks: int,
+    corpus: str,
     total: int,
 ) -> None:
+    """Append ONE dated block covering every measured condition.
+
+    EVAL.md is frozen (CLAUDE.md): blocks are only ever appended, never edited,
+    and each condition is labelled so runs can never be silently conflated.
+    """
     today = dt.date.today().isoformat()
     sha_short = (head_sha or "?")[:12]
     block = [
         "",
         f"### Results — {today}",
         "",
-        f"**Repo:** {url} @ `{sha_short}` — {n_chunks} chunks, "
+        f"**Repo:** {url} @ `{sha_short}` — {corpus}, "
         f"{total} questions. Modes: {', '.join(modes)}.",
         "",
-        *_summary_table(modes, hits, rr_sum, total),
-        "",
-        "Per-question hit@10:",
-        "",
-        *_grid_table(modes, grid),
-        "",
     ]
+    for res in results:
+        block += [
+            f"**Corpus condition:** {res.label}",
+            "",
+            *_summary_table(modes, res.hits, res.rr_sum, total),
+            "",
+            "Per-question hit@10:",
+            "",
+            *_grid_table(modes, res.grid),
+            "",
+        ]
     with EVAL_MD.open("a", encoding="utf-8") as fh:
         fh.write("\n".join(block) + "\n")
 
@@ -258,6 +336,18 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="repo url or id (default: the benchmark repo from EVAL.md)",
     )
+    condition = parser.add_mutually_exclusive_group()
+    condition.add_argument(
+        "--include-tests",
+        action="store_true",
+        help="measure the shadowed condition: keep is_test chunks in the pool "
+        "(SPEC §5.4). Default excludes them.",
+    )
+    condition.add_argument(
+        "--both-conditions",
+        action="store_true",
+        help="measure default AND --include-tests, appending one labelled block.",
+    )
     args = parser.parse_args(argv)
     if args.mode == "all":
         modes: list[Mode] = list(MODES)
@@ -267,7 +357,11 @@ def main(argv: list[str] | None = None) -> int:
         if unknown:
             parser.error(f"unknown mode(s): {unknown}; valid: {list(MODES)}")
         modes = [m for m in MODES if m in requested]  # canonical order, deduped
-    return asyncio.run(run(modes, args.repo))
+    if args.both_conditions:
+        conditions = [False, True]
+    else:
+        conditions = [bool(args.include_tests)]
+    return asyncio.run(run(modes, args.repo, conditions))
 
 
 if __name__ == "__main__":

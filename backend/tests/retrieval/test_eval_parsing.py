@@ -3,16 +3,30 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 _EVAL_PY = Path(__file__).resolve().parents[2] / "scripts" / "eval.py"
 
 
 def _load_eval_module() -> object:
+    """Load scripts/eval.py as a module.
+
+    The module must be registered in ``sys.modules`` *before* ``exec_module``:
+    that is the documented importlib recipe, and anything resolving a class back
+    to its module — ``dataclasses``, ``typing.get_type_hints``, pickle — fails
+    with ``AttributeError: 'NoneType' object has no attribute '__dict__'``
+    without it.
+    """
     spec = importlib.util.spec_from_file_location("eval_script", _EVAL_PY)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        del sys.modules[spec.name]
+        raise
     return module
 
 
