@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from app.config import RRF_K
+import asyncio
+from uuid import uuid4
+
+import pytest
+
+from app.config import RRF_K, Settings, get_settings
+from app.retrieval import hybrid
 from app.retrieval.hybrid import extract_identifiers, qualname_matches, rrf_fuse
 
 
@@ -80,3 +86,59 @@ def test_qualname_matches_rejects_partial_and_none() -> None:
     assert not qualname_matches("httpx._config.Timeout", "config")
     assert not qualname_matches("mybuild_request", "build_request")
     assert not qualname_matches(None, "Timeout")
+
+
+# --- rerank ablation (SPEC §5.3) -------------------------------------------
+
+
+def test_rerank_is_off_by_default_in_config() -> None:
+    """The ablation is the default, not an opt-in (DECISIONS 2026-07-26)."""
+    assert Settings.model_fields["RERANK_ENABLED"].default is False
+
+
+@pytest.mark.parametrize(
+    ("flag", "explicit", "expected_mode"),
+    [
+        (False, None, "hybrid"),  # default: fusion order
+        (True, None, "hybrid+rerank"),  # config re-enables
+        (False, True, "hybrid+rerank"),  # explicit arg overrides config off
+        (True, False, "hybrid"),  # explicit arg overrides config on
+    ],
+)
+def test_hybrid_search_mode_selection(
+    monkeypatch, flag: bool, explicit: bool | None, expected_mode: str
+) -> None:
+    """hybrid_search picks its mode from `rerank`, falling back to RERANK_ENABLED."""
+    captured: dict[str, object] = {}
+
+    async def fake_search(conn, repo_id, query, *, k, mode, include_tests):
+        captured["mode"] = mode
+        return []
+
+    async def fake_create_pool(dsn):
+        class _Pool:
+            def acquire(self):
+                class _Ctx:
+                    async def __aenter__(self_inner):
+                        return object()
+
+                    async def __aexit__(self_inner, *exc):
+                        return False
+
+                return _Ctx()
+
+        return _Pool()
+
+    async def fake_close_pool(pool):
+        return None
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "RERANK_ENABLED", flag)
+    monkeypatch.setattr(hybrid, "search", fake_search)
+    monkeypatch.setattr(hybrid, "create_pool", fake_create_pool)
+    monkeypatch.setattr(hybrid, "close_pool", fake_close_pool)
+
+    asyncio.run(
+        hybrid.hybrid_search(uuid4(), "how does auth work", rerank=explicit)
+    )
+    assert captured["mode"] == expected_mode

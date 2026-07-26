@@ -339,6 +339,57 @@ now **pass** the gate as written. It was dead before exclusion (§5 of this doc'
 earlier revision) because `hybrid` was 0.80 < `vector` 0.85. Recorded as
 evidence; not adopted without sign-off.
 
+### 6quater. Cross-encoder scores on the two demoted questions (evidence)
+
+Run on the default implementation-only pool (40 candidates), 2026-07-26. The
+mechanism claim — a general-purpose passage model rewards question-vocabulary
+overlap over terse implementation — is measurable, so here it is measured.
+
+**q09 — "How does httpx handle responses the server has compressed?"**
+Truth: `httpx/_decoders.py`. Three truth chunks are in the pool.
+
+| | CE score | CE rank | fusion rank |
+|---|---|---|---|
+| `_decoders.ZStandardDecoder` (truth) | **+0.0468** | **38** | **4** |
+| `_decoders.BrotliDecoder.__init__` (truth) | +0.0783 | 37 | 37 |
+| `_decoders.ZStandardDecoder.__init__` (truth) | +0.0174 | 40 | 38 |
+| `_models.Response.aiter_bytes` | +0.6666 | 1 | 6 |
+| `_models.Response.iter_bytes` | +0.6535 | 2 | 7 |
+| `_transports.default.HTTPTransport.handle_request` | +0.5271 | 3 | 16 |
+
+Fusion put a truth chunk at **#4**; the cross-encoder pushed it to **#38** — out
+of the top-10 by 28 places. The winning chunks are `Response.*` and
+`*.handle_request`: their names and docstrings share surface vocabulary with the
+question ("response", "handle"), while the code that actually decompresses is a
+terse decoder class whose body is `self.decompressor = ...`. The CE scores the
+truth chunks at **+0.017 … +0.078** against **+0.667** for the top distractor —
+roughly an order of magnitude, in the wrong direction.
+
+**q14 — "How does httpx turn a streamed byte body into a string as chunks arrive?"**
+Truth: `httpx/_decoders.py`. Four truth chunks in the pool.
+
+| | CE score | CE rank | fusion rank |
+|---|---|---|---|
+| `_decoders.ByteChunker.decode` (truth) | **+0.3782** | **20** | **5** |
+| `_decoders.ByteChunker` (truth) | +0.1388 | 31 | 14 |
+| `_transports.asgi.ASGITransport.handle_async_request` | +0.6568 | 1 | 31 |
+| `_models.Response.aiter_raw` | +0.6168 | 2 | 21 |
+| `_models.Response.iter_raw` | +0.6107 | 3 | 19 |
+| `_models.Response.iter_text` | +0.6019 | 4 | 29 |
+
+Same shape: fusion **#5** → CE **#20**. The chunks that displace it are
+`iter_raw` / `iter_text` / `aiter_raw`, whose identifiers echo the question's
+"streamed", "string", "chunks" almost word-for-word. Note the inversion in the
+fusion column — the CE promoted chunks fusion had ranked #31, #21, #19, #29 over
+one it ranked #5.
+
+**Reading.** In both cases the reranker is not failing at the margin: it is
+inverting a correct fusion ordering by a wide margin, and the chunks it prefers
+are the ones whose *surface vocabulary* matches the question. This is the
+NL-vs-terse-code mechanism as concrete evidence rather than narrative, and it is
+the same phenomenon as test shadowing (§6bis) acting on implementation code —
+prose-like beats terse, regardless of which is correct.
+
 ## 7. Specific questions for the reviewer
 
 1. Is hit@10 the right acceptance gate for a component whose job is low-k

@@ -1,8 +1,10 @@
 """Hybrid retrieval: RRF fusion + exact-symbol injection + rerank (SPEC §5).
 
 ``hybrid_search(repo_id, query, k=SEARCH_K)`` is the single public entry point
-for feature code (CLAUDE.md hard rule 2) and runs the full production pipeline
-(vector ⊕ FTS fused with RRF, symbol injection, cross-encoder rerank).
+for feature code (CLAUDE.md hard rule 2). The default pipeline is vector ⊕ FTS
+fused with RRF over implementation chunks; the cross-encoder rerank is **off by
+default** (``RERANK_ENABLED``, SPEC §5.3) because it measured worse-or-equal
+than plain fusion at every k and at MRR.
 
 The mode-parameterized ``search(conn, ...)`` underneath is what the Phase 2
 diagnostics (``scripts/eval.py``, ``scripts/debug_search.py``) call to isolate a
@@ -381,19 +383,38 @@ async def search(
 
 
 async def hybrid_search(
-    repo_id: UUID, query: str, k: int = SEARCH_K, *, include_tests: bool = False
+    repo_id: UUID,
+    query: str,
+    k: int = SEARCH_K,
+    *,
+    include_tests: bool = False,
+    rerank: bool | None = None,
 ) -> list[SearchHit]:
     """The single public retrieval entry point (SPEC §5.3, CLAUDE.md rule 2).
 
-    Runs the full production pipeline (hybrid fusion + symbol injection +
-    rerank) and manages its own pooled connection. Feature code (agent, API)
-    calls this; it never touches the single-signal legs directly.
+    Runs the default production pipeline and manages its own pooled connection.
+    Feature code (agent, API) calls this; it never touches the single-signal
+    legs directly.
+
+    **Rerank is OFF by default** (``RERANK_ENABLED``, SPEC §5.3): the default
+    pipeline returns RRF fusion order. The cross-encoder measured worse-or-equal
+    than plain fusion at every k and at MRR, in both corpus conditions
+    (DECISIONS 2026-07-26). Pass ``rerank=True``, or set ``RERANK_ENABLED``, to
+    re-enable it; it stays wired and lazily loaded so the ablation remains
+    measurable rather than deleted.
+
+    Note that §5.2 symbol injection rides the rerank path — injected chunks
+    carry no RRF score, so there is nothing to order them by in fusion-only
+    mode. Turning rerank off therefore also turns injection off; this is the
+    exact configuration measured at `hybrid` hit@10 0.95.
 
     Retrieval targets implementation by default: test chunks are flagged at
     ingest and filtered here (SPEC §5.4). They remain in the ``files`` table, so
     ``read_file`` and ``list_directory`` still see them.
     """
     settings = get_settings()
+    use_rerank = settings.RERANK_ENABLED if rerank is None else rerank
+    mode: Mode = "hybrid+rerank" if use_rerank else "hybrid"
     pool = await create_pool(settings.DATABASE_URL)
     try:
         async with pool.acquire() as conn:
@@ -402,7 +423,7 @@ async def hybrid_search(
                 repo_id,
                 query,
                 k=k,
-                mode="hybrid+rerank",
+                mode=mode,
                 include_tests=include_tests,
             )
     finally:

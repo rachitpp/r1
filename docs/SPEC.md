@@ -306,10 +306,41 @@ counterfactual stays measurable (`scripts/eval.py --both-conditions`) rather
 than merely asserted. The `files` table is untouched — `read_file` and
 `list_directory` still serve test files.
 
-### 5.3 Rerank
-Candidates = fusion top-40 ∪ symbol-injected, deduped. Score each
+### 5.3 Rerank — optional, OFF by default
+**The default pipeline returns RRF fusion order.** `RERANK_ENABLED` (§12,
+default `false`) and the `rerank=` argument to `hybrid_search` both control it;
+the explicit argument wins.
+
+When enabled: candidates = fusion top-40 ∪ symbol-injected, deduped. Score each
 (query, header + code truncated to `RERANK_PASSAGE_TOKENS`) pair with the
 CrossEncoder (`RERANKER_MODEL`); return top-`SEARCH_K` ordered hits.
+
+**Measured rationale** (DECISIONS 2026-07-26; full tables in `docs/EVAL.md`).
+The cross-encoder was worse-or-equal to plain fusion at *every* k and at MRR, in
+*both* corpus conditions — never better on any measured cell:
+
+| Condition | Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|---|
+| implementation-only | hybrid | 0.80 | **0.90** | **0.95** | **0.755** |
+| implementation-only | hybrid+rerank | 0.80 | 0.80 | 0.85 | 0.722 |
+| shadowed | hybrid | 0.70 | 0.80 | **0.80** | **0.617** |
+| shadowed | hybrid+rerank | 0.70 | 0.75 | 0.75 | 0.604 |
+
+The failure is not marginal: on q09 the reranker moved a truth chunk from fusion
+rank 4 to rank 38, and on q14 from rank 5 to rank 20, preferring chunks whose
+identifiers echo the question's surface vocabulary (`Response.iter_text`,
+`aiter_raw`) over the terse implementation that does the work. Cost of keeping
+it on: ~2.4 GB resident for ≤0 measured value.
+
+The model stays **wired and lazily loaded**, and `scripts/eval.py` keeps its
+`hybrid+rerank` mode, so the ablation is permanently measurable rather than
+deleted — the same philosophy as `include_tests` (§5.4).
+
+**Consequence — §5.2 injection rides the rerank path.** Injected chunks carry no
+RRF score, so fusion-only mode has nothing to order them by. Disabling rerank
+therefore also disables injection. This is the exact configuration measured at
+`hybrid` hit@10 0.95; re-attaching injection to the default path would be a new,
+unmeasured pipeline and needs its own eval.
 
 `retrieval.hybrid_search(repo_id, query, k=SEARCH_K)` is the single
 public entry point (CLAUDE.md hard rule 2) and returns:
@@ -353,6 +384,10 @@ error and adapt.
 
 ```python
 search_code(query: str, k: int = 10) -> {"hits": [SearchHit]}
+    # Calls retrieval.hybrid_search() with its DEFAULT configuration: RRF
+    # fusion over implementation chunks, rerank OFF (§5.3), tests excluded
+    # (§5.4). The agent must not pass rerank=True — the reranker measured
+    # worse-or-equal to plain fusion at every k and MRR (DECISIONS 2026-07-26).
 
 read_file(path: str, start_line: int | None = None,
           end_line: int | None = None) -> \
@@ -528,6 +563,7 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `RRF_K` | 60 | §5.1 |
 | `SEARCH_K` | 10 | §5.3 |
 | `RERANK_PASSAGE_TOKENS` | 512 | §5.3 |
+| `RERANK_ENABLED` | `false` (env-overridable) | §5.3 |
 | `READ_MAX_LINES` | 400 | §7.1 |
 | `EXPAND_MAX_DEPTH` | 2 | §7.1 |
 | `EXPAND_TOKEN_BUDGET` | 6_000 | §7.1 |

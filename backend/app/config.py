@@ -73,6 +73,13 @@ class Settings(BaseSettings):
     # downloads. Read here so nothing else touches the environment (rule 12).
     HF_TOKEN: str | None = None
 
+    # Cross-encoder rerank — OFF by default (SPEC §5.3, DECISIONS 2026-07-26).
+    # Measured worse-or-equal than plain fusion at every k and at MRR, in both
+    # corpus conditions, for 2.4 GB of resident model. Kept wired and lazily
+    # loaded so the ablation stays permanently measurable
+    # (`scripts/eval.py --mode hybrid+rerank`).
+    RERANK_ENABLED: bool = False
+
 
 @lru_cache
 def get_settings() -> Settings:

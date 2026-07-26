@@ -309,3 +309,72 @@ letter at a **non-initial** position *and* at least one lowercase letter.
 injection; the vector and FTS legs still reach them, so injection is a lost
 *extra* signal, not the only path. Superseded the previous mixed-case test; SPEC
 §5.2 carries the rule table.
+
+## 2026-07-26 — Reranker ablated: optional, OFF by default
+**Decision.** The cross-encoder rerank step (`bge-reranker-v2-m3`) is no longer
+part of the default pipeline. `RERANK_ENABLED` (default `false`) and
+`hybrid_search(rerank=…)` control it; the default returns RRF fusion order. The
+model stays **wired and lazily loaded**, and `eval.py` keeps its `hybrid+rerank`
+mode, so the ablation is permanently measurable rather than deleted — the same
+philosophy as `include_tests` (§5.4).
+
+**Evidence — worse-or-equal at every k and at MRR, in both corpus conditions.**
+Never better on any measured cell:
+
+| Condition | Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|---|
+| implementation-only | hybrid | 0.80 | **0.90** | **0.95** | **0.755** |
+| implementation-only | hybrid+rerank | 0.80 | 0.80 | 0.85 | 0.722 |
+| shadowed | hybrid | 0.70 | 0.80 | **0.80** | **0.617** |
+| shadowed | hybrid+rerank | 0.70 | 0.75 | 0.75 | 0.604 |
+
+There is no k at which the reranker wins — including hit@3 and MRR, the low-k
+signals cross-encoders are supposed to own (review doc §4(c) predicted it might
+win there; it ties at hit@3 and loses at MRR).
+
+**Mechanism, measured not asserted** (review doc §6quater). Cross-encoder scores
+on the two questions it demotes out of the top-10:
+- **q09:** truth `_decoders.ZStandardDecoder` — fusion rank **4** → CE rank
+  **38** (CE +0.0468). Winner: `_models.Response.aiter_bytes` (CE **+0.6666**).
+- **q14:** truth `_decoders.ByteChunker.decode` — fusion rank **5** → CE rank
+  **20** (CE +0.3782). Winners: `Response.iter_raw` / `iter_text` / `aiter_raw`
+  (CE +0.60…+0.62), which fusion had ranked #19/#29/#21.
+
+The reranker is not failing at the margin — it inverts a correct fusion ordering
+by a wide margin, preferring chunks whose *surface vocabulary* echoes the
+question over the terse implementation that does the work. This is the same
+prose-beats-terse phenomenon as test shadowing (2026-07-26 entry above), acting
+on implementation code.
+
+**Option A (fusion floor / score blend) rejected.** It would restore
+monotonicity by construction, but: it keeps 2.4 GB resident and ~25 min of eval
+wall-clock for a component with **≤0 measured value**; it introduces a new
+tuning surface (α) that must be fitted on a validation signal the project does
+not have, on a 20-question benchmark where any α is over-fitted; and it
+partially neuters the reranker anyway. Paying complexity to rescue a component
+that never wins is the wrong trade.
+
+**Reranker swap (Option D) deferred to the v2 backlog.** `bge-reranker-v2-m3` is
+general-purpose and multilingual, applied to Python. A code-specific or smaller
+cross-encoder may genuinely earn its place; that is an A/B against
+`--mode hybrid+rerank`, not a Phase 2 blocker.
+
+**Consequence — §5.2 injection rides the rerank path.** Injected chunks carry no
+RRF score, so fusion-only mode has nothing to order them by; disabling rerank
+also disables injection. This is the exact configuration measured at `hybrid`
+hit@10 0.95. Re-attaching injection to the default path would be a new,
+unmeasured pipeline and needs its own eval.
+
+**Gate intent clarified, logged not silent.** ROADMAP's Phase 2 done-when named
+a configuration (`hybrid+rerank`) rather than the intent — *the full pipeline
+must not do worse than its simplest part*. It now names the **default
+pipeline**. The bar was not lowered: PASS is `hybrid` 0.95 ≥ `vector` 0.90 ≥
+`fts` 0.80, with dominance at every k and at MRR. Original wording preserved in
+ROADMAP.
+
+**Cross-reference.** The by-construction caveat from the test-shadowing entry
+above applies to these numbers too: all 20 EVAL truth files are implementation,
+so `is_test` exclusion raises every mode's score by construction. The reranker
+comparison is unaffected by it — `hybrid` and `hybrid+rerank` are measured on
+the *same* pool in the *same* condition, so the ablation verdict is a
+within-condition comparison and holds in the shadowed condition too.
