@@ -19,7 +19,7 @@ from functools import lru_cache
 from pathlib import PurePosixPath
 
 import tree_sitter_python as tsp
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Language, Node, Parser, Tree
 
 from app.ingest.filters import SourceFile
 
@@ -71,6 +71,20 @@ class BodyBlock:
 def _parser() -> Parser:
     """Return a process-wide tree-sitter Python parser."""
     return Parser(Language(tsp.language()))
+
+
+def parse_tree(text: str) -> Tree | None:
+    """Parse ``text`` with the shared Python parser; ``None`` on failure.
+
+    Exposed so the Phase 3 symbol pass (SPEC §6.1) can locate call sites and
+    class bases on the same tree-sitter instance the chunker uses, rather
+    than standing up a second parser. Callers check ``root_node.has_error``.
+    """
+    try:
+        return _parser().parse(text.encode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 — a bad file must not kill ingest
+        logger.warning("tree-sitter parse failed: %s", exc)
+        return None
 
 
 def module_path_from_rel(rel_path: str) -> str:

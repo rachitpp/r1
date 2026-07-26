@@ -55,6 +55,12 @@ module = ["asyncpg", "arq", "arq.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+# Jedi ships no py.typed marker. Used only inside the symbol pass, where every
+# resolution is wrapped in a best-effort try/except anyway (SPEC §6.1).
+module = ["jedi", "jedi.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
 # numpy 2.x ships PEP 695 `type` aliases in its stubs, which mypy rejects under
 # python_version 3.11 (our support floor). pgvector / sentence-transformers pull
 # numpy in transitively; we never type-check against its internals, so skip

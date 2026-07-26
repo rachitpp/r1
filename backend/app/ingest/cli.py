@@ -23,8 +23,11 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from uuid import UUID
 
-from app.config import PROGRESS_EVERY_N, get_settings
+import asyncpg
+
+from app.config import JEDI_FILE_TIMEOUT_S, PROGRESS_EVERY_N, get_settings
 from app.db import queries
 from app.db.pool import close_pool, create_pool
 from app.exceptions import IngestError
@@ -33,6 +36,7 @@ from app.ingest.clone import cloned_repo
 from app.ingest.embedder import get_embedder
 from app.ingest.filters import SelectionResult, is_test_path, select_files
 from app.ingest.parser import ParsedFile, parse_file
+from app.ingest.symbols import EdgeStats, extract_edges, extract_symbols
 from app.ingest.tokens import HeuristicTokenCounter
 
 logger = logging.getLogger(__name__)
@@ -97,6 +101,13 @@ class DbIngestResult:
     parse_elapsed_s: float
     embed_elapsed_s: float
     db_elapsed_s: float
+    # Phase 3 symbol pass (SPEC §6). None when --no-graph.
+    n_symbols: int = 0
+    n_symbols_test: int = 0
+    n_edges: int = 0
+    edge_stats: EdgeStats | None = None
+    n_chunks_linked: int = 0
+    graph_elapsed_s: float = 0.0
 
 
 def _parse_all(selection: SelectionResult) -> tuple[list[ParsedFile], int]:
@@ -132,7 +143,48 @@ def _chunk_to_row(chunk: Chunk, embedding: list[float]) -> queries.ChunkRow:
     )
 
 
-async def ingest_to_db(url: str) -> DbIngestResult:
+async def _build_graph(
+    conn: asyncpg.Connection,
+    repo_id: UUID,
+    repo_dir: Path,
+    selection: SelectionResult,
+    parsed: list[ParsedFile],
+) -> tuple[int, int, int, EdgeStats, int]:
+    """Extract and store the symbol graph (SPEC §6.1).
+
+    Must run **inside** the clone context: Jedi resolves against real files on
+    disk, and the workdir is deleted when the context exits.
+
+    Edges whose endpoints didn't survive symbol insertion are dropped rather
+    than errored — a resolution can land on a line no chunk covers (a module
+    docstring, a bare assignment), and that is a miss, not a failure.
+    """
+    symbols = extract_symbols(parsed)
+    edges, stats = extract_edges(repo_dir, selection.files, symbols)
+
+    await queries.clear_repo_graph(conn, repo_id)
+    await queries.insert_symbols(
+        conn,
+        repo_id,
+        [
+            (s.name, s.qualname, s.kind, s.file_path, s.start_line, s.end_line, s.is_test)
+            for s in symbols
+        ],
+    )
+    id_of = await queries.symbol_id_map(conn, repo_id)
+    edge_rows: list[queries.EdgeRowT] = [
+        (id_of[e.from_key], id_of[e.to_key], e.kind, e.line)
+        for e in edges
+        if e.from_key in id_of and e.to_key in id_of
+    ]
+    await queries.insert_edges(conn, repo_id, edge_rows)
+    linked = await queries.backfill_chunk_symbol_ids(conn, repo_id)
+
+    n_test = sum(1 for s in symbols if s.is_test)
+    return len(symbols), n_test, len(edge_rows), stats, linked
+
+
+async def ingest_to_db(url: str, *, build_graph: bool = True) -> DbIngestResult:
     """Clone, parse, embed, and store ``url`` in Postgres (delete-and-replace).
 
     The embedder's real tokenizer drives oversize-split decisions here, so the
@@ -191,6 +243,29 @@ async def ingest_to_db(url: str) -> DbIngestResult:
                         last_print = done
                 embed_elapsed = time.perf_counter() - embed_start
 
+                # Symbol graph (SPEC §6.1) — inside the clone context, because
+                # Jedi resolves against files on disk and `info.path` is
+                # deleted when the context exits.
+                n_symbols = n_symbols_test = n_edges = n_linked = 0
+                graph_stats: EdgeStats | None = None
+                graph_elapsed = 0.0
+                if build_graph:
+                    graph_start = time.perf_counter()
+                    print("  building symbol graph (tree-sitter sites, Jedi resolve)…")
+                    (
+                        n_symbols,
+                        n_symbols_test,
+                        n_edges,
+                        graph_stats,
+                        n_linked,
+                    ) = await _build_graph(conn, repo_id, info.path, selection, parsed)
+                    graph_elapsed = time.perf_counter() - graph_start
+                    print(
+                        f"  symbols {n_symbols} ({n_symbols - n_symbols_test} impl / "
+                        f"{n_symbols_test} test), edges {n_edges}, "
+                        f"chunks linked {n_linked} ({graph_elapsed:.0f}s)"
+                    )
+
                 await queries.finalize_repo(
                     conn,
                     repo_id,
@@ -201,7 +276,7 @@ async def ingest_to_db(url: str) -> DbIngestResult:
                 )
         finally:
             await close_pool(pool)
-        db_elapsed = time.perf_counter() - db_start - embed_elapsed
+        db_elapsed = time.perf_counter() - db_start - embed_elapsed - graph_elapsed
 
         return DbIngestResult(
             name=info.name,
@@ -215,6 +290,12 @@ async def ingest_to_db(url: str) -> DbIngestResult:
             parse_elapsed_s=parse_elapsed,
             embed_elapsed_s=embed_elapsed,
             db_elapsed_s=db_elapsed,
+            n_symbols=n_symbols,
+            n_symbols_test=n_symbols_test,
+            n_edges=n_edges,
+            edge_stats=graph_stats,
+            n_chunks_linked=n_linked,
+            graph_elapsed_s=graph_elapsed,
         )
 
 
@@ -249,8 +330,35 @@ def format_db_stats(result: DbIngestResult) -> str:
         f"  vs heuristic: {result.heuristic_chunk_count} -> {n} "
         f"({delta:+d} from real token_len)",
         "-" * 60,
+    ]
+    st = result.edge_stats
+    if st is not None:
+        impl = result.n_symbols - result.n_symbols_test
+        lines += [
+            f"symbols:     {result.n_symbols} total  "
+            f"({impl} implementation / {result.n_symbols_test} test)",
+            f"edges:       {result.n_edges} stored",
+        ]
+        for kind in ("imports", "calls", "extends"):
+            seen = st.sites.get(kind, 0)
+            got = st.resolved.get(kind, 0)
+            if seen:
+                lines.append(
+                    f"  {kind:<9}{got}/{seen} resolved "
+                    f"({st.unresolved_rate(kind) * 100:.0f}% unresolved)"
+                )
+        lines += [
+            f"  overall:  {st.unresolved_rate() * 100:.0f}% unresolved "
+            f"(~20% expected, SPEC §6.1)",
+            f"  timeouts: {len(st.timed_out_files)} file(s) hit the "
+            f"{JEDI_FILE_TIMEOUT_S}s budget",
+            f"chunks linked: {result.n_chunks_linked} to a symbol",
+            "-" * 60,
+        ]
+    lines += [
         f"parse+chunk: {result.parse_elapsed_s:.2f}s",
         f"embed:       {result.embed_elapsed_s:.2f}s  ({rate:.0f} chunks/s)",
+        f"symbol pass: {result.graph_elapsed_s:.2f}s",
         f"db write:    {result.db_elapsed_s:.2f}s",
         "=" * 60,
     ]
@@ -332,6 +440,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="embed and store chunks in Postgres (delete-and-replace)",
     )
     parser.add_argument(
+        "--no-graph",
+        action="store_true",
+        help="skip the Phase 3 symbol pass (--db only); chunks still stored",
+    )
+    parser.add_argument(
         "--dump", metavar="PATH", help="write all chunks as JSONL to PATH"
     )
     parser.add_argument(
@@ -351,7 +464,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.db:
         try:
-            db_result = asyncio.run(ingest_to_db(args.github_url))
+            db_result = asyncio.run(
+                ingest_to_db(args.github_url, build_graph=not args.no_graph)
+            )
         except IngestError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

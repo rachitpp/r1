@@ -152,3 +152,106 @@ async def count_chunks(conn: asyncpg.Connection, repo_id: UUID) -> int:
     """Return the number of chunk rows stored for ``repo_id``."""
     value = await conn.fetchval("SELECT count(*) FROM chunks WHERE repo_id = $1", repo_id)
     return int(value)
+
+
+# --- Phase 3: symbol graph (SPEC §3, §6) -----------------------------------
+
+SymbolRowT = tuple[
+    str,  # name
+    str,  # qualname
+    str,  # kind
+    str,  # file_path
+    int,  # start_line
+    int,  # end_line
+    bool,  # is_test
+]
+
+
+async def insert_symbols(
+    conn: asyncpg.Connection, repo_id: UUID, rows: Sequence[SymbolRowT]
+) -> int:
+    """Batch-insert symbol rows; return the count inserted."""
+    if not rows:
+        return 0
+    await conn.executemany(
+        """
+        INSERT INTO symbols
+          (repo_id, name, qualname, kind, file_path, start_line, end_line, is_test)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        """,
+        [(repo_id, *row) for row in rows],
+    )
+    return len(rows)
+
+
+async def symbol_id_map(
+    conn: asyncpg.Connection, repo_id: UUID
+) -> dict[tuple[str, int], int]:
+    """Map ``(file_path, start_line)`` -> ``symbols.id`` for one repo.
+
+    Extraction speaks in that natural key because ids are database-assigned;
+    this is how edge rows get resolved to foreign keys after the symbol insert.
+    """
+    rows = await conn.fetch(
+        "SELECT id, file_path, start_line FROM symbols WHERE repo_id = $1", repo_id
+    )
+    return {(str(r["file_path"]), int(r["start_line"])): int(r["id"]) for r in rows}
+
+
+EdgeRowT = tuple[int, int, str, int | None]  # from_symbol, to_symbol, kind, line
+
+
+async def insert_edges(
+    conn: asyncpg.Connection, repo_id: UUID, rows: Sequence[EdgeRowT]
+) -> int:
+    """Batch-insert edge rows, ignoring duplicates; return rows offered.
+
+    ``ON CONFLICT DO NOTHING`` covers the §3 unique key — the same call site
+    can resolve to the same target twice across re-runs without erroring.
+    """
+    if not rows:
+        return 0
+    await conn.executemany(
+        """
+        INSERT INTO edges (repo_id, from_symbol, to_symbol, kind, line)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT DO NOTHING
+        """,
+        [(repo_id, *row) for row in rows],
+    )
+    return len(rows)
+
+
+async def backfill_chunk_symbol_ids(conn: asyncpg.Connection, repo_id: UUID) -> int:
+    """Link chunks to their defining symbol; return the number linked.
+
+    Joins on ``(file_path, start_line)`` for unsplit chunks. An oversize chunk's
+    later parts carry a shifted ``start_line`` (SPEC §2.5), so they match on
+    ``part = 1`` only — parts 2..n stay NULL rather than pointing at the wrong
+    symbol. Deliberate: a wrong link is worse than a missing one.
+    """
+    result = await conn.execute(
+        """
+        UPDATE chunks c
+           SET symbol_id = s.id
+          FROM symbols s
+         WHERE c.repo_id = $1
+           AND s.repo_id = $1
+           AND c.file_path = s.file_path
+           AND c.start_line = s.start_line
+        """,
+        repo_id,
+    )
+    return int(result.split()[-1]) if result else 0
+
+
+async def clear_repo_graph(conn: asyncpg.Connection, repo_id: UUID) -> None:
+    """Delete symbols (and, by cascade, edges) for ``repo_id``.
+
+    Chunk ``symbol_id`` values are ``ON DELETE`` unconstrained, so null them
+    first to avoid dangling references after a delete-and-replace re-ingest.
+    """
+    await conn.execute(
+        "UPDATE chunks SET symbol_id = NULL WHERE repo_id = $1", repo_id
+    )
+    await conn.execute("DELETE FROM symbols WHERE repo_id = $1", repo_id)
