@@ -17,6 +17,7 @@ import asyncpg
 # ``tsv`` (generated), ``part``/``n_parts`` defaults are handled by the table.
 ChunkRow = tuple[
     str,  # file_path
+    bool,  # is_test (derived from file_path, SPEC §2.6)
     str | None,  # symbol
     str,  # kind
     int,  # part
@@ -97,9 +98,9 @@ async def insert_chunks(
     await conn.executemany(
         """
         INSERT INTO chunks
-          (repo_id, file_path, symbol, kind, part, n_parts,
+          (repo_id, file_path, is_test, symbol, kind, part, n_parts,
            start_line, end_line, header, code, embedding)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         """,
         [(repo_id, *row) for row in rows],
     )

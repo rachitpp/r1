@@ -31,7 +31,7 @@ from app.exceptions import IngestError
 from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo
 from app.ingest.embedder import get_embedder
-from app.ingest.filters import SelectionResult, select_files
+from app.ingest.filters import SelectionResult, is_test_path, select_files
 from app.ingest.parser import ParsedFile, parse_file
 from app.ingest.tokens import HeuristicTokenCounter
 
@@ -119,6 +119,7 @@ def _parse_all(selection: SelectionResult) -> tuple[list[ParsedFile], int]:
 def _chunk_to_row(chunk: Chunk, embedding: list[float]) -> queries.ChunkRow:
     return (
         chunk.file_path,
+        is_test_path(chunk.file_path),
         chunk.symbol,
         chunk.kind,
         chunk.part,

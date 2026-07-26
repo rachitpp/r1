@@ -13,7 +13,13 @@ from pathlib import Path, PurePosixPath
 
 from git import Repo
 
-from app.config import IGNORE_DIRS, MAX_FILE_BYTES, MAX_FILES
+from app.config import (
+    IGNORE_DIRS,
+    MAX_FILE_BYTES,
+    MAX_FILES,
+    TEST_DIR_SEGMENTS,
+    TEST_FILE_NAMES,
+)
 from app.exceptions import TooManyFilesError
 
 logger = logging.getLogger(__name__)
@@ -58,6 +64,25 @@ def _tracked_paths(repo_dir: Path) -> list[str]:
 
 def _has_ignored_segment(posix_path: str) -> bool:
     return any(part in IGNORE_DIRS for part in PurePosixPath(posix_path).parts)
+
+
+def is_test_path(posix_path: str) -> bool:
+    """Whether ``posix_path`` is test code, per the SPEC §2.6 corpus-wide rule.
+
+    True when any path segment is in ``TEST_DIR_SEGMENTS`` or the filename is
+    ``test_*.py`` / ``*_test.py`` / one of ``TEST_FILE_NAMES``. Deliberately a
+    flat path rule with no per-file judgment: test files are kept in the corpus
+    but flagged, so retrieval can target implementation by default
+    (DECISIONS 2026-07-26, "test shadowing"). Selection is unaffected — this
+    classifies, it does not exclude.
+    """
+    path = PurePosixPath(posix_path)
+    if any(part in TEST_DIR_SEGMENTS for part in path.parts[:-1]):
+        return True
+    name = path.name
+    if name in TEST_FILE_NAMES:
+        return True
+    return name.startswith("test_") or name.endswith("_test.py")
 
 
 def select_files(repo_dir: Path) -> SelectionResult:

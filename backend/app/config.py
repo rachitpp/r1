@@ -31,6 +31,8 @@ IGNORE_DIRS: frozenset[str] = frozenset(
         ".ruff_cache",
     }
 )
+TEST_DIR_SEGMENTS: frozenset[str] = frozenset({"tests", "test", "testing"})
+TEST_FILE_NAMES: frozenset[str] = frozenset({"conftest.py"})
 MAX_FILE_BYTES: int = 500_000
 MAX_FILES: int = 10_000
 CHUNK_TOKEN_MAX: int = 480

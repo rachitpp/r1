@@ -8,7 +8,7 @@ import pytest
 
 from app.config import MAX_FILE_BYTES
 from app.exceptions import TooManyFilesError
-from app.ingest.filters import select_files
+from app.ingest.filters import is_test_path, select_files
 
 
 def _kept_paths(repo_dir: Path) -> set[str]:
@@ -71,3 +71,51 @@ def test_max_files_guard(make_repo, monkeypatch) -> None:
     repo = make_repo({"a.py": "x = 1\n", "b.py": "y = 2\n"})
     with pytest.raises(TooManyFilesError):
         select_files(repo)
+
+
+# --- is_test classification (SPEC §2.6) -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/test_auth.py",
+        "tests/models/test_responses.py",
+        "test/helpers.py",
+        "testing/fixtures.py",
+        "httpx/tests/thing.py",  # segment at any depth
+        "test_client.py",  # filename rule, no test dir
+        "httpx/_client_test.py",
+        "conftest.py",
+        "httpx/conftest.py",
+    ],
+)
+def test_is_test_path_flags_test_code(path: str) -> None:
+    assert is_test_path(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "httpx/_auth.py",
+        "httpx/_decoders.py",
+        "httpx/__init__.py",
+        "src/latest/protest.py",  # substring, not a segment
+        "httpx/contest.py",  # not conftest.py
+        "httpx/attest.py",  # does not start with test_
+    ],
+)
+def test_is_test_path_leaves_implementation_alone(path: str) -> None:
+    assert is_test_path(path) is False
+
+
+def test_is_test_path_ignores_a_test_named_directory_as_final_component() -> None:
+    """Segment matching looks at directories only, never the filename itself."""
+    assert is_test_path("httpx/test.py") is False
+
+
+def test_selection_still_includes_test_files(make_repo) -> None:
+    """Classification must not become exclusion — tests stay in the corpus."""
+    repo = make_repo({"httpx/_auth.py": "x = 1\n", "tests/test_auth.py": "y = 2\n"})
+    kept = {f.path for f in select_files(repo).files}
+    assert kept == {"httpx/_auth.py", "tests/test_auth.py"}
