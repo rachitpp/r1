@@ -1,0 +1,68 @@
+# Dev questions for Phase 3 / M3 tuning — authored 2026-07-26.
+#
+# These exist so the frozen 20 in EVAL.md are never used for tuning
+# (CLAUDE.md working agreement; Phase 3 prompt "benchmark contamination
+# guard"). Every prompt, tool-description, and strategy iteration is measured
+# against THIS file. The frozen set is touched only for deliberate, counted
+# measurement runs.
+#
+# Deliberately non-overlapping with the frozen 20: nothing here targets
+# _config.Timeout, _urlparse, _decoders, or _auth.BasicAuth, and d06 probes
+# multipart from the "files= and data= together" angle rather than q10's
+# body-building path.
+#
+# Truth entries were verified against the ingested symbol graph at
+# b5addb64f0161ff6bfe94c124ef76f6a1fba5254 — every file and symbol resolves.
+
+- id: d01
+  tier: locate
+  question: "Where is the method that decides whether a redirect should be followed as a stream?"
+  truth:
+    files: ["httpx/_client.py"]
+    symbols: ["_redirect_stream"]
+
+- id: d02
+  tier: identifier-dense
+  # Exercises get_definition, which replaced §5.2 injection. The identifier is
+  # given exactly, so a working agent should look it up rather than search.
+  question: "What does BaseClient._build_redirect_request do, and what does it change about the original request?"
+  truth:
+    files: ["httpx/_client.py"]
+    symbols: ["_build_redirect_request"]
+
+- id: d03
+  tier: conceptual
+  question: "How does httpx decide which transport handles a given request?"
+  truth:
+    files: ["httpx/_client.py"]
+    symbols: ["_transport_for_url"]
+
+- id: d04
+  tier: conceptual
+  question: "How are URL patterns for proxy mounts ordered so the most specific one wins?"
+  truth:
+    files: ["httpx/_utils.py"]
+    symbols: ["URLPattern"]
+
+- id: d05
+  tier: flow
+  # Requires assembling the teardown path across client and transport — the
+  # cross-file assembly expand_context exists for.
+  question: "What happens when an AsyncClient is used as a context manager and the block exits?"
+  truth:
+    files: ["httpx/_client.py", "httpx/_transports/default.py"]
+    symbols: ["__aexit__", "aclose"]
+
+- id: d06
+  tier: flow
+  question: "What happens to the request body when a client is given files= and data= together?"
+  truth:
+    files: ["httpx/_content.py", "httpx/_multipart.py"]
+    symbols: ["encode_multipart_data", "MultipartStream"]
+
+- id: d07
+  tier: conceptual
+  question: "How does httpx apply environment proxy settings like HTTPS_PROXY?"
+  truth:
+    files: ["httpx/_utils.py", "httpx/_client.py"]
+    symbols: ["get_environment_proxies"]

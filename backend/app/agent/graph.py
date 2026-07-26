@@ -84,23 +84,41 @@ def build_tools(conn: asyncpg.Connection, repo_id: UUID) -> list[StructuredTool]
     async def list_directory(path: str = "") -> str:
         return json.dumps(await t.list_directory(conn, repo_id, path))
 
+    # Descriptions state WHEN to call, not just what the tool does. Trigger
+    # conditions in the description measurably raise should-call rate, and the
+    # first dev-set run showed expand_context and find_references at 0% usage
+    # with purely descriptive wording (review doc, tuning iteration 1).
     specs: list[tuple[Callable[..., Awaitable[str]], str]] = [
-        (search_code, "Search the repository's implementation code semantically. "
-                      "Best for 'where does X happen' questions. Returns ranked "
-                      "chunks with file paths and line numbers."),
-        (read_file, "Read a file's exact contents, line-numbered. Pass start_line "
-                    "and end_line for a range; whole-file reads are capped."),
-        (get_definition, "Look up where a symbol is defined, by name or dotted "
-                         "qualname. A direct index lookup — use this when you "
-                         "already know the identifier."),
-        (find_references, "Find what calls, imports, or subclasses a symbol. "
-                          "Optionally filter by kind: imports|calls|extends."),
-        (expand_context, "Traverse the symbol graph from a symbol to the code it "
-                         "depends on ('out'), what depends on it ('in'), or both. "
-                         "Use this instead of re-searching once you have an entry "
-                         "point."),
-        (list_directory, "Show the repository tree, two levels deep, with file "
-                         "sizes."),
+        (search_code, "Semantic search over implementation code. CALL THIS FIRST "
+                      "when you do not yet know which file or symbol is "
+                      "involved. Do NOT call it a second time with reworded "
+                      "phrasing — a second search returns the same "
+                      "neighbourhood. Once you have any symbol name, switch to "
+                      "expand_context or get_definition instead."),
+        (read_file, "Read exact line-numbered source. Call this when you need "
+                    "the precise lines for a citation, or when a chunk you were "
+                    "shown is cut off mid-definition. Pass start_line/end_line; "
+                    "whole-file reads are capped."),
+        (get_definition, "Direct symbol lookup by name or dotted qualname — an "
+                         "index hit, not a ranked search. Call this whenever the "
+                         "question names an identifier (a class, method, or "
+                         "function), instead of searching for it."),
+        (find_references, "Who calls, imports, or subclasses this symbol. Call "
+                          "this for 'what uses X', 'where is X invoked from', or "
+                          "when you need to know whether changing X matters. "
+                          "Optional kind filter: imports|calls|extends."),
+        (expand_context, "Traverse the symbol graph and return the CODE of the "
+                         "neighbours, not just their names. Call this whenever "
+                         "the question is about a flow, a sequence, or 'what "
+                         "happens when' — those answers live across several "
+                         "functions, and this is the only tool that assembles "
+                         "them in one call. direction='out' for what a symbol "
+                         "calls, 'in' for what calls it, 'both' to see the whole "
+                         "neighbourhood. Prefer this over reading each file in "
+                         "turn."),
+        (list_directory, "Repository tree, two levels deep, with file sizes. "
+                         "Call this only when you are unsure of the layout and "
+                         "search has not helped."),
     ]
     return [
         StructuredTool.from_function(coroutine=fn, name=fn.__name__, description=desc)

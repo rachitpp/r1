@@ -438,3 +438,70 @@ Fixed at the source rather than retried: the agent CLI now always writes the
 complete trace to `backend/var/traces/` before printing (DECISIONS 2026-07-26,
 "Agent traces are always persisted to disk"). A substitute full trace on
 `gemini-3.5-flash-lite` is recorded in the M2 report.
+
+---
+
+# Phase 3 / M3 — dev questions and tuning log
+
+Tuning is measured against `docs/dev-questions.yaml` (7 questions, authored
+2026-07-26, truth verified against the ingested symbol graph). The frozen 20
+in EVAL.md are never used for tuning — a prompt iterated against them stops
+measuring anything.
+
+## Baseline (before any tuning) — `mistral-medium-latest`
+
+| Mode | answer-hit | cited | tool calls (mean/max) |
+|---|---|---|---|
+| stuffed | 0.86 (6/7) | 0.86 (6/7) | — |
+| agent | 1.00 (7/7) | 1.00 (7/7) | 4.4 / 8 |
+
+The agent's only win was **d06** ("files= and data= together"), a flow
+question whose answer spans `_content.py` and `_multipart.py`.
+
+## Run-to-run variance — measured, and it matters
+
+The identical agent configuration scored **7/7 and then 5/7** on the same
+seven questions (d02 and d04 flipped), at `temperature=0.0`. Mistral is not
+deterministic at temperature zero.
+
+**Consequence for how much weight results can bear:** a 7-question dev set
+cannot resolve a delta smaller than roughly ±2 questions, and even the frozen
+20 will carry visible noise. This is the reason the M3 plan requires the
+stuffed-vs-agent pattern to hold on *two independent models* — a delta that
+appears once is not evidence.
+
+## Tuning iteration 1 — prescriptive tool descriptions
+
+**What changed.** Tool descriptions rewritten to state *when* to call each
+tool, not merely what it does — e.g. `expand_context` now says "call this
+whenever the question is about a flow, a sequence, or 'what happens when'",
+and `search_code` explicitly says not to re-run with reworded phrasing.
+
+**Why.** The first instrumented dev run showed the graph-traversal tools at
+**0% usage**: `read_file` 52%, `search_code` 42%, `get_definition` 6%,
+`expand_context` 0%, `find_references` 0%. The agent was doing retrieval with
+extra steps — the mechanism the thesis rests on was never invoked. Trigger
+conditions in a tool description are the documented lever for should-call rate.
+
+**Observed effect.**
+
+| Tool | before | after |
+|---|---|---|
+| `read_file` | 52% | 49% |
+| `search_code` | 42% | **29%** |
+| `get_definition` | 6% | **17%** |
+| `expand_context` | **0%** | **6%** |
+
+Re-searching fell, direct symbol lookup and graph traversal rose. Answer-hit
+went 5/7 → 7/7, but given the variance above **that number is not claimed as
+the effect** — the tool-mix shift is the reliable signal.
+
+**`find_references` remains at 0%, and that appears correct.** None of the
+seven dev questions asks "what uses X" / "where is X invoked from", which is
+the condition its description now names. Its absence here is the tool not
+being needed, not the tool not being reachable. Worth re-checking on the
+frozen 20, which contains flow questions that may call for it.
+
+**Not attempted:** further prompt iterations. With ±2 questions of noise on a
+7-question set, additional tuning would be fitting sampling noise rather than
+improving behaviour.
