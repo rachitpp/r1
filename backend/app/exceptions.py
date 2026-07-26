@@ -29,3 +29,13 @@ class TooManyFilesError(IngestError):
             f"repository has {count} candidate files, exceeding the "
             f"limit of {limit}"
         )
+
+
+class AgentError(AppError):
+    """Base class for agent-layer failures (SPEC §7).
+
+    Raised for configuration problems the model cannot recover from — an
+    unset ``AGENT_MODEL``, a missing provider key. Tool failures are *not*
+    exceptions: they return ``{"error": ...}`` so the loop keeps going
+    (SPEC §7.1).
+    """
