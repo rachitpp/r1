@@ -210,6 +210,32 @@ Deferred to the v2 backlog (ROADMAP), deliberately not Phase 2 loose ends:
 evaluate a code-specific reranker; re-attach §5.2 injection to fusion-only
 retrieval. Both need their own eval run if revisited.
 
+## Phase 3 gotchas worth knowing before you run anything
+
+**Provider model ids are not portable.** `vertex:gemini-3.5-flash` does not
+exist — Vertex's catalogue differs from AI Studio's. This project's GCP
+account has `gemini-2.5-flash` and `gemini-2.5-pro`; the M3 confirmation run
+used **`vertex:gemini-2.5-flash`**, which is what the EVAL.md block records.
+`gemini-2.5-flash` is reachable on Vertex despite AI Studio reporting it "no
+longer available to new users". Verify a model id against the provider you are
+actually calling.
+
+**Vertex credentials must reach `os.environ`.** `google-auth` reads
+`GOOGLE_APPLICATION_CREDENTIALS` from the process environment; pydantic-settings
+loads `.env` into `Settings` and never exports it. `app/agent/model.py` bridges
+the two. A hand-rolled script that sets the variable itself will work while the
+application path fails — that is how this hid.
+
+**Free-tier shapes differ in the dimension that matters.** AI Studio is
+**20 requests/day/model** — about two agent runs — so it is smoke-test only.
+Mistral is token-metered (1 RPS / 500K TPM / ~1B per month), which is what an
+agent loop needs. For agent workloads evaluate a tier by tokens/day, not
+requests/day. See DECISIONS "Provider roles".
+
+**Mistral is not deterministic at `temperature=0`.** The identical dev-set
+configuration scored 7/7 and then 5/7. Budget roughly ±2 questions of noise on
+a 7-question set; single runs cannot resolve small deltas.
+
 ## Working agreement (why this project is set up this way)
 
 - **Phase prompts are written just-in-time**, after the previous phase

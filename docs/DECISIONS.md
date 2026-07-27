@@ -617,3 +617,74 @@ the milestone report needed, and it was truncated by a `tail` on the way to
 the terminal. The quota to reproduce it was already spent, and the trace is
 gone (noted as a backfill gap in `docs/phase-2-rerank-review.md`). Persisting
 first and printing second removes the whole class of loss.
+
+## 2026-07-26 — What the M3 answer-hit metric can and cannot show
+Recorded because the aggregate numbers (0.95 / 1.00) invite a stronger claim
+than the evidence supports.
+
+**The file-level metric is largely retrieval-bound.** `answer-hit` scores 1 if
+the answer carries one validated citation whose *file* is in `truth.files`. The
+stuffed baseline is handed the top-10 chunks from a pipeline whose hit@10 is
+**0.95** — so "the right file was in the context window" and "the model
+assembled an answer across files" score identically. The baseline scored
+exactly 0.95 on both models, which is the retrieval number, not a coincidence.
+
+**Consequence: 19 of 20 questions had no discriminating power.** Only a
+question retrieval *cannot* reach can separate the modes under this metric. On
+the frozen 20 there is exactly one: **q10**, missed by every retrieval mode in
+every Phase 2 condition. The agent answers it on both models; the stuffed
+baseline misses it on both.
+
+**Therefore the thesis rests on two things, and neither is the aggregate:**
+1. **q10** — the one falsifiable question, won on both models.
+2. **The mechanism** — graph-tool use, cross-tabulated against correctness.
+
+It does **not** rest on 0.95 vs 1.00. Anyone quoting those two numbers as the
+result is quoting the retrieval pipeline's hit@10 twice.
+
+A symbol-level metric was added to address this (below): it asks that the
+answer demonstrably *use* the truth symbol, which a top-10 pool cannot supply
+by accident the way it supplies a filename.
+
+## 2026-07-26 — The flow tier is answerable from retrieval alone
+The Phase 3 prompt predicted the agent's advantage would appear on the **flow**
+tier (q16–q20) — "what happens when…" questions whose answers span files, which
+`expand_context` exists to assemble.
+
+**It did not.** All five flow questions scored ✓ in every cell: both modes,
+both models. Stuffing ten top-ranked chunks into one context window answers
+them.
+
+**The finding is about the benchmark, not the agent.** When retrieval hit@10 is
+0.95, a ten-chunk pool routinely contains every file a "flow" question needs,
+so the question stops requiring assembly. These questions discriminate between
+*retrieval* configurations (they did so in Phase 2) but not between retrieval
+and traversal.
+
+**v2 backlog item:** design cross-file questions a single top-10 pool cannot
+satisfy — e.g. answers requiring a symbol whose file never ranks for the
+question's vocabulary, or requiring three files where the pool holds two. q10 is
+the accidental existence proof that such questions discriminate; the benchmark
+needs them by construction rather than by luck.
+
+## 2026-07-26 — Two configuration bugs behind the recorded model ids
+Both surfaced during the M3 measurement runs; recorded so the model ids in the
+EVAL.md result blocks are traceable to what actually executed.
+
+**1. Vertex credentials in `.env` never reached `google-auth`.**
+`google-auth` reads `GOOGLE_APPLICATION_CREDENTIALS` from `os.environ`, but
+pydantic-settings loads `.env` into the `Settings` object and does not export
+it. A correctly-configured path therefore raised `DefaultCredentialsError`. The
+bug was invisible to ad-hoc probe scripts, which export the variable by hand —
+it only appeared through the application's own config path. Fixed by adding the
+field to `Settings` and bridging it in the `vertex:` branch of the model factory
+(without clobbering a real environment variable).
+
+**2. `vertex:gemini-3.5-flash` does not exist.** The M3 plan named it, but
+Vertex's model catalogue differs from AI Studio's. Probing the project found
+`gemini-2.5-flash` and `gemini-2.5-pro` available and `gemini-2.0-flash`,
+`gemini-3-pro-preview`, `gemini-flash-latest` absent. **The confirmation run
+therefore executed on `vertex:gemini-2.5-flash`** — same Flash tier, closest
+continuity with the M2 live run. Note `gemini-2.5-flash` is reachable on Vertex
+even though AI Studio reports it "no longer available to new users"; provider
+catalogues are not interchangeable and a model id must be verified per provider.

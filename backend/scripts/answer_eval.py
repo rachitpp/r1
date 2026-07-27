@@ -14,10 +14,25 @@ spends model calls while that one does not.
 measurement runs only (CLAUDE.md; Phase 3 contamination guard) — a prompt
 iterated against them stops measuring anything.
 
-Metric: **answer-hit** — the final answer contains ≥1 parsed, validated
-citation whose file is in ``truth.files``. Automatic, no human in the loop.
-Also recorded: citations-present rate (did it cite *anything*), and the
-tool-call distribution, which is where the agent's behaviour shows up.
+Two metrics, deliberately:
+
+**answer-hit** (file-level) — ≥1 validated citation whose file ∈ ``truth.files``.
+**symbol-hit** (symbol-level) — the same, *and* the answer demonstrably uses a
+truth symbol by name.
+
+The file-level metric is largely **retrieval-bound**: the stuffed baseline is
+handed a top-10 pool whose hit@10 is 0.95, so "the right file was in the
+context window" and "the model assembled an answer" score identically. Only a
+question retrieval cannot reach has discriminating power under it — on the
+frozen 20, exactly one (q10). The symbol-level metric asks for something a
+pool cannot supply by accident: that the answer names the specific construct
+the question is about. It is the criterion that can separate assembly from
+retrieval on the other 19.
+
+Also recorded: citations-present rate, the tool-call distribution, and whether
+each answer used a **graph tool** (expand_context / get_definition /
+find_references) before answering — cross-tabulated against correctness, which
+turns the tool-mix observation into a table rather than an anecdote.
 """
 
 from __future__ import annotations
@@ -50,6 +65,11 @@ EVAL_MD = DOCS / "EVAL.md"
 DEV_QUESTIONS = DOCS / "dev-questions.yaml"
 
 AnswerMode = str  # "stuffed" | "agent"
+
+# Tools that consult the symbol graph rather than the retrieval index. The
+# thesis is that these reach code search missed, so their use is the mechanism
+# under test — tracked per question, not just in aggregate.
+GRAPH_TOOLS = frozenset({"expand_context", "get_definition", "find_references"})
 ANSWER_MODES: tuple[str, ...] = ("stuffed", "agent")
 
 # Mistral's free tier is 1 RPS. Within a run the agent's calls are sequential
@@ -95,7 +115,12 @@ class QuestionResult:
     tool_calls: int
     elapsed_s: float
     tools_used: list[str] = field(default_factory=list)
+    symbol_hit: bool = False
     error: str | None = None
+
+    @property
+    def used_graph_tool(self) -> bool:
+        return any(t in GRAPH_TOOLS for t in self.tools_used)
 
 
 @dataclass
@@ -114,6 +139,10 @@ class ModeResult:
     @property
     def cited(self) -> int:
         return sum(1 for r in self.rows if r.cited)
+
+    @property
+    def symbol_hits(self) -> int:
+        return sum(1 for r in self.rows if r.symbol_hit)
 
     @property
     def errors(self) -> int:
@@ -147,6 +176,27 @@ list and never a single line. Cite every claim about the code, inline, using
 the line numbers shown with each excerpt. An answer about code with no
 citation is wrong even when the prose is right.
 """
+
+
+def uses_symbol(answer: str, symbols: list[str]) -> bool:
+    """Whether ``answer`` demonstrably names one of ``symbols``.
+
+    Word-boundary matched so ``URL`` does not match inside ``URLPattern`` and
+    ``get`` does not match inside ``target``. A dotted qualname counts if its
+    final segment appears — the answer saying ``TextDecoder`` is evidence
+    whether or not it wrote ``httpx._decoders.TextDecoder``.
+
+    This is deliberately a *use* test, not a citation test: the point is that
+    the answer engages with the construct, which a top-10 pool cannot supply
+    by accident the way it supplies a filename.
+    """
+    if not symbols:
+        return False
+    for sym in symbols:
+        short = sym.rsplit(".", 1)[-1]
+        if re.search(rf"\b{re.escape(short)}\b", answer):
+            return True
+    return False
 
 
 async def run_stuffed(
@@ -261,6 +311,9 @@ async def evaluate(
                         conn, repo_id, parse_citations(answer)
                     )
                     hit = any(c["file_path"] in truth for c in cites)
+                    sym_hit = hit and uses_symbol(
+                        answer, q.get("truth", {}).get("symbols", []) or []
+                    )
                     mr.rows.append(
                         QuestionResult(
                             qid=q["id"],
@@ -271,10 +324,15 @@ async def evaluate(
                             tool_calls=used,
                             elapsed_s=round(time.perf_counter() - t0, 1),
                             tools_used=names,
+                            symbol_hit=sym_hit,
                             error=err,
                         )
                     )
-                    mark = "ERR" if err else ("HIT" if hit else " . ")
+                    mark = (
+                        "ERR"
+                        if err
+                        else ("HIT+S" if sym_hit else ("HIT  " if hit else " .   "))
+                    )
                     print(
                         f"  {q['id']}  {mark}  cites={len(cites):<2} "
                         f"tools={used}  {time.perf_counter() - t0:.0f}s"
@@ -293,17 +351,40 @@ async def evaluate(
 
 def summary_table(results: list[ModeResult]) -> list[str]:
     lines = [
-        "| Mode | answer-hit | cited | tool calls (mean/max) | errors |",
-        "|---|---|---|---|---|",
+        "| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |",
+        "|---|---|---|---|---|---|",
     ]
     for mr in results:
         tc = mr.tool_calls
         stat = f"{sum(tc) / len(tc):.1f} / {max(tc)}" if tc else "—"
         lines.append(
-            f"| {mr.mode} | {mr.rate(mr.hits)} | {mr.rate(mr.cited)} | {stat} | "
-            f"{mr.errors} |"
+            f"| {mr.mode} | {mr.rate(mr.hits)} | {mr.rate(mr.symbol_hits)} | "
+            f"{mr.rate(mr.cited)} | {stat} | {mr.errors} |"
         )
     return lines
+
+
+def graph_tool_table(results: list[ModeResult]) -> list[str]:
+    """Graph-tool use cross-tabulated against correctness (agent mode only).
+
+    n is small, so this is a table rather than a claim — but it is the
+    mechanism the thesis names, and an anecdote about tool mix is worth less
+    than a 2x2 someone can argue with.
+    """
+    agent = next((mr for mr in results if mr.mode == "agent"), None)
+    if agent is None or not agent.rows:
+        return []
+    cells = {(True, True): 0, (True, False): 0, (False, True): 0, (False, False): 0}
+    for r in agent.rows:
+        if r.error:
+            continue
+        cells[(r.used_graph_tool, r.symbol_hit)] += 1
+    return [
+        "| Agent run | symbol-hit | symbol-miss |",
+        "|---|---|---|",
+        f"| used a graph tool | {cells[(True, True)]} | {cells[(True, False)]} |",
+        f"| no graph tool | {cells[(False, True)]} | {cells[(False, False)]} |",
+    ]
 
 
 def tool_usage_table(results: list[ModeResult]) -> list[str]:
@@ -334,8 +415,17 @@ def grid_table(results: list[ModeResult]) -> list[str]:
         cells = []
         for mr in results:
             r = mr.rows[i]
-            cells.append("ERR" if r.error else ("✓" if r.hit else "·"))
+            if r.error:
+                cells.append("ERR")
+            elif r.symbol_hit:
+                cells.append("✓s")   # file AND symbol
+            elif r.hit:
+                cells.append("✓")    # file only
+            else:
+                cells.append("·")
         lines.append(f"| {qid} | " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.append("`✓s` = file + symbol · `✓` = file only · `·` = miss")
     return lines
 
 
@@ -354,6 +444,9 @@ def append_block(
         "",
         *(["Agent tool usage:", "", *tool_usage_table(results), ""]
           if tool_usage_table(results) else []),
+        *(["Graph-tool use vs correctness (agent):", "",
+           *graph_tool_table(results), ""]
+          if graph_tool_table(results) else []),
         "Per-question:",
         "",
         *grid_table(results),
@@ -402,6 +495,10 @@ def main(argv: list[str] | None = None) -> int:
     if usage:
         print()
         print("\n".join(usage))
+    xtab = graph_tool_table(results)
+    if xtab:
+        print()
+        print("\n".join(xtab))
     print()
     print("\n".join(grid_table(results)))
     print(f"\nmodel calls this run: {n_calls}   provider: {provider_for(model_name)}")
