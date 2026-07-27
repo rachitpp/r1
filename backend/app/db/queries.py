@@ -31,40 +31,212 @@ ChunkRow = tuple[
 FileRow = tuple[str, str, int]  # path, content, n_lines
 
 
-async def upsert_repo(
-    conn: asyncpg.Connection,
-    *,
-    url: str,
-    name: str,
-    head_sha: str,
-    default_branch: str,
-) -> UUID:
-    """Insert or update the repo row for ``url``; return its id.
+# SPEC §10 state machine:
+#   queued -> cloning -> parsing -> linking -> embedding -> ready | failed
+#
+# IN_FLIGHT_STATUSES is what the zombie sweep considers abandoned work. It
+# excludes ``queued`` deliberately: a queued repo's job lives in Redis, which
+# redelivers it when a worker returns, so a long queue wait is not a zombie.
+# Only states a worker enters *while holding* the job can be orphaned by its
+# death.
+REPO_STATUSES: tuple[str, ...] = (
+    "queued",
+    "cloning",
+    "parsing",
+    "linking",
+    "embedding",
+    "ready",
+    "failed",
+)
+IN_FLIGHT_STATUSES: tuple[str, ...] = ("cloning", "parsing", "linking", "embedding")
 
-    Re-ingesting a known URL keeps the same id (so ``ON DELETE CASCADE`` and
-    delete-and-replace target the same rows) and refreshes head/branch.
+
+async def create_repo(
+    conn: asyncpg.Connection, *, url: str, name: str
+) -> tuple[UUID, bool]:
+    """Get-or-create the ``queued`` repo row for ``url``; return ``(id, created)``.
+
+    ``url`` is UNIQUE (§3), and ``POST /repos`` distinguishes 201 from 200 on
+    exactly this boolean. Nothing about an existing row is overwritten here —
+    re-ingest resets the row (:func:`start_ingest`), and doing it at submit time
+    would blank out a perfectly good ``ready`` repo before the job even starts.
     """
     row = await conn.fetchrow(
         """
-        INSERT INTO repos (url, name, head_sha, default_branch, status)
-        VALUES ($1, $2, $3, $4, 'parsing')
-        ON CONFLICT (url) DO UPDATE
-          SET name = EXCLUDED.name,
-              head_sha = EXCLUDED.head_sha,
-              default_branch = EXCLUDED.default_branch,
-              status = 'parsing',
-              error = NULL,
-              updated_at = now()
+        INSERT INTO repos (url, name, status)
+        VALUES ($1, $2, 'queued')
+        ON CONFLICT (url) DO NOTHING
         RETURNING id
         """,
         url,
         name,
+    )
+    if row is not None:
+        created_id: UUID = row["id"]  # asyncpg decodes UUID columns to uuid.UUID
+        return created_id, True
+    existing = await conn.fetchrow("SELECT id FROM repos WHERE url = $1", url)
+    assert existing is not None  # the conflict we just hit proves the row exists
+    existing_id: UUID = existing["id"]
+    return existing_id, False
+
+
+REPO_COLUMNS = (
+    "id, url, name, status, error, head_sha, default_branch, "
+    "files_total, files_parsed, chunks_total, chunks_embedded, created_at"
+)
+
+
+async def get_repo(conn: asyncpg.Connection, repo_id: UUID) -> asyncpg.Record | None:
+    """One repo row with its §8 ``RepoOut`` columns, or ``None``."""
+    return await conn.fetchrow(
+        f"SELECT {REPO_COLUMNS} FROM repos WHERE id = $1", repo_id
+    )
+
+
+async def list_repos(conn: asyncpg.Connection) -> list[asyncpg.Record]:
+    """All repo rows, newest first."""
+    rows = await conn.fetch(f"SELECT {REPO_COLUMNS} FROM repos ORDER BY created_at DESC")
+    return list(rows)
+
+
+async def get_file(
+    conn: asyncpg.Connection, repo_id: UUID, path: str
+) -> asyncpg.Record | None:
+    """One stored file for the code viewer (§8 ``GET /repos/{id}/files``)."""
+    return await conn.fetchrow(
+        "SELECT path, content, n_lines FROM files WHERE repo_id = $1 AND path = $2",
+        repo_id,
+        path,
+    )
+
+
+async def start_ingest(
+    conn: asyncpg.Connection, repo_id: UUID, *, status: str = "cloning"
+) -> None:
+    """Reset counters and clear any previous error at the start of a job (§10).
+
+    A retry or a re-ingest must not inherit the previous run's progress numbers,
+    or a failed attempt leaves a row claiming 1500 embedded chunks it no longer
+    has.
+    """
+    await conn.execute(
+        """
+        UPDATE repos
+           SET status = $2, error = NULL,
+               files_total = 0, files_parsed = 0,
+               chunks_total = 0, chunks_embedded = 0,
+               updated_at = now()
+         WHERE id = $1
+        """,
+        repo_id,
+        status,
+    )
+
+
+async def set_repo_status(
+    conn: asyncpg.Connection, repo_id: UUID, status: str
+) -> None:
+    """Advance the §10 state machine, touching ``updated_at`` (zombie sweep)."""
+    await conn.execute(
+        "UPDATE repos SET status = $2, updated_at = now() WHERE id = $1",
+        repo_id,
+        status,
+    )
+
+
+async def set_repo_clone_info(
+    conn: asyncpg.Connection,
+    repo_id: UUID,
+    *,
+    name: str,
+    head_sha: str,
+    default_branch: str,
+) -> None:
+    """Record what the clone resolved to. Known only after ``cloning`` (§10).
+
+    ``name`` is refreshed here because the row was created from the submitted
+    URL alone; the clone is the first thing that has seen the actual repository.
+    """
+    await conn.execute(
+        """
+        UPDATE repos
+           SET name = $2, head_sha = $3, default_branch = $4, updated_at = now()
+         WHERE id = $1
+        """,
+        repo_id,
+        name,
         head_sha,
         default_branch,
     )
-    assert row is not None  # INSERT ... RETURNING always yields a row
-    repo_id: UUID = row["id"]  # asyncpg decodes UUID columns to uuid.UUID
-    return repo_id
+
+
+async def set_repo_progress(
+    conn: asyncpg.Connection,
+    repo_id: UUID,
+    *,
+    files_total: int | None = None,
+    files_parsed: int | None = None,
+    chunks_total: int | None = None,
+    chunks_embedded: int | None = None,
+) -> None:
+    """Write whichever progress counters the caller has (§10, batched writes).
+
+    ``COALESCE`` on the parameter keeps unsupplied counters untouched, so the
+    embed loop can report ``chunks_embedded`` every ``PROGRESS_EVERY_N`` units
+    without restating the file counts it is no longer changing.
+    """
+    await conn.execute(
+        """
+        UPDATE repos
+           SET files_total     = COALESCE($2, files_total),
+               files_parsed    = COALESCE($3, files_parsed),
+               chunks_total    = COALESCE($4, chunks_total),
+               chunks_embedded = COALESCE($5, chunks_embedded),
+               updated_at = now()
+         WHERE id = $1
+        """,
+        repo_id,
+        files_total,
+        files_parsed,
+        chunks_total,
+        chunks_embedded,
+    )
+
+
+async def fail_repo(conn: asyncpg.Connection, repo_id: UUID, error: str) -> None:
+    """Record a job failure on the row (§10). Truncated — this reaches a UI."""
+    await conn.execute(
+        """
+        UPDATE repos
+           SET status = 'failed', error = $2, updated_at = now()
+         WHERE id = $1
+        """,
+        repo_id,
+        error[:2000],
+    )
+
+
+async def sweep_zombie_repos(conn: asyncpg.Connection, older_than_s: int) -> list[str]:
+    """Fail repos stuck in an in-flight state; return their ids (§10).
+
+    Run on worker startup. A worker killed mid-ingest leaves its row claiming to
+    be embedding forever: nothing else will ever touch it, because the job that
+    owned it is gone. Time-based rather than worker-identity-based, which is why
+    ``ZOMBIE_AFTER_S`` (1200s) is comfortably longer than ``job_timeout`` (900s)
+    — a job that is merely slow must never be swept out from under itself.
+    """
+    rows = await conn.fetch(
+        """
+        UPDATE repos
+           SET status = 'failed', error = 'worker died', updated_at = now()
+         WHERE status = ANY($1::text[])
+           AND updated_at < now() - make_interval(secs => $2::double precision)
+        RETURNING id
+        """,
+        list(IN_FLIGHT_STATUSES),
+        float(older_than_s),
+    )
+    return [str(r["id"]) for r in rows]
 
 
 async def clear_repo_content(conn: asyncpg.Connection, repo_id: UUID) -> None:

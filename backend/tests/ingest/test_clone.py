@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.ingest.clone import _repo_name_from_url, _rmtree
+from app.ingest.clone import _rmtree, repo_name_from_url
 
 
 @pytest.mark.parametrize(
@@ -21,7 +21,7 @@ from app.ingest.clone import _repo_name_from_url, _rmtree
     ],
 )
 def test_repo_name_from_url(url: str, expected: str) -> None:
-    assert _repo_name_from_url(url) == expected
+    assert repo_name_from_url(url) == expected
 
 
 def test_rmtree_removes_readonly_files(tmp_path: Path) -> None:

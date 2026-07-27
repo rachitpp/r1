@@ -5,10 +5,10 @@ embed and store them in Postgres.
     python -m app.ingest.cli <github_url> --db
 
 Without ``--db`` this is the Phase 1 inspect-only path (no model, no database).
-With ``--db`` it runs the Phase 2 synchronous front-run of the ingest job
-(SPEC §10 concept): upsert the repo, delete-and-replace its files/chunks, embed
-with the real model tokenizer, and store everything. The full async ARQ job
-lifecycle lands in Phase 4.
+With ``--db`` it runs :func:`app.ingest.pipeline.run_ingest` — the same function
+the ARQ task calls (Phase 4 Reconciliation 2) — synchronously in the foreground,
+and prints the stats block. The CLI's job is argument parsing and reporting; the
+pipeline itself lives in one place so the queue and the CLI cannot diverge.
 """
 
 from __future__ import annotations
@@ -23,27 +23,19 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
-from uuid import UUID
 
-import asyncpg
-
-from app.config import JEDI_FILE_TIMEOUT_S, PROGRESS_EVERY_N, get_settings
+from app.config import JEDI_FILE_TIMEOUT_S, get_settings
 from app.db import queries
 from app.db.pool import close_pool, create_pool
 from app.exceptions import IngestError
 from app.ingest.chunker import Chunk, chunk_file
-from app.ingest.clone import cloned_repo
-from app.ingest.embedder import get_embedder
-from app.ingest.filters import SelectionResult, is_test_path, select_files
-from app.ingest.parser import ParsedFile, parse_file
-from app.ingest.symbols import EdgeStats, extract_edges, extract_symbols
+from app.ingest.clone import cloned_repo, repo_name_from_url
+from app.ingest.filters import SelectionResult, select_files
+from app.ingest.parser import parse_file
+from app.ingest.pipeline import IngestStats, run_ingest
 from app.ingest.tokens import HeuristicTokenCounter
 
 logger = logging.getLogger(__name__)
-
-# How many chunks to embed per model call before inserting a batch. Independent
-# of PROGRESS_EVERY_N (the print cadence); purely an encode/insert granularity.
-EMBED_BATCH = 64
 
 
 @dataclasses.dataclass
@@ -85,221 +77,29 @@ def ingest(url: str) -> IngestResult:
         )
 
 
-@dataclasses.dataclass
-class DbIngestResult:
-    """Stats for a ``--db`` ingest, extending the Phase 1 block with DB/embed
-    timings and the heuristic-vs-real chunk-count delta (Reconciliation 2)."""
+async def ingest_to_db(url: str, *, build_graph: bool = True) -> IngestStats:
+    """Create (or reuse) the repo row for ``url`` and run the pipeline inline.
 
-    name: str
-    repo_id: str
-    head_sha: str
-    default_branch: str
-    selection: SelectionResult
-    chunks: list[Chunk]
-    n_syntax_errors: int
-    heuristic_chunk_count: int
-    parse_elapsed_s: float
-    embed_elapsed_s: float
-    db_elapsed_s: float
-    # Phase 3 symbol pass (SPEC §6). None when --no-graph.
-    n_symbols: int = 0
-    n_symbols_test: int = 0
-    n_edges: int = 0
-    edge_stats: EdgeStats | None = None
-    n_chunks_linked: int = 0
-    graph_elapsed_s: float = 0.0
-
-
-def _parse_all(selection: SelectionResult) -> tuple[list[ParsedFile], int]:
-    """Parse every selected file; return parsed files and the syntax-error count.
-
-    Files that fail to parse are still stored in ``files`` (they power the code
-    viewer); they simply contribute no chunks.
-    """
-    parsed: list[ParsedFile] = []
-    n_syntax_errors = 0
-    for source in selection.files:
-        pf = parse_file(source)
-        if pf is None:
-            n_syntax_errors += 1
-            continue
-        parsed.append(pf)
-    return parsed, n_syntax_errors
-
-
-def _chunk_to_row(chunk: Chunk, embedding: list[float]) -> queries.ChunkRow:
-    return (
-        chunk.file_path,
-        is_test_path(chunk.file_path),
-        chunk.symbol,
-        chunk.kind,
-        chunk.part,
-        chunk.n_parts,
-        chunk.start_line,
-        chunk.end_line,
-        chunk.header,
-        chunk.code,
-        embedding,
-    )
-
-
-async def _build_graph(
-    conn: asyncpg.Connection,
-    repo_id: UUID,
-    repo_dir: Path,
-    selection: SelectionResult,
-    parsed: list[ParsedFile],
-) -> tuple[int, int, int, EdgeStats, int]:
-    """Extract and store the symbol graph (SPEC §6.1).
-
-    Must run **inside** the clone context: Jedi resolves against real files on
-    disk, and the workdir is deleted when the context exits.
-
-    Edges whose endpoints didn't survive symbol insertion are dropped rather
-    than errored — a resolution can land on a line no chunk covers (a module
-    docstring, a bare assignment), and that is a miss, not a failure.
-    """
-    symbols = extract_symbols(parsed)
-    edges, stats = extract_edges(repo_dir, selection.files, symbols)
-
-    await queries.clear_repo_graph(conn, repo_id)
-    await queries.insert_symbols(
-        conn,
-        repo_id,
-        [
-            (s.name, s.qualname, s.kind, s.file_path, s.start_line, s.end_line, s.is_test)
-            for s in symbols
-        ],
-    )
-    id_of = await queries.symbol_id_map(conn, repo_id)
-    edge_rows: list[queries.EdgeRowT] = [
-        (id_of[e.from_key], id_of[e.to_key], e.kind, e.line)
-        for e in edges
-        if e.from_key in id_of and e.to_key in id_of
-    ]
-    await queries.insert_edges(conn, repo_id, edge_rows)
-    linked = await queries.backfill_chunk_symbol_ids(conn, repo_id)
-
-    n_test = sum(1 for s in symbols if s.is_test)
-    return len(symbols), n_test, len(edge_rows), stats, linked
-
-
-async def ingest_to_db(url: str, *, build_graph: bool = True) -> DbIngestResult:
-    """Clone, parse, embed, and store ``url`` in Postgres (delete-and-replace).
-
-    The embedder's real tokenizer drives oversize-split decisions here, so the
-    stored chunk count can differ from Phase 1's heuristic count — both are
-    reported in the stats block.
+    The foreground twin of the ARQ task: same :func:`run_ingest`, same status
+    transitions and progress writes, just with the stats printed instead of a
+    job result. Accepts any git-cloneable URL — GitHub validation belongs to
+    ``POST /repos`` (§8), not to a developer's local CLI.
     """
     settings = get_settings()
-    embedder = get_embedder()  # doubles as the real TokenCounter (Reconciliation 2)
-
-    parse_start = time.perf_counter()
-    with cloned_repo(url) as info:
-        selection = select_files(info.path)
-        parsed, n_syntax_errors = _parse_all(selection)
-
-        chunks: list[Chunk] = []
-        for pf in parsed:
-            chunks.extend(chunk_file(pf, embedder))
-        # Same chunker, heuristic counter — count only, to report the delta.
-        heuristic = HeuristicTokenCounter()
-        heuristic_chunk_count = sum(len(chunk_file(pf, heuristic)) for pf in parsed)
-        parse_elapsed = time.perf_counter() - parse_start
-
-        file_rows = [(f.path, f.text, f.n_lines) for f in selection.files]
-
-        embed_elapsed = 0.0
-        db_start = time.perf_counter()
-        pool = await create_pool(settings.DATABASE_URL)
-        try:
-            async with pool.acquire() as conn:
-                repo_id = await queries.upsert_repo(
-                    conn,
-                    url=url,
-                    name=info.name,
-                    head_sha=info.head_sha,
-                    default_branch=info.default_branch,
-                )
-                await queries.clear_repo_content(conn, repo_id)
-                await queries.insert_files(conn, repo_id, file_rows)
-
-                total = len(chunks)
-                done = 0
-                last_print = 0
-                embed_start = time.perf_counter()
-                for i in range(0, total, EMBED_BATCH):
-                    batch = chunks[i : i + EMBED_BATCH]
-                    vectors = embedder.encode([c.text for c in batch])
-                    rows = [
-                        _chunk_to_row(c, v)
-                        for c, v in zip(batch, vectors, strict=True)
-                    ]
-                    await queries.insert_chunks(conn, repo_id, rows)
-                    done += len(batch)
-                    if done - last_print >= PROGRESS_EVERY_N or done == total:
-                        rate = done / max(time.perf_counter() - embed_start, 1e-9)
-                        print(f"  embedded {done}/{total} chunks ({rate:.0f}/s)")
-                        last_print = done
-                embed_elapsed = time.perf_counter() - embed_start
-
-                # Symbol graph (SPEC §6.1) — inside the clone context, because
-                # Jedi resolves against files on disk and `info.path` is
-                # deleted when the context exits.
-                n_symbols = n_symbols_test = n_edges = n_linked = 0
-                graph_stats: EdgeStats | None = None
-                graph_elapsed = 0.0
-                if build_graph:
-                    graph_start = time.perf_counter()
-                    print("  building symbol graph (tree-sitter sites, Jedi resolve)…")
-                    (
-                        n_symbols,
-                        n_symbols_test,
-                        n_edges,
-                        graph_stats,
-                        n_linked,
-                    ) = await _build_graph(conn, repo_id, info.path, selection, parsed)
-                    graph_elapsed = time.perf_counter() - graph_start
-                    print(
-                        f"  symbols {n_symbols} ({n_symbols - n_symbols_test} impl / "
-                        f"{n_symbols_test} test), edges {n_edges}, "
-                        f"chunks linked {n_linked} ({graph_elapsed:.0f}s)"
-                    )
-
-                await queries.finalize_repo(
-                    conn,
-                    repo_id,
-                    files_total=len(file_rows),
-                    files_parsed=len(parsed),
-                    chunks_total=total,
-                    status="ready",
-                )
-        finally:
-            await close_pool(pool)
-        db_elapsed = time.perf_counter() - db_start - embed_elapsed - graph_elapsed
-
-        return DbIngestResult(
-            name=info.name,
-            repo_id=str(repo_id),
-            head_sha=info.head_sha,
-            default_branch=info.default_branch,
-            selection=selection,
-            chunks=chunks,
-            n_syntax_errors=n_syntax_errors,
-            heuristic_chunk_count=heuristic_chunk_count,
-            parse_elapsed_s=parse_elapsed,
-            embed_elapsed_s=embed_elapsed,
-            db_elapsed_s=db_elapsed,
-            n_symbols=n_symbols,
-            n_symbols_test=n_symbols_test,
-            n_edges=n_edges,
-            edge_stats=graph_stats,
-            n_chunks_linked=n_linked,
-            graph_elapsed_s=graph_elapsed,
+    pool = await create_pool(settings.DATABASE_URL)
+    try:
+        async with pool.acquire() as conn:
+            repo_id, _created = await queries.create_repo(
+                conn, url=url, name=repo_name_from_url(url)
+            )
+        return await run_ingest(
+            repo_id, pool=pool, build_graph=build_graph, log=lambda m: print(f"  {m}")
         )
+    finally:
+        await close_pool(pool)
 
 
-def format_db_stats(result: DbIngestResult) -> str:
+def format_db_stats(result: IngestStats) -> str:
     sel = result.selection
     by_kind = Counter(c.kind for c in result.chunks)
     oversize = sum(1 for c in result.chunks if c.part == 1 and c.n_parts > 1)

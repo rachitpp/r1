@@ -35,7 +35,7 @@ class CloneInfo:
     name: str  # "owner/repo"
 
 
-def _repo_name_from_url(url: str) -> str:
+def repo_name_from_url(url: str) -> str:
     """Derive an ``owner/repo`` name from a GitHub URL (https or scp form)."""
     trimmed = url.rstrip("/")
     if trimmed.endswith(".git"):
@@ -98,7 +98,7 @@ def clone_repo(url: str) -> CloneInfo:
             path=workdir,
             head_sha=head_sha,
             default_branch=default_branch,
-            name=_repo_name_from_url(url),
+            name=repo_name_from_url(url),
         )
     except GitCommandError as exc:
         _rmtree(workdir)
