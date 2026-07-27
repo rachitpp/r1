@@ -568,3 +568,318 @@ Per-question:
 
 `✓s` = file + symbol · `✓` = file only · `·` = miss
 
+
+### Answer-level results — 2026-07-27
+
+**Model:** `mistral-medium-latest` · **Set:** frozen 20 (measurement) · **Model calls:** 114 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| agent | 1.00 (20/20) | 1.00 (20/20) | 1.00 (20/20) | 4.7 / 8 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| read_file | 54 | 55% |
+| search_code | 31 | 32% |
+| get_definition | 8 | 8% |
+| expand_context | 5 | 5% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 7 | 0 |
+| no graph tool | 13 | 0 |
+
+Per-question:
+
+| q | agent |
+|---|---|
+| q01 | ✓s |
+| q02 | ✓s |
+| q03 | ✓s |
+| q04 | ✓s |
+| q05 | ✓s |
+| q06 | ✓s |
+| q07 | ✓s |
+| q08 | ✓s |
+| q09 | ✓s |
+| q10 | ✓s |
+| q11 | ✓s |
+| q12 | ✓s |
+| q13 | ✓s |
+| q14 | ✓s |
+| q15 | ✓s |
+| q16 | ✓s |
+| q17 | ✓s |
+| q18 | ✓s |
+| q19 | ✓s |
+| q20 | ✓s |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
+
+### Answer-level results — 2026-07-27
+
+**Model:** `mistral-medium-latest` · **Set:** frozen 20 (measurement) · **Model calls:** 119 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| agent | 0.95 (19/20) | 0.95 (19/20) | 0.95 (19/20) | 5.0 / 8 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| read_file | 58 | 56% |
+| search_code | 33 | 32% |
+| get_definition | 8 | 8% |
+| expand_context | 4 | 4% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 7 | 0 |
+| no graph tool | 12 | 1 |
+
+Per-question:
+
+| q | agent |
+|---|---|
+| q01 | ✓s |
+| q02 | ✓s |
+| q03 | ✓s |
+| q04 | ✓s |
+| q05 | ✓s |
+| q06 | ✓s |
+| q07 | ✓s |
+| q08 | ✓s |
+| q09 | ✓s |
+| q10 | ✓s |
+| q11 | ✓s |
+| q12 | · |
+| q13 | ✓s |
+| q14 | ✓s |
+| q15 | ✓s |
+| q16 | ✓s |
+| q17 | ✓s |
+| q18 | ✓s |
+| q19 | ✓s |
+| q20 | ✓s |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
+
+### Answer-level results — 2026-07-27
+
+**Model:** `mistral-medium-latest` · **Set:** frozen 20 (measurement) · **Model calls:** 112 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| agent | 0.95 (19/20) | 0.85 (17/20) | 0.95 (19/20) | 4.6 / 8 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| read_file | 58 | 61% |
+| search_code | 29 | 31% |
+| expand_context | 5 | 5% |
+| get_definition | 3 | 3% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 6 | 0 |
+| no graph tool | 11 | 3 |
+
+Per-question:
+
+| q | agent |
+|---|---|
+| q01 | ✓s |
+| q02 | ✓s |
+| q03 | ✓s |
+| q04 | ✓s |
+| q05 | ✓s |
+| q06 | ✓s |
+| q07 | ✓s |
+| q08 | ✓s |
+| q09 | ✓ |
+| q10 | ✓s |
+| q11 | ✓s |
+| q12 | ✓s |
+| q13 | ✓s |
+| q14 | ✓s |
+| q15 | ✓ |
+| q16 | ✓s |
+| q17 | · |
+| q18 | ✓s |
+| q19 | ✓s |
+| q20 | ✓s |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
+
+### Answer-level results — 2026-07-27
+
+**Model:** `vertex:gemini-2.5-flash` · **Set:** frozen 20 (measurement) · **Model calls:** 89 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| agent | 0.95 (19/20) | 0.85 (17/20) | 1.00 (20/20) | 3.5 / 9 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| get_definition | 24 | 32% |
+| search_code | 22 | 29% |
+| read_file | 17 | 23% |
+| expand_context | 8 | 11% |
+| find_references | 4 | 5% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 9 | 3 |
+| no graph tool | 8 | 0 |
+
+Per-question:
+
+| q | agent |
+|---|---|
+| q01 | ✓s |
+| q02 | ✓s |
+| q03 | ✓s |
+| q04 | ✓s |
+| q05 | ✓s |
+| q06 | ✓s |
+| q07 | ✓s |
+| q08 | ✓s |
+| q09 | ✓ |
+| q10 | · |
+| q11 | ✓s |
+| q12 | ✓s |
+| q13 | ✓s |
+| q14 | ✓s |
+| q15 | ✓s |
+| q16 | ✓s |
+| q17 | ✓s |
+| q18 | ✓s |
+| q19 | ✓s |
+| q20 | ✓ |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
+
+### Answer-level results — 2026-07-27
+
+**Model:** `vertex:gemini-2.5-flash` · **Set:** frozen 20 (measurement) · **Model calls:** 89 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| agent | 0.95 (19/20) | 0.85 (17/20) | 1.00 (20/20) | 3.5 / 9 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| get_definition | 24 | 32% |
+| search_code | 22 | 29% |
+| read_file | 17 | 23% |
+| expand_context | 8 | 11% |
+| find_references | 4 | 5% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 9 | 3 |
+| no graph tool | 8 | 0 |
+
+Per-question:
+
+| q | agent |
+|---|---|
+| q01 | ✓s |
+| q02 | ✓s |
+| q03 | ✓s |
+| q04 | ✓s |
+| q05 | ✓s |
+| q06 | ✓s |
+| q07 | ✓s |
+| q08 | ✓s |
+| q09 | ✓ |
+| q10 | · |
+| q11 | ✓s |
+| q12 | ✓s |
+| q13 | ✓s |
+| q14 | ✓s |
+| q15 | ✓s |
+| q16 | ✓s |
+| q17 | ✓s |
+| q18 | ✓s |
+| q19 | ✓s |
+| q20 | ✓ |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
+
+### Answer-level results — 2026-07-27
+
+**Model:** `vertex:gemini-2.5-flash` · **Set:** frozen 20 (measurement) · **Model calls:** 94 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| agent | 0.95 (19/20) | 0.90 (18/20) | 1.00 (20/20) | 3.7 / 9 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| get_definition | 25 | 31% |
+| search_code | 22 | 28% |
+| read_file | 18 | 22% |
+| expand_context | 11 | 14% |
+| find_references | 4 | 5% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 10 | 2 |
+| no graph tool | 8 | 0 |
+
+Per-question:
+
+| q | agent |
+|---|---|
+| q01 | ✓s |
+| q02 | ✓s |
+| q03 | ✓s |
+| q04 | ✓s |
+| q05 | ✓s |
+| q06 | ✓s |
+| q07 | ✓s |
+| q08 | ✓s |
+| q09 | ✓ |
+| q10 | · |
+| q11 | ✓s |
+| q12 | ✓s |
+| q13 | ✓s |
+| q14 | ✓s |
+| q15 | ✓s |
+| q16 | ✓s |
+| q17 | ✓s |
+| q18 | ✓s |
+| q19 | ✓s |
+| q20 | ✓s |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
