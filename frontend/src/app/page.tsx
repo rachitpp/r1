@@ -1,15 +1,16 @@
-import { Button } from "@/components/ui/button";
+import { RepoDashboard } from "@/components/repo-dashboard";
 
 export default function Home() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-6 p-8">
-      <h1 className="text-3xl font-semibold tracking-tight">
-        Codebase Onboarding Assistant
-      </h1>
-      <p className="max-w-md text-center text-muted-foreground">
-        Phase 0 scaffold. The submit and chat experiences arrive in Phase 5.
-      </p>
-      <Button>Get started</Button>
+    <main className="mx-auto max-w-3xl px-4 py-10">
+      <div className="mb-8 space-y-1">
+        <h1 className="text-2xl font-semibold tracking-tight">Repositories</h1>
+        <p className="text-sm text-muted-foreground">
+          Submit a public Python GitHub repo, wait for indexing, then ask it
+          questions.
+        </p>
+      </div>
+      <RepoDashboard />
     </main>
   );
 }

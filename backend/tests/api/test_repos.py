@@ -8,6 +8,7 @@ import pytest
 from app.api import deps
 from app.main import app
 from tests.api.conftest import (
+    FAILED_REPO_ID,
     FILE_PATH,
     INDEXING_REPO_ID,
     REPO_ID,
@@ -44,6 +45,22 @@ async def test_post_repos_known_url_returns_200_and_re_enqueues(
     assert resp.status_code == 200
     assert resp.json()["id"] == str(REPO_ID)
     assert arq.jobs == [("ingest_repo", (str(REPO_ID),))]
+
+
+async def test_post_repos_failed_repo_is_re_enqueued(
+    client: httpx.AsyncClient, arq: FakeArq
+) -> None:
+    """A `failed` repo is not bricked: re-submitting its URL re-queues the ingest.
+
+    This is the UI's Retry button (Phase 5) — same endpoint, no special route.
+    """
+    resp = await client.post("/repos", json={"url": "https://github.com/owner/failed"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["id"] == str(FAILED_REPO_ID)
+    assert body["status"] == "queued"
+    assert body["error"] is None  # the stale failure must not linger in the UI
+    assert arq.jobs == [("ingest_repo", (str(FAILED_REPO_ID),))]
 
 
 async def test_post_repos_does_not_re_enqueue_work_in_flight(

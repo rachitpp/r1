@@ -32,6 +32,7 @@ from tests.agent.test_graph import FakeChatModel
 REPO_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 INDEXING_REPO_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 UNKNOWN_REPO_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
+FAILED_REPO_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 
 FILE_PATH = "pkg/auth.py"
 FILE_CONTENT = "def verify_token(token):\n    return SECRET_SENTINEL_VALUE\n"
@@ -72,7 +73,9 @@ class FakeConn:
         self.repos: dict[uuid.UUID, dict[str, Any]] = {
             REPO_ID: _repo_row(REPO_ID, "owner/ready", "ready"),
             INDEXING_REPO_ID: _repo_row(INDEXING_REPO_ID, "owner/indexing", "embedding"),
+            FAILED_REPO_ID: _repo_row(FAILED_REPO_ID, "owner/failed", "failed"),
         }
+        self.repos[FAILED_REPO_ID]["error"] = "worker died"
         self.files: dict[str, dict[str, Any]] = {
             FILE_PATH: {
                 "path": FILE_PATH,
@@ -130,6 +133,8 @@ class FakeConn:
             row = self.repos.get(args[0])
             if row is not None:
                 row["status"] = args[1]
+                if "error = NULL" in sql:
+                    row["error"] = None
         return "UPDATE 1"
 
 
