@@ -742,3 +742,68 @@ consistent* with (a); it is *not demonstrated*.
 - Not that flow questions favour the agent. q16–q20 tie in every cell, against
   the phase prompt's stated expectation.
 - Not that graph-tool use causes correctness. See (c).
+
+## 2026-07-26 — Phase 3 FINAL RESULT (checkpoint closed)
+The definitive Phase 3 finding, superseding the interim scoping in the
+"go/no-go checkpoint: GO" entry above. **Phase 3 passes.** Three claims,
+ranked by the strength of their evidence. This exact framing is the README's
+core claim.
+
+### (a) STRONG — graph traversal reaches what retrieval cannot
+The agent answers **q10** in **every run on both models**; the stuffed
+baseline misses it in every run. q10 is the sole question missed by *every*
+retrieval mode — vector, fts, hybrid, hybrid+rerank — in *both* corpus
+conditions across the whole of Phase 2. **q14** behaves the same way on Vertex
+under the symbol-level metric.
+
+The thesis holds on the falsifiable questions: where retrieval provably cannot
+reach, the graph does.
+
+### (b) MODERATE, directionally stable — symbol-level lead
+Agent leads the stuffed baseline at symbol level in **6 of 6 runs across two
+model families**:
+
+| Model | run margins | agent mean | stuffed |
+|---|---|---|---|
+| `mistral-medium-latest` | **+5 / +4 / +2** | 0.93 (0.85–1.00) | 0.75 |
+| `vertex:gemini-2.5-flash` | **+1 / +1 / +2** | 0.87 (0.85–0.90) | 0.80 |
+
+**The sign is stable; the magnitude is noisy.** Mistral spans 0.85–1.00 across
+identical configurations. State it exactly that way — six positive runs is
+evidence of direction, not of effect size.
+
+### (c) NOT SUPPORTED — graph-tool use does not predict correctness
+At identical temperature 0, the two models produce **perfectly inverted**
+cross-tabulations:
+
+| | with graph tool | without graph tool |
+|---|---|---|
+| Mistral (3 runs) | 20 hit / **0 miss** | 36 hit / 4 miss |
+| Vertex (3 runs) | 28 hit / **6 miss** | 24 hit / **0 miss** |
+
+Every Mistral miss came from a run using *no* graph tool; every Vertex miss
+came from a run that *did*. Opposite directions at the same temperature.
+
+**This is a selection effect.** The agent chooses when to reach for a graph
+tool, and it reaches on the questions it finds hard — which differ by model. It
+is not the mechanism becoming visible.
+
+**Retraction recorded.** An earlier single-run Mistral cross-tab of **7/7**
+was reported as the mechanism made visible. It did not replicate on Vertex, and
+the repeat diagnostic showed the inversion above. The 7/7 was an artifact of one
+model and one run. Caught, retracted, and kept here so it is not re-derived.
+
+### Methodology correction — a controlled comparison, not an invalidation
+Temperature was pinned to 0 on Mistral but left at the **provider default of
+1.0** on Gemini and Vertex. Every cross-model comparison before the repeat
+diagnostic therefore ran temperature-0 against temperature-1.0.
+
+All four providers are now pinned to 0 in `app/agent/model.py`, with this
+history in the factory docstring so it cannot recur by omission.
+
+**The earlier results are not invalidated** — the corpus, the frozen questions,
+the retrieval pipeline, and the metrics were unchanged, and the qualitative
+findings (q10, the flow-tier tie, the metric limitation) all reproduce. They
+simply were not like-for-like across providers. **The six repeat runs are the
+first controlled cross-model comparison in the project**, and every conclusion
+above rests on them.

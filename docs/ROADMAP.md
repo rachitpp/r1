@@ -16,7 +16,7 @@ architectural choice made along the way.
 | 0 | Foundations | done | 1 day |
 | 1 | Parse & chunk (CLI) | done | 1–2 weekends |
 | 2 | Store & retrieve | done | 1–2 weekends |
-| 3 | Symbol graph & agent | not started | 2 weekends |
+| 3 | Symbol graph & agent | done | 2 weekends |
 | — | **Go/no-go checkpoint** | — | — |
 | 4 | API & worker | not started | 1–2 weekends |
 | 5 | Frontend | not started | 2 weekends |
@@ -216,8 +216,11 @@ Do not: write any agent code; hand-tune against individual EVAL questions
 **Goal:** the thesis. Retrieval finds entry points; the agent's graph
 traversal finds the answer.
 
+> **Migration renumbered:** symbols/edges are `004_symbols.sql` — `003` is
+> `is_test` (DECISIONS 2026-07-26). SPEC §3's list matches.
+
 Tasks:
-- `003_symbols.sql`: symbols + edges tables per SPEC
+- `004_symbols.sql`: symbols + edges tables per SPEC
 - Symbol pass during ingestion: definitions from tree-sitter; import/call
   edges resolved with Jedi. Timebox resolution — accept ~80%, log
   unresolved edges, move on
@@ -235,11 +238,22 @@ Tasks:
   and (b) full agent; record both in EVAL.md
 
 Done when:
-- [ ] All six tools pass unit tests
-- [ ] Agent answers all 20 EVAL questions from the CLI without crashing;
-      cap enforcement verified by test
-- [ ] Answer-level eval recorded for retrieval-only vs agent
-- [ ] Unresolved-edge rate logged and noted in EVAL.md
+- [x] All six tools pass unit tests — `search_code`, `read_file`,
+      `get_definition`, `find_references`, `expand_context`,
+      `list_directory`, each against the fixture repo
+- [x] Agent answers all 20 EVAL questions from the CLI without crashing;
+      cap enforcement verified by test — **0 errors across 8 full
+      20-question runs on two providers**; the hard cap and its
+      forced-answer path are pinned by scripted fake-model tests
+- [x] Answer-level eval recorded for retrieval-only vs agent —
+      `scripts/answer_eval.py`, `stuffed` vs `agent`, at **both** file and
+      symbol level; ten dated blocks in EVAL.md
+- [x] Unresolved-edge rate logged and noted in EVAL.md — **4% resolution
+      failure** against the ~20% budget; 45% of sites correctly dropped as
+      external, 2.3% dropped by the name-agreement probe
+
+**Symbol graph:** 1201 symbols (544 implementation / 657 test), 2304 edges
+(calls 2026, imports 223+87, extends 67), 0 timeouts, 34s pass.
 
 Do not: build HTTP endpoints; let Jedi resolution become a two-week rabbit
 hole; add tools beyond the six without a DECISIONS entry.
@@ -253,6 +267,19 @@ code.
 
 - **Go:** agent beats retrieval-only on answer-level eval by a clear
   margin. Proceed to Phase 4.
+
+> **Ruling 2026-07-26: GO**, with the scope stated rather than rounded up.
+> The margin is *not* uniformly "clear", and saying so is the point:
+> **(a) STRONG** — the agent answers q10 (unreachable by every retrieval mode
+> in every corpus condition) in every run on both models, plus q14 on Vertex.
+> **(b) MODERATE** — the agent leads at symbol level in 6/6 runs across two
+> model families (Mistral +5/+4/+2, Vertex +1/+1/+2); the sign is stable, the
+> magnitude is noisy.
+> **(c) NOT SUPPORTED** — graph-tool use does not predict correctness; the two
+> models gave perfectly inverted cross-tabs at temperature 0, which is a
+> selection effect. An earlier 7/7 reading was an artifact and is retracted.
+> Full detail: DECISIONS "Phase 3 FINAL RESULT". The aggregate file-level
+> scores are retrieval-bound and are *not* the result.
 - **No-go:** margin is small or negative. Diagnose (tool prompts? graph
   coverage? retrieval quality?) and fix before proceeding — or scope the
   project down honestly. Building UI on a core that doesn't work wastes

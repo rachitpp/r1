@@ -1,7 +1,7 @@
 # HANDOFF.md — project state
 
-**Last updated:** 2026-07-26 · **Current position:** **Phase 2 done** on an
-unrestricted host. Next up: Phase 3 (symbol graph & agent) — the hard one.
+**Last updated:** 2026-07-26 · **Current position:** **Phase 3 done, go/no-go
+checkpoint CLOSED with a GO.** Next up: Phase 4 (API & worker).
 
 Read this first when picking the project up on a new machine or after a
 break. Then read `CLAUDE.md`, then `docs/ROADMAP.md`.
@@ -42,11 +42,60 @@ v1 scope: public GitHub repos, Python only, single user, no auth.
 | 0 Foundations | ✅ done | Scaffold, compose, migrations, /health, worker |
 | 1 Parse & chunk | ✅ done | tree-sitter chunking, CLI, EVAL.md frozen |
 | 2 Store & retrieve | ✅ **done** | Gate PASS: **hybrid 0.95 ≥ vector 0.90 ≥ fts 0.80** |
-| 3 Symbol graph & agent | **next** | The hard phase; escalate model here |
-| — Go/no-go checkpoint | — | Decide on real eval numbers before web work |
-| 4 API & worker | not started | Needs Redis (Upstash) |
+| 3 Symbol graph & agent | ✅ **done** | Graph + six tools + LangGraph loop; thesis supported, narrowly |
+| — Go/no-go checkpoint | ✅ **GO** | Scoped, not rounded up — see the three-tier finding below |
+| 4 API & worker | **next** | Needs Redis (Upstash) |
 | 5 Frontend | not started | |
 | 6 Evidence & ship | not started | |
+
+## Phase 3 outcome — the thesis, and exactly how strong it is
+
+**Checkpoint: GO.** The claim is scoped, not rounded up. Full detail in
+DECISIONS "Phase 3 FINAL RESULT"; the same three tiers are the README's core
+claim.
+
+- **(a) STRONG** — the agent answers **q10** in every run on both models; the
+  stuffed baseline misses it in every run. q10 is the one question missed by
+  *every* retrieval mode in *both* corpus conditions across Phase 2. **q14**
+  behaves the same on Vertex. The thesis holds where it is falsifiable.
+- **(b) MODERATE, directionally stable** — the agent leads at symbol level in
+  **6/6 runs across two model families** (Mistral +5/+4/+2, mean 0.93 vs 0.75;
+  Vertex +1/+1/+2, mean 0.87 vs 0.80). **Sign stable, magnitude noisy** —
+  Mistral spans 0.85–1.00 on identical configs.
+- **(c) NOT SUPPORTED** — graph-tool use does *not* predict correctness. At
+  temperature 0 the two models invert perfectly (Mistral: misses only *without*
+  graph tools; Vertex: misses only *with* them). Selection effect: the agent
+  reaches for graph tools on questions it finds hard, which differ by model. An
+  earlier 7/7 reading was an artifact, caught and retracted.
+
+**Do not quote the aggregate file-level scores as the result.** They are
+0.90–0.95 for both modes and are retrieval-bound: the baseline gets a top-10
+pool whose hit@10 is 0.95, so 19 of 20 questions have no discriminating power.
+The **symbol-level** metric (added to `scripts/answer_eval.py`) is what findings
+(a) and (b) rest on — it requires the answer to *name* the construct, which a
+pool cannot supply by accident.
+
+**Also against expectation:** the flow tier (q16–q20) ties in every cell. A
+ten-chunk pool already contains what those questions need. That is a finding
+about the benchmark — harder cross-file questions are a v2 item.
+
+**Temperature was uncontrolled until late.** Mistral ran at 0 while
+Gemini/Vertex used the provider default 1.0. All four providers are now pinned
+to 0 in `app/agent/model.py` (history in the docstring). Earlier results
+reproduce qualitatively but were not like-for-like; **the six repeat runs are
+the first controlled cross-model comparison.**
+
+## The shipped agent configuration
+
+```
+AGENT_MODEL=mistral-medium-latest      # provider from the prefix
+temperature=0                          # pinned on all four providers
+AGENT_TOOL_CAP=8                       # hard cap, forced answer after
+RERANK_ENABLED=false                   # ablated, still wired
+```
+
+`search_code` uses the **default** retrieval pipeline (RRF fusion, rerank off,
+tests excluded). Never pass `rerank=True`.
 
 ## Phase 2 outcome — read this before touching retrieval
 
@@ -183,20 +232,17 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
 
 ## Immediate next steps
 
-1. **Phase 3 — symbol graph & agent.** The hard one, and the phase with real
-   design ambiguity: escalate the model (`/model opus`, consider
-   `/effort xhigh`). Write `docs/prompts/phase-3-prompt.md` just-in-time first,
-   per the working agreement below.
-2. `004_symbols.sql` — symbols + edges (SPEC §6). Note the number: `003` is
-   already taken by `is_test`.
-3. **`search_code` must consume the DEFAULT pipeline** — `hybrid_search()` with
-   rerank off and tests excluded. Do not pass `rerank=True`; that configuration
-   measured worse at every k (SPEC §7.1).
-4. **q10 is the proof case.** It is the sole EVAL miss and no retrieval mode in
-   any condition reaches it. If Phase 3's graph traversal answers q10, the
-   project's thesis is demonstrated on the record rather than asserted.
-5. Redis (Upstash free tier) is not needed until Phase 4; local compose covers
-   it meanwhile.
+1. **Phase 4 — API & worker.** Write `docs/prompts/phase-4.md` just-in-time
+   first, per the working agreement below. Everything Phase 3 does, over HTTP,
+   with ingestion as a proper ARQ job.
+2. **Redis is now on the critical path** — Upstash free tier, or the local
+   compose service already running.
+3. **Reuse `app/agent/graph.py` as-is.** The loop already streams via
+   `astream_events`; Phase 4 wires those events to SSE. Do not fork the loop.
+4. **The citation parser is shared** — `app/agent/citations.py` was written for
+   Phase 4's SSE layer to reuse; don't reimplement it in the API layer.
+5. **Keep the eval honest.** `scripts/answer_eval.py --dev` is the tuning set;
+   the frozen 20 stay for counted measurement runs only.
 
 ## Open items
 
