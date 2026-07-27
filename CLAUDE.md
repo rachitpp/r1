@@ -131,6 +131,7 @@ pnpm install && pnpm dev                  # :3000
 | `AGENT_MODEL` | Model id for the agent loop; prefix selects the provider (`gemini` / `claude` / `vertex:`) |
 | `GOOGLE_API_KEY` | Gemini (AI Studio) — the default tuning provider |
 | `GOOGLE_APPLICATION_CREDENTIALS` / `GCP_PROJECT` / `GCP_LOCATION` | Vertex — measurement runs and the cross-check only |
+| `FRONTEND_ORIGIN` | CORS origin for the web app; default `http://localhost:3000` |
 | `EMBEDDING_MODEL` | Default `BAAI/bge-small-en-v1.5` |
 | `RERANKER_MODEL` | Default `BAAI/bge-reranker-v2-m3` |
 

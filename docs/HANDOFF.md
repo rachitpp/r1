@@ -1,7 +1,8 @@
 # HANDOFF.md — project state
 
-**Last updated:** 2026-07-26 · **Current position:** **Phase 3 done, go/no-go
-checkpoint CLOSED with a GO.** Next up: Phase 4 (API & worker).
+**Last updated:** 2026-07-27 · **Current position:** **Phase 4 done — the whole
+Phase 3 core is now reachable over HTTP, with ingestion as a real ARQ job.**
+Next up: Phase 5 (frontend).
 
 Read this first when picking the project up on a new machine or after a
 break. Then read `CLAUDE.md`, then `docs/ROADMAP.md`.
@@ -44,8 +45,8 @@ v1 scope: public GitHub repos, Python only, single user, no auth.
 | 2 Store & retrieve | ✅ **done** | Gate PASS: **hybrid 0.95 ≥ vector 0.90 ≥ fts 0.80** |
 | 3 Symbol graph & agent | ✅ **done** | Graph + six tools + LangGraph loop; thesis supported, narrowly |
 | — Go/no-go checkpoint | ✅ **GO** | Scoped, not rounded up — see the three-tier finding below |
-| 4 API & worker | **next** | Needs Redis (Upstash) |
-| 5 Frontend | not started | |
+| 4 API & worker | ✅ **done** | §8 API + §9 SSE + ARQ ingest; Redis Cloud free tier |
+| 5 Frontend | **next** | Consume §9 SSE with `useChat`; `/files` powers the viewer |
 | 6 Evidence & ship | not started | |
 
 ## Phase 3 outcome — the thesis, and exactly how strong it is
@@ -232,15 +233,18 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
 
 ## Immediate next steps
 
-1. **Phase 4 — API & worker.** Write `docs/prompts/phase-4.md` just-in-time
-   first, per the working agreement below. Everything Phase 3 does, over HTTP,
-   with ingestion as a proper ARQ job.
-2. **Redis is now on the critical path** — Upstash free tier, or the local
-   compose service already running.
-3. **Reuse `app/agent/graph.py` as-is.** The loop already streams via
-   `astream_events`; Phase 4 wires those events to SSE. Do not fork the loop.
-4. **The citation parser is shared** — `app/agent/citations.py` was written for
-   Phase 4's SSE layer to reuse; don't reimplement it in the API layer.
+1. **Phase 5 — frontend.** Write `docs/prompts/phase-5.md` just-in-time first,
+   per the working agreement below. The backend contract is frozen and live:
+   §8 endpoints, §9 events.
+2. **Nothing new is needed from the backend.** `GET /repos/{id}` carries the
+   progress numbers for the indexing view, `GET /repos/{id}/files?path=` serves
+   the viewer and citation clicks, and CORS already allows `FRONTEND_ORIGIN`
+   (default `http://localhost:3000`).
+3. **`tool_result` events deliberately carry no code** — summaries and locations
+   only (§9). Render steps from those and fetch code from `/files` on demand.
+4. **Text deltas are token-level on Mistral** (~70 per answer) but a
+   non-streaming provider yields one `text` event per message. Handle both;
+   never assume one delta means one answer.
 5. **Keep the eval honest.** `scripts/answer_eval.py --dev` is the tuning set;
    the frozen 20 stay for counted measurement runs only.
 
@@ -250,11 +254,44 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
       (last unticked Phase 1 done-when) — still open
 - [x] ruff verification pass on the new machine — clean, along with mypy and
       71 tests
-- [ ] Redis provisioning (Upstash free tier) — needed by Phase 4, not before
+- [x] Redis provisioning — Redis Cloud free tier, DSN in `backend/.env`
+      (`docker compose up -d redis` still works offline)
 
 Deferred to the v2 backlog (ROADMAP), deliberately not Phase 2 loose ends:
 evaluate a code-specific reranker; re-attach §5.2 injection to fusion-only
 retrieval. Both need their own eval run if revisited.
+
+## Running the stack (Phase 4)
+
+```bash
+docker compose up -d redis                 # only if not using the cloud DSN
+cd backend
+uv run uvicorn app.main:app --port 8000    # terminal 1 — API
+uv run arq app.worker.WorkerSettings       # terminal 2 — worker
+curl -s -X POST localhost:8000/repos -H 'content-type: application/json' \
+  -d '{"url": "https://github.com/pallets/itsdangerous"}'
+curl -s localhost:8000/repos/<id>          # poll: queued→cloning→parsing→linking→embedding→ready
+curl -N -s -X POST localhost:8000/repos/<id>/chat \
+  -H 'content-type: application/json' -d '{"question": "..."}'
+```
+
+Both processes load the embedder at startup (~18 s each, SPEC §4) — the API
+because every chat request runs `search_code`, the worker because it embeds.
+`/health` answers immediately regardless, and an unreachable Postgres or Redis is
+a logged warning plus a 503 from the endpoint that needs it, never a boot
+failure.
+
+**What exists in code (Phase 4).** `app/ingest/pipeline.py::run_ingest(repo_id)`
+is the single pipeline, called by both `app/worker.py::ingest_repo` and the
+ingest CLI. `app/api/` holds routes, Pydantic schemas, `Annotated` dependencies,
+the exception→HTTP map (`errors.py`), the §9 adapter (`chat_stream.py`), and the
+summaries-only allowlist (`tool_events.py`). `app/ingest/urls.py` normalizes
+submitted URLs so one repo cannot become three rows.
+
+**Two extra repos are now in the database** (`pallets/itsdangerous`,
+`pallets/markupsafe`) from the Phase 4 verification. The httpx benchmark row at
+the pinned SHA was deliberately not touched; delete the two extras if a clean
+list matters for a demo.
 
 ## Phase 3 gotchas worth knowing before you run anything
 

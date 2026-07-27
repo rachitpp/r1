@@ -18,7 +18,7 @@ architectural choice made along the way.
 | 2 | Store & retrieve | done | 1–2 weekends |
 | 3 | Symbol graph & agent | done | 2 weekends |
 | — | **Go/no-go checkpoint** | — | — |
-| 4 | API & worker | not started | 1–2 weekends |
+| 4 | API & worker | done | 1–2 weekends |
 | 5 | Frontend | not started | 2 weekends |
 | 6 | Evidence & ship | not started | 1 weekend |
 
@@ -307,14 +307,46 @@ Tasks:
 - Error mapping: repo not found, repo still indexing, ingest failed
 
 Done when:
-- [ ] Full flow via curl: submit → poll to `ready` → stream a chat with
+- [x] Full flow via curl: submit → poll to `ready` → stream a chat with
       visible tool-call events and citations
-- [ ] Kill the worker mid-ingest; job retries or fails cleanly with a
+- [x] Kill the worker mid-ingest; job retries or fails cleanly with a
       recorded error — no zombie `indexing` rows
-- [ ] API tests: happy path, unknown repo, chat-before-ready
+- [x] API tests: happy path, unknown repo, chat-before-ready
 
 Do not: build any UI; switch to WebSockets; refactor the agent while
 wiring transport.
+
+> **Phase 4 complete, 2026-07-27.** 155 tests green (26 new), ruff + mypy clean.
+> Verified live against `pallets/itsdangerous` and `pallets/markupsafe`, both
+> ingested through the real ARQ queue (Redis Cloud free tier); httpx from Phase 3
+> was left untouched so the benchmark corpus stayed pinned.
+>
+> **Full state machine observed** on a queued ingest, tight-polled through
+> `GET /repos/{id}`:
+> ```
+> [   0.7s] queued     files 0/0     chunks 0/0
+> [   2.8s] cloning    files 0/0     chunks 0/0
+> [   4.3s] parsing    files 0/0     chunks 0/0
+> [   7.8s] parsing    files 12/12   chunks 0/115
+> [   8.6s] linking    files 12/12   chunks 0/115
+> [  13.6s] embedding  files 12/12   chunks 0/115
+> [  33.7s] embedding  files 12/12   chunks 64/115
+> [  50.9s] ready      files 12/12   chunks 115/115
+> ```
+> **Chat stream** (3 tool calls, 72 text deltas, 2 validated citations):
+> `status → tool_call → tool_result → tool_call → tool_result → tool_call →
+> tool_result → text ×72 → citations → done{"tool_calls_used": 3}`.
+>
+> **Error paths:** unknown repo 404, chat-before-ready 409
+> `{"detail":"repo not ready","status":"queued"}`, non-GitHub / malformed URL
+> 422, unknown file path 404, Redis down 503.
+>
+> **Resilience check (worker killed mid-embed at 64/177 chunks):** ARQ logged
+> `ingest_repo cancelled, will be run again`; the row stayed `embedding` while no
+> worker existed, and on restart the retry re-entered at `cloning`, ran
+> delete-and-replace, and finished `ready` at 177/177 — same counts as the
+> original run, no duplication, no stuck row. The sweep was not needed here; its
+> effect on a genuinely abandoned row is covered by an integration test.
 
 ---
 

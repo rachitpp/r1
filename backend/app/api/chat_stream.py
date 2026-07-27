@@ -17,13 +17,15 @@ Three rules from §9 are enforced here:
   ``tool_calls_used``; it does not enforce anything, because two enforcers
   disagreeing is worse than one.
 
-**Text granularity.** ``model_node`` calls ``ainvoke``, not ``astream``, so the
-provider hands back a whole message and there are no token deltas to forward:
-each ``text`` event is one complete assistant message. That is a property of the
-Phase 3 graph, which Phase 4 is explicitly not allowed to restructure — the fix
-is a one-line change in ``app/agent/graph.py`` (``ainvoke`` -> accumulate
-``astream``) whenever token-level typing is wanted in the UI. Tool events, which
-are the ones that make the agent's work visible, stream live either way.
+**Text granularity is the provider's, not ours.** ``model_node`` calls
+``ainvoke``, but ``astream_events`` still reports token-level
+``on_chat_model_stream`` chunks for providers whose client streams internally —
+Mistral does, and a live run of this endpoint emits ~70 ``text`` deltas for one
+answer. A provider that does not stream produces no chunk events at all, and
+then the whole message arrives as a single ``text`` delta at
+``on_chat_model_end``. Both are handled, and the message-end fallback is
+suppressed for any run that already streamed, so no client ever sees the answer
+twice.
 """
 
 from __future__ import annotations
@@ -112,9 +114,9 @@ async def chat_event_stream(
         # them (SPEC §7.2 allows several calls per turn).
         call_n: dict[str, int] = {}
         call_tool: dict[str, str] = {}
-        # Model runs that already emitted token deltas. Today none do (see the
-        # module docstring), but if the graph ever streams, the end-of-message
-        # event must not re-send text the client already has.
+        # Model runs that already emitted token deltas. The end-of-message event
+        # must not re-send text the client already has, and whether a run streams
+        # depends on the provider (see the module docstring).
         streamed_runs: set[str] = set()
 
         async for ev in app.astream_events(initial, version="v2"):

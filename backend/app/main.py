@@ -32,6 +32,10 @@ logger = logging.getLogger("app.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # uvicorn configures its own loggers and leaves the root logger alone, so
+    # without this every `app.*` INFO line (including "enqueued ingest") is
+    # silently dropped.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = get_settings()
     app.state.pool = None
     app.state.arq = None

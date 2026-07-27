@@ -124,7 +124,8 @@ CREATE TABLE repos (
   default_branch TEXT,
   head_sha      TEXT,
   status        TEXT NOT NULL DEFAULT 'queued',
-    -- queued | cloning | parsing | embedding | ready | failed
+    -- queued | cloning | parsing | linking | embedding | ready | failed
+    -- (`linking` added in Phase 4; see §10. No migration: the column is TEXT.)
   error         TEXT,
   files_total   INT NOT NULL DEFAULT 0,
   files_parsed  INT NOT NULL DEFAULT 0,
@@ -523,6 +524,17 @@ Chat is POST (not GET/EventSource): the frontend consumes the stream with
 fetch + ReadableStream via the AI SDK, and questions don't belong in URLs.
 sse-starlette formats the response; the event schema is ours (§9).
 
+Submitted URLs are normalized to `https://github.com/owner/repo` before the
+uniqueness check, so `github.com/Owner/repo`, a `.git` suffix, and a pasted
+`/blob/main/...` deep link all land on one row rather than three. Re-submitting
+a known URL re-queues an ingest (200) unless a job is already in flight, in
+which case the row is returned untouched.
+
+CORS allows one origin, from `FRONTEND_ORIGIN` (default
+`http://localhost:3000`). `POST /repos` returns **503** when Redis is
+unreachable: ingestion never runs in the handler (hard rule 1), so there is no
+inline fallback.
+
 ## §9 SSE event schema
 
 Events in order; `text` and tool events interleave.
@@ -549,19 +561,34 @@ fetches code via `/files` on demand.
 ## §10 Ingestion job lifecycle
 
 ```
-queued → cloning → parsing → embedding → ready
-   └────────┴─────────┴──────────┴────→ failed (error recorded)
+queued → cloning → parsing → linking → embedding → ready
+   └────────┴─────────┴──────────┴─────────┴────→ failed (error recorded)
 ```
 
-- The ARQ task starts by deleting existing `files/chunks/symbols/edges`
-  rows for the repo (delete-and-replace idempotency), then walks the
-  states, updating counters and `updated_at` as it goes.
-- `job_timeout = 900s`, `max_tries = 2`. A retry re-enters cleanly
-  because of the delete-and-replace start.
-- Zombie sweep: on worker startup, any repo in an in-flight state with
-  `updated_at` older than `ZOMBIE_AFTER_S` → `failed("worker died")`.
+Pipeline order: **clone → filter → parse → symbols → embed → backfill**. One
+function, `app/ingest/pipeline.py::run_ingest(repo_id)`, is called by both the
+ARQ task and the ingest CLI (Phase 4).
+
+- `linking` is the §6.1 symbol pass, which runs while the clone is still on
+  disk. It gets its own state because it is 30–40 % of wall time on a
+  mid-size repo and was otherwise invisible inside `parsing`.
+- Everything through the symbol pass runs **inside the clone context** (Jedi
+  resolves against real files); the `symbol_id` backfill runs **after** the
+  chunk insert, since it joins chunks to symbols.
+- The task starts by deleting existing `files/chunks/symbols/edges` rows for
+  the repo (delete-and-replace idempotency), then walks the states, updating
+  counters and `updated_at` as it goes.
+- `job_timeout = 900s`, `max_tries = 2`. A retry re-enters cleanly because of
+  the delete-and-replace start. An ARQ cancellation (timeout/abort) stays
+  retryable and is *not* recorded as `failed`.
+- Zombie sweep: on worker startup, any repo in an in-flight state
+  (`cloning|parsing|linking|embedding`) with `updated_at` older than
+  `ZOMBIE_AFTER_S` → `failed("worker died")`. `queued` is excluded: that job
+  lives in Redis, which redelivers it when a worker returns.
 - Progress writes are batched (every `PROGRESS_EVERY_N` files/chunks),
   not per-row.
+- Worker `poll_delay` is 2s, not ARQ's 0.5s default — a managed-Redis command
+  budget, not a latency choice (DECISIONS 2026-07-27).
 
 ## §11 Evaluation
 

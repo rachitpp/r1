@@ -807,3 +807,96 @@ findings (q10, the flow-tier tie, the metric limitation) all reproduce. They
 simply were not like-for-like across providers. **The six repeat runs are the
 first controlled cross-model comparison in the project**, and every conclusion
 above rests on them.
+
+## 2026-07-27 — Phase 4 reconciliation 1: `linking` joins the §10 state machine
+
+`queued → cloning → parsing → linking → embedding → ready | failed`.
+
+The Phase 3 symbol pass runs after parsing, while the clone is still on disk,
+and on the benchmark repo it is **34 s of a ~7 min ingest** — 30–40 % of wall
+time on a mid-size repo. Folded into `parsing` it is invisible: a user watching
+"parsing" not move for half a minute concludes the job is wedged.
+
+No migration: `repos.status` is `TEXT`, and the frontend does not exist yet, so
+this is the cheap moment to widen the enum. SPEC §3 comment and §10 updated.
+
+## 2026-07-27 — Phase 4 reconciliation 2: one `run_ingest`, two callers
+
+`app/ingest/pipeline.py::run_ingest(repo_id)` is the whole pipeline — clone →
+filter → parse → symbols → embed → backfill — with delete-and-replace at the
+start and workdir cleanup in `finally`. The ARQ task and the ingest CLI both
+call it; the CLI is now argument parsing plus the stats block.
+
+Phase 2/3 grew this inline in `cli.py`. Copying it into the worker would have
+left two pipelines that drift, and the CLI is where every ingest decision was
+actually proved out. Ordering changed in one respect: symbols are extracted
+**before** embedding (they only need the clone), while the `symbol_id` backfill
+runs **after** the chunk insert (it joins chunks to symbols). So a run that dies
+during embedding still leaves a complete graph, and the states stay in pipeline
+order.
+
+The repo row now exists *before* the pipeline runs (`POST /repos` or the CLI
+creates it `queued`), so `upsert_repo` — which invented the row from clone
+metadata — is gone. `head_sha`, `default_branch`, and `name` are written after
+the clone resolves them.
+
+## 2026-07-27 — Phase 4 reconciliation 3: the API warms the embedder at startup
+
+SPEC §4 says models load once per process at startup. Phase 2 made the load
+lazy as a workaround for an 8 GB host that swap-thrashed on the reranker; that
+host is gone (HANDOFF "Environment situation — RESOLVED"), and **this note
+supersedes the lazy-load entry**: the API lifespan now calls `get_embedder()`.
+
+Every chat request runs `search_code`, so with lazy loading the first question
+of a session paid ~18 s of model load *inside its own SSE stream*, where it
+looks like a hung agent. Lazy behaviour remains for CLI and test paths, and the
+warm-up is wrapped in try/except — a cold model must not make the API unbootable.
+
+## 2026-07-27 — ARQ poll delay is 2 s, for the Redis command budget
+
+ARQ polls Redis every **0.5 s** by default: ~172 800 commands/day per worker,
+**~5.2 M/month**, with the worker completely idle. Managed free tiers are
+metered in commands (Upstash: 500 K/month; Redis Cloud: 30 M/month soft) — 0.5 s
+polling exhausts an Upstash free tier in **about three days** of doing nothing.
+
+`poll_delay = 2.0` costs up to two seconds before a submitted repo starts
+cloning, against a job that runs for minutes, and brings an idle worker to
+~43 200 commands/day (~1.3 M/month). Recorded here as a **Phase 6 deploy
+consideration**: a 24/7 hosted worker needs this number chosen against whatever
+tier it lands on, and if the queue moves to a per-command plan the honest fix is
+a blocking pop, not a longer poll.
+
+Redis for local development is Redis Cloud (free tier), reached over a DSN in
+`backend/.env`; `docker compose up -d redis` remains the offline path.
+
+## 2026-07-27 — SSE `tool_result` payloads are an allowlist, not a filter
+
+§9 says summaries and locations only. `app/api/tool_events.py` therefore names
+the fields it copies out of each tool's JSON — `file_path`, `start_line`,
+`end_line`, counts, qualnames — and an unrecognized payload shape gets a generic
+summary and no locations. It never *removes* `code`/`content`/`preview`/`tree`,
+because a filter has to be updated to stay correct and an allowlist does not:
+the failure mode of a forgotten filter is leaking a full file body on every tool
+call, on every question.
+
+Measured by replaying the exact tool calls of the recorded live run
+(pallets/itsdangerous, `search_code` → `expand_context` → `read_file`): 6038
+bytes of tool JSON went to the model, 1305 bytes went over the wire as
+`tool_result` events — **4.6×**, all of the difference being code the viewer can
+fetch from `/files` when a step is actually expanded. The ratio grows with repo
+size, since `search_code` previews and `expand_context` bodies dominate the
+model-side payload.
+
+## 2026-07-27 — Text-delta granularity is the provider's, and both cases are handled
+
+The Phase 3 graph's `model_node` calls `ainvoke`, not `astream`, so the
+expectation was one `text` event per assistant message. In practice
+`astream_events` reports token-level `on_chat_model_stream` chunks anyway for
+providers whose client streams internally — a live Mistral run emits ~70 `text`
+deltas for one answer.
+
+`chat_stream.py` handles both without touching the graph: stream chunks are
+forwarded as they arrive, and the whole-message fallback at
+`on_chat_model_end` is suppressed for any run that already streamed. A provider
+that does not stream degrades to one `text` event per message instead of
+double-sending the answer.

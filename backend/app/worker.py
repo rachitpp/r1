@@ -84,6 +84,10 @@ async def ingest_repo(ctx: dict[str, Any], repo_id: str) -> str:
 
 async def on_startup(ctx: dict[str, Any]) -> None:
     """Open the pool, warm the embedder, and sweep zombies (SPEC §4, §10)."""
+    # arq's CLI configures the `arq` logger and leaves the root logger alone, so
+    # without this the pipeline's per-state progress lines go nowhere — the one
+    # place an operator looks when an ingest seems stuck.
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     settings = get_settings()
     ctx["pool"] = await create_pool(settings.DATABASE_URL)
     logger.info(
