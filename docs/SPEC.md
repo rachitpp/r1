@@ -109,6 +109,32 @@ and `contest.py` are implementation.
 files are still stored in `files`, and `read_file` / `list_directory` still see
 them. Only retrieval filters on the flag (§5.4).
 
+### 2.7 Naive chunking — measurement baseline only (`app/ingest/naive.py`)
+A second chunk strategy exists so the README can state what AST chunking buys,
+measured rather than asserted. It splits each file into fixed character windows
+of `NAIVE_CHUNK_CHARS` advancing by `NAIVE_CHUNK_CHARS - NAIVE_CHUNK_OVERLAP_CHARS`
+(§12) — no tree-sitter, no Jedi, no symbol awareness.
+
+**This is a scoped exception to the AST-boundaries rule, not a softening of
+it.** The exception is bounded by construction:
+
+- reachable only via `python -m app.ingest.cli <url> --db --strategy naive`;
+  `POST /repos` and the ARQ worker have no path to it
+- the baseline corpus lives in its own `repos` row, keyed `<url>#naive` with
+  name `<name>@naive`. `repos.url` is UNIQUE (§3), so a distinct key is what
+  lets the two corpora coexist; the fragment is stripped before cloning and is
+  never handed to git
+- `build_graph` is forced off — the symbol graph is an AST product, so a
+  "naive + graph" corpus would not be a baseline of anything
+- **citations still hold.** Every window carries `file_path`, `start_line`,
+  `end_line` (§3). The rule-5 contract is outside the carve-out.
+
+The header (§2.4) keeps its shape, but `Symbol`, `Kind`, and `Imports` are
+AST products and are left empty or synthetic (`<path>:w<i>`, `window`). The
+comparison therefore measures *AST chunking plus its enrichment* against
+*fixed windows* — the whole strategy, not boundaries in isolation. Holding the
+header constant to isolate boundaries alone is a v2 ablation.
+
 ## §3 Database schema
 
 Migrations are plain SQL in `backend/app/db/migrations/`:
@@ -625,6 +651,8 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `MAX_FILE_BYTES` | 500_000 | §2.2 |
 | `MAX_FILES` | 10_000 | §2.2 |
 | `CHUNK_TOKEN_MAX` | 480 | §2.5 |
+| `NAIVE_CHUNK_CHARS` | 1_000 | §2.7 |
+| `NAIVE_CHUNK_OVERLAP_CHARS` | 100 | §2.7 |
 | `VEC_K` / `FTS_K` | 40 / 40 | §5.1 |
 | `RRF_K` | 60 | §5.1 |
 | `SEARCH_K` | 10 | §5.3 |

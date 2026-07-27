@@ -20,7 +20,7 @@ architectural choice made along the way.
 | — | **Go/no-go checkpoint** | — | — |
 | 4 | API & worker | done | 1–2 weekends |
 | 5 | Frontend | done | 2 weekends |
-| 6 | Evidence & ship | not started | 1 weekend |
+| 6 | Evidence & ship | in progress | 1 weekend |
 
 Statuses: `not started` → `in progress` → `done`. One phase in progress at
 a time. Do not start a phase while the previous phase has failing

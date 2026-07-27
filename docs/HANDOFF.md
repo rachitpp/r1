@@ -1,7 +1,24 @@
 # HANDOFF.md — project state
 
-**Last updated:** 2026-07-27 · **Current position:** **Phase 5 done — the demo
-works end to end in a browser.** Next up: Phase 6 (evidence & ship).
+**Last updated:** 2026-07-27 · **Current position:** **Phase 6 in progress.**
+Backend, frontend, and docs are done; two things are outstanding before v1 can
+be called complete.
+
+**Outstanding:**
+1. **The README comparison table is a placeholder** (`<!-- TABLE:NAIVE_VS_AST -->`).
+   The naive corpus is ingested and measurable, but the eval run that produces
+   its numbers was killed mid-flight. Re-run and fill it in:
+   `uv run python scripts/eval.py --mode vector,fts,hybrid --repo <naive-id>`.
+2. **The stranger re-run has not been done.** ROADMAP's "a stranger can run it
+   from the README alone" is meant to be *tested* by a clean clone, not assumed.
+
+**Deliberately not done:** a live deployment. Phase 6 finishes local-first;
+`docs/DEPLOY.md` is the followable guide, written but never executed (DECISIONS
+2026-07-27). Standing it up is an afternoon whenever a URL is actually wanted.
+
+**Human to-do:** record `demo.gif` — the README carries a labelled placeholder
+at the top. Submit a repo, let the progress bar move, ask a question, click a
+citation. It is the first thing anyone sees.
 
 Read this first when picking the project up on a new machine or after a
 break. Then read `CLAUDE.md`, then `docs/ROADMAP.md`.
@@ -46,7 +63,7 @@ v1 scope: public GitHub repos, Python only, single user, no auth.
 | — Go/no-go checkpoint | ✅ **GO** | Scoped, not rounded up — see the three-tier finding below |
 | 4 API & worker | ✅ **done** | §8 API + §9 SSE + ARQ ingest; Redis Cloud free tier |
 | 5 Frontend | ✅ **done** | Submit/status/chat + Shiki viewer; custom `useRepoChat`, no AI SDK |
-| 6 Evidence & ship | **next** | Naive-chunking baseline, README numbers table, deploy |
+| 6 Evidence & ship | 🚧 in progress | Naive baseline + honest README + onboarding fixes done; table numbers and stranger re-run outstanding |
 
 ## Phase 3 outcome — the thesis, and exactly how strong it is
 
@@ -232,15 +249,19 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
 
 ## Immediate next steps
 
-1. **Phase 6 — evidence & ship.** Write `docs/prompts/phase-6.md` just-in-time
-   first. Naive-chunking baseline (`--strategy naive`), the README comparison
-   table from real eval numbers, deploy (Vercel + Railway/Fly + Neon + Redis
-   Cloud), hardening pass.
-2. **Phase 6 hardening input, from using the Phase 5 demo:** the ~10s quiet gap
-   between the last tool_result and the first text delta reads as a stall — a
-   "writing answer…" indicator would cover it; embedding dominates ingest wait
-   (~4 chunks/s on this box); first viewer open pays the Shiki init (~/s), then
-   files are instant from the query cache.
+1. **Record `demo.gif`** and drop it in place of the README's top placeholder.
+   The only outstanding item in the project.
+2. **If you want a live URL:** follow `docs/DEPLOY.md`. Expect one or two
+   surprises — it has never been executed. Write a Dockerfile first if you want
+   reproducible builds; the guide says where.
+3. **Two corpora now live in the database.** `encode/httpx` (AST, 1522 chunks,
+   the benchmark, pinned `b5addb64`) and `encode/httpx@naive`
+   (`…/httpx#naive`, 657 chunks, no symbol graph). The baseline row exists only
+   for the README table — do not point demos or the agent at it. Re-measure
+   with `scripts/eval.py --repo <naive-id>`.
+4. **`eval.py --mode all` takes ~50 minutes**, essentially all of it the
+   `hybrid+rerank` cross-encoder on CPU. `--mode vector,fts,hybrid` finishes in
+   about a minute and covers every mode that carries a claim.
 3. **What exists in code (Phase 5).** `frontend/src/lib/` (typed §8 client,
    hand-rolled SSE parser, citation parse/segment — vitest-covered),
    `hooks/use-repo-chat.ts` (§9 → state, sessionStorage transcript), pages

@@ -965,3 +965,62 @@ re-enqueue, and both error paths — with console errors captured throughout.
 It is a verification tool, not part of the app: nothing in `src/` imports it,
 and no test harness depends on it. If a Phase 6 e2e suite ever wants it, that
 is a new decision.
+
+## 2026-07-27 — Naive chunking baseline: a scoped exception to the AST rule
+Phase 6's headline table needs a naive-chunking column, and CLAUDE.md hard rule
+4 forbids raw character splits. Rather than soften the rule, the exception is
+carved out and bounded (SPEC §2.7, `app/ingest/naive.py`).
+
+**Parameters, fixed a priori:** `NAIVE_CHUNK_CHARS = 1_000`,
+`NAIVE_CHUNK_OVERLAP_CHARS = 100` (SPEC §12). These are the common off-the-shelf
+window/overlap defaults. They were chosen **before** any measurement and were
+not adjusted afterwards — a baseline tuned until it loses is not evidence, and
+the whole point of the comparison is that a reader can trust it.
+
+**Scope of the exception:**
+- reachable only via `--strategy naive` on the ingest CLI; `POST /repos` and the
+  ARQ worker have no path to it
+- the baseline corpus is its own `repos` row. `repos.url` is UNIQUE (§3), so it
+  is keyed `<url>#naive` / named `<name>@naive`; the fragment is stripped before
+  cloning and never reaches git. The AST corpus at the pinned SHA is untouched —
+  verified 825 impl / 697 test both before and after the baseline ingest
+- `build_graph` is forced off: the symbol graph is an AST product, so a
+  "naive + graph" corpus would be a baseline of nothing
+- citations are **not** part of the carve-out. Every window carries
+  `file_path`/`start_line`/`end_line` (rule 5), which is what makes an
+  answer-level comparison possible at all
+
+**What the comparison actually compares.** The §2.4 header is an AST product
+(symbol, kind, signature, imports). The naive header keeps the shape but leaves
+those fields empty or synthetic, so the measured contrast is *AST chunking plus
+its enrichment* versus *fixed windows* — the whole strategy, not boundaries in
+isolation. Holding the header constant to isolate boundaries alone is a v2
+ablation, and the README says so rather than implying a cleaner experiment than
+was run.
+
+**Chunk counts.** Naive produced **657** chunks (327 impl / 330 test) against
+AST's **1522** (825 / 697) on the same 60 files. Naive chunks are therefore
+roughly 2.3× larger on average, which if anything favours the baseline on
+hit@k: a bigger window is more likely to contain a ground-truth symbol by
+accident. Worth stating, because it means a naive loss is not a chunk-size
+artifact.
+
+## 2026-07-27 — Phase 6 finishes local-first; the deploy is documented, not stood up
+Phase 6's ROADMAP text lists a live deployment. It ships as `docs/DEPLOY.md`
+instead, and the phase closes without a URL.
+
+**Why.** The remaining risk in a live deploy is concentrated in one place: the
+ARQ worker is a second always-on process, not a flag on the API, and platform
+surprises there are open-ended in a way the rest of the stack is not. Against
+that, the marginal value of a URL for this project is small — it is a portfolio
+piece whose differentiator is measured, honestly-scoped results. A reviewer who
+clones the repo, runs it from the README, and reads the three-tier finding is
+better served than one who clicks a link. A repo a stranger cannot run is a
+dealbreaker no URL fixes; a missing URL is an afternoon's work whenever it is
+actually wanted.
+
+**What this is not.** It is not "deploy is blocked" or "deploy was attempted".
+`docs/DEPLOY.md` is written to be followable and says plainly, at the top and in
+a Known Gaps section, that it has never been executed. The ROADMAP done-when box
+is ticked against that guide plus a working local run, with the deferral noted
+as a choice.
