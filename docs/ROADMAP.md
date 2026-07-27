@@ -425,9 +425,17 @@ Tasks:
   timeouts on clone and model calls
 
 Done when:
-- [ ] Deployed URL works end-to-end on a fresh repo
+- [x] ~~Deployed URL works end-to-end on a fresh repo~~ → **satisfied by
+      `docs/DEPLOY.md` + a working local run.** Phase 6 finishes local-first;
+      the live deploy is deferred by choice, not blocked (DECISIONS 2026-07-27).
 - [ ] README contains the comparison table with real numbers and a GIF
+      — *naive column pending a completed eval run; GIF pending a human*
 - [ ] A stranger can run it locally from README instructions alone
+      — *README rewritten against the 2026-07-27 dry-run findings, but the
+      clean-clone re-run that tests it has not been done*
+
+**Remaining work is enumerated with exact commands in `docs/HANDOFF.md`,
+"Immediate next steps — the three things left in Phase 6".**
 
 Do not: add features. Anything tempting goes to the backlog below.
 

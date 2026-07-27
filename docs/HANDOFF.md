@@ -247,30 +247,86 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
        count(*) FILTER (WHERE is_test)     AS test FROM chunks;   -- 825 / 697
 ```
 
-## Immediate next steps
+## Immediate next steps — the three things left in Phase 6
 
-1. **Record `demo.gif`** and drop it in place of the README's top placeholder.
-   The only outstanding item in the project.
-2. **If you want a live URL:** follow `docs/DEPLOY.md`. Expect one or two
-   surprises — it has never been executed. Write a Dockerfile first if you want
-   reproducible builds; the guide says where.
-3. **Two corpora now live in the database.** `encode/httpx` (AST, 1522 chunks,
-   the benchmark, pinned `b5addb64`) and `encode/httpx@naive`
-   (`…/httpx#naive`, 657 chunks, no symbol graph). The baseline row exists only
-   for the README table — do not point demos or the agent at it. Re-measure
-   with `scripts/eval.py --repo <naive-id>`.
-4. **`eval.py --mode all` takes ~50 minutes**, essentially all of it the
-   `hybrid+rerank` cross-encoder on CPU. `--mode vector,fts,hybrid` finishes in
-   about a minute and covers every mode that carries a claim.
-3. **What exists in code (Phase 5).** `frontend/src/lib/` (typed §8 client,
+Everything else in Phase 6 is done and pushed (`0787c6f`). These three close it.
+
+### 1. Re-run the naive eval and fill the README table
+
+```bash
+cd backend
+uv run python scripts/eval.py --mode vector,fts,hybrid \
+  --repo c7815d7b-ab57-4b30-95ee-510e014e2ba3     # encode/httpx@naive
+```
+
+**Use `--mode vector,fts,hybrid`, not `--mode all`.** The `hybrid+rerank` mode
+is a cross-encoder on CPU and is what made both previous runs take 20–50
+minutes; it carries no claim in the comparison table and is off by default
+anyway (SPEC §5.3). The three cheap modes finish in about a minute.
+
+**No re-ingest is needed.** Both corpora are in the database and verified:
+
+| row | url | chunks | graph |
+|---|---|---|---|
+| `encode/httpx` | `https://github.com/encode/httpx` | 1522 (825 impl / 697 test) | yes |
+| `encode/httpx@naive` | `…/encode/httpx#naive` | 657 (327 / 330) | no, by design |
+
+The AST benchmark row is intact at the pinned `b5addb64` — 825/697 confirmed
+both before and after the baseline ingest. The naive row exists **only** for
+this table; never point a demo or the agent at it.
+
+Then replace the `<!-- TABLE:NAIVE_VS_AST -->` placeholder in `README.md` and
+delete the "this table is not filled in yet" note above it. Take the AST column
+from the 2026-07-27 block in `EVAL.md` and the AST+agent column from the
+answer-level runs — do not retype numbers from memory.
+
+If naive is not dramatically worse, **report that straight.** A null result is
+a finding about this benchmark, not a gap to close by resizing windows.
+
+### 2. Do the clean-clone stranger re-run
+
+ROADMAP's "a stranger can run it locally from README instructions alone" is
+meant to be *tested*, not assumed. Clone into a temp dir, follow **only** the
+rewritten README and files it links (`CLAUDE.md`, this file, `ROADMAP.md`, and
+`SPEC.md` are off-page), and reach a streamed browser answer with citations.
+Log anything that still needs off-page knowledge, then tear the environment
+down — containers, volumes, the clone, and any `.env` you put a real key in.
+
+The 2026-07-27 dry run took **18m13s** clone-to-first-answer and produced the
+finding list the current README was written against; that is the number to beat.
+
+### 3. Record `demo.gif`
+
+Submit a repo → progress bar advances → ask a question → tool timeline streams
+→ answer with citations → click a citation → viewer scrolls to the highlighted
+range. ~20 seconds. Drop it in place of the placeholder at the top of
+`README.md`. It is the first thing anyone sees, so it is worth a second take.
+
+This one cannot be done from inside Claude Code — it needs a real screen
+recording.
+
+---
+
+**Not blocking v1:** a live URL. Follow `docs/DEPLOY.md` if you want one; expect
+one or two surprises, since it has never been executed. Write a Dockerfile first
+if you want reproducible builds — the guide says where.
+
+## Reference — what exists in code
+
+1. **Frontend (Phase 5).** `frontend/src/lib/` (typed §8 client,
    hand-rolled SSE parser, citation parse/segment — vitest-covered),
    `hooks/use-repo-chat.ts` (§9 → state, sessionStorage transcript), pages
    `/`, `/repos/[id]`, `/repos/[id]/chat` (split pane: step timeline +
    streaming answer left, python-only fine-grained Shiki viewer right).
    `useRepoChat` replaced the planned AI SDK `useChat` (DECISIONS 2026-07-27).
-4. **Retry = `POST /repos`** on the same URL; a `failed` row re-queues (backend
+   Phase 6 added a client-derived `composing` status — the "writing answer…"
+   line that covers the quiet gap before the first text delta.
+2. **Naive baseline (Phase 6).** `app/ingest/naive.py`, reachable only via
+   `python -m app.ingest.cli <url> --db --strategy naive`. SPEC §2.7 states the
+   scope of the hard-rule-4 carve-out; DECISIONS 2026-07-27 states why.
+3. **Retry = `POST /repos`** on the same URL; a `failed` row re-queues (backend
    unchanged, behaviour pinned by `test_post_repos_failed_repo_is_re_enqueued`).
-5. **Keep the eval honest.** `scripts/answer_eval.py --dev` is the tuning set;
+4. **Keep the eval honest.** `scripts/answer_eval.py --dev` is the tuning set;
    the frozen 20 stay for counted measurement runs only. Phase 6's comparison
    table is measured by `scripts/eval.py`, never eyeballed.
 
