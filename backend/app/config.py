@@ -98,6 +98,10 @@ class Settings(BaseSettings):
     # downloads. Read here so nothing else touches the environment (rule 12).
     HF_TOKEN: str | None = None
 
+    # Browser origin allowed by the CORS middleware (SPEC §8). Set before the
+    # frontend exists so Phase 5 does not open on a preflight failure.
+    FRONTEND_ORIGIN: str = "http://localhost:3000"
+
     # Cross-encoder rerank — OFF by default (SPEC §5.3, DECISIONS 2026-07-26).
     # Measured worse-or-equal than plain fusion at every k and at MRR, in both
     # corpus conditions, for 2.4 GB of resident model. Kept wired and lazily
