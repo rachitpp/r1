@@ -19,7 +19,7 @@ architectural choice made along the way.
 | 3 | Symbol graph & agent | done | 2 weekends |
 | — | **Go/no-go checkpoint** | — | — |
 | 4 | API & worker | done | 1–2 weekends |
-| 5 | Frontend | not started | 2 weekends |
+| 5 | Frontend | done | 2 weekends |
 | 6 | Evidence & ship | not started | 1 weekend |
 
 Statuses: `not started` → `in progress` → `done`. One phase in progress at
@@ -364,13 +364,44 @@ Tasks:
 - Loading, empty, and error states for every screen
 
 Done when:
-- [ ] Full flow in the browser on the benchmark repo: submit → watch
+- [x] Full flow in the browser on the benchmark repo: submit → watch
       progress → ask an EVAL question → watch tool calls stream → click a
       citation → correct lines highlighted
-- [ ] No console errors; indexing and chat survive a page refresh
+- [x] No console errors; indexing and chat survive a page refresh
 
 Do not: add backend features; build the symbol-graph mini-map (backlog);
 fight shadcn defaults for pixel perfection.
+
+> **Phase 5 complete, 2026-07-27.** `pnpm build` clean (chat page 181 kB first
+> load — the python-only Shiki bundle is most of it), `pnpm lint` clean,
+> 16 vitest tests green. Verified live in headless Chromium (Playwright,
+> dev-only, user-approved) against the running api+worker; narration:
+>
+> 1. **Submit → ready.** Submitted `pallets-eco/blinker` (fresh); the status
+>    page walked `queued → cloning → parsing → linking → embedding → ready`
+>    with bars moving (7/7 files, 0→64→76/76 chunks), then showed the chat CTA.
+>    (The phase prompt's example `pallets/blinker` 404s on GitHub — the repo
+>    lives under `pallets-eco` — which conveniently provoked a real `failed`
+>    row for step 4.)
+> 2. **Chat on httpx.** Asked "How does httpx decide which transport to use
+>    for a request?" — thinking indicator, then the step timeline streamed 8
+>    steps live (`search_code ×4, expand_context, read_file ×3`, hitting the
+>    8-cap), then the answer with inline citation chips, then "8 tool calls"
+>    and 4 validated citation chips. Composer disabled throughout the stream.
+> 3. **Citation click.** `httpx/_client.py:718-738` loaded the viewer, scrolled
+>    to line 718, washed exactly the 21-line range; DOM line 718
+>    (`def _init_transport(`) matches the repo file content fetched from
+>    `/files` character-for-character.
+> 4. **Refresh.** All 8 steps + answer restored from sessionStorage in the same
+>    tab. **Retry.** The failed `pallets/blinker` row rendered its CloneError,
+>    the Retry button re-enqueued (worker log shows a second distinct job id;
+>    the fresh error names a different clone workdir), row deleted after the
+>    demo.
+> 5. **Errors.** gitlab URL → inline 422 detail under the field; bogus repo id
+>    → friendly not-found with a back link.
+> 6. **Console.** Zero console errors on the happy path. The error-path runs
+>    log the browser's own "Failed to load resource: 422/404" network lines,
+>    which Chromium emits for any non-2xx fetch and which are not app errors.
 
 ---
 

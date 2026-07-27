@@ -57,7 +57,7 @@ do not invent its contents.
 | Agent | LangGraph state machine; **provider-configurable via `AGENT_MODEL`** (Gemini / Claude / Vertex), built only by `app/agent/model.py` |
 | Queue | ARQ on Redis |
 | Transport | SSE via sse-starlette |
-| Frontend | Next.js 15, TS strict, pnpm, Tailwind + shadcn/ui, Vercel AI SDK (`useChat`), Shiki, TanStack Query |
+| Frontend | Next.js 15, TS strict, pnpm, Tailwind + shadcn/ui, custom `useRepoChat` over hand-rolled SSE (DECISIONS 2026-07-27; no Vercel AI SDK), Shiki (fine-grained, python-only), TanStack Query |
 | Local dev | Docker Compose for pg + redis; apps run on host |
 
 Agent tools (signatures in SPEC): `search_code`, `read_file`,

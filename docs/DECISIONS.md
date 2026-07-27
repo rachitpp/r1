@@ -900,3 +900,68 @@ forwarded as they arrive, and the whole-message fallback at
 `on_chat_model_end` is suppressed for any run that already streamed. A provider
 that does not stream degrades to one `text` event per message instead of
 double-sending the answer.
+
+## 2026-07-27 — Phase 5 reconciliation: custom `useRepoChat`, not the Vercel AI SDK
+
+CLAUDE.md's stack row named the AI SDK's `useChat` before the §9 event schema
+was frozen. The SDK speaks its own stream protocol (`data:`-framed parts with
+SDK-defined types); ours is seven named SSE events that map 1:1 onto UI state.
+Adapting means either a server-side translation of §9 into the SDK's protocol
+or a client-side re-parse of what the SDK abstracted — a translation layer in
+either direction, for zero benefit, plus a dependency whose protocol changes on
+its own schedule.
+
+Shipped instead: `lib/sse.ts`, an incremental parser over
+`fetch` + `ReadableStream` (~60 lines: `event:`/`data:` lines, multi-line data,
+CRLF, comment keep-alives, buffering across arbitrary chunk boundaries —
+unit-tested by feeding the recorded §9 wire format one byte at a time), and
+`hooks/use-repo-chat.ts`, which dispatches events into
+`steps[] / answer / citations / status / toolCallsUsed`.
+
+Two rules are load-bearing in the hook: **text deltas always accumulate** (§9
+grants no granularity — Mistral streams ~70 token deltas, a non-streaming
+provider sends one whole-message delta; DECISIONS 2026-07-27 "Text-delta
+granularity"), and a **409 mid-chat is a state, not an error** — the repo
+regressed to not-ready, and the UI redirects to the status page instead of
+rendering a failure bubble.
+
+CLAUDE.md's stack row is updated. Revisit only if the app ever needs the SDK's
+actual value (multi-provider client-side streaming, resumable streams).
+
+## 2026-07-27 — `failed` repos retry through `POST /repos`, not a new endpoint
+
+The Phase 5 UI needs a Retry button, and the Phase 4 API already had the
+semantics: `POST /repos` on any known URL whose status is not in-flight resets
+the row (`start_ingest`: status → `queued`, error cleared, counters zeroed) and
+re-enqueues, returning 200. `failed` was never in `IN_FLIGHT_STATUSES`, so no
+backend code changed in Phase 5 — the pre-authorized exception turned out to be
+a test (`test_post_repos_failed_repo_is_re_enqueued`) pinning the behaviour the
+button depends on, including `error: null` in the response so a stale failure
+message cannot linger in the UI.
+
+## 2026-07-27 — Chat transcript in sessionStorage, per repo, completed exchanges only
+
+The transcript persists to `sessionStorage` keyed `chat:{repoId}` so a refresh
+restores the conversation. Deliberate limits: **completed exchanges only** — an
+in-flight stream is cut by refresh and not resumed (resumable streams need
+server-side session state, which v1's single-user scope does not justify) — and
+**session** storage, not local: a conversation is working memory, not a
+document, and two tabs on the same repo diverging is acceptable where silently
+sharing state between them is confusing. Writes are wrapped in try/catch;
+quota or private-mode failure degrades to refresh-loses-history, never a broken
+app.
+
+## 2026-07-27 — Playwright (dev-only) for live browser verification
+
+Phase 5's done-when is defined in a browser — a streamed timeline, a citation
+click landing on highlighted lines, a clean console — and this Codespace ships
+no Chrome, so "verify live" had no vehicle. With the human's approval (CLAUDE.md
+rule 11), `playwright` was added to the frontend's devDependencies and headless
+Chromium drove the whole verification script: submit→ready on a fresh repo,
+the httpx chat with a live model, the citation-to-highlight check (DOM line text
+compared against `/files` content), the sessionStorage refresh, the Retry
+re-enqueue, and both error paths — with console errors captured throughout.
+
+It is a verification tool, not part of the app: nothing in `src/` imports it,
+and no test harness depends on it. If a Phase 6 e2e suite ever wants it, that
+is a new decision.
