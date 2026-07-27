@@ -82,6 +82,13 @@ export function ExchangeView({
         activeKey={activeKey}
       />
 
+      {live && status === "composing" && !exchange.answer && (
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span className="size-2 animate-pulse rounded-full bg-blue-500" />
+          writing answer…
+        </p>
+      )}
+
       {exchange.answer && (
         <AnswerText
           text={exchange.answer}

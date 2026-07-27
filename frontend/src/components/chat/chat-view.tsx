@@ -34,7 +34,10 @@ export function ChatView({ repoId }: { repoId: string }) {
   const [selection, setSelection] = useState<Citation | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const streaming = chat.status === "thinking" || chat.status === "streaming";
+  const streaming =
+    chat.status === "thinking" ||
+    chat.status === "composing" ||
+    chat.status === "streaming";
 
   // Follow the stream: new steps/deltas keep the latest content in view. The
   // hook replaces `current` with a fresh object per event, so its answer

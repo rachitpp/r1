@@ -23,7 +23,19 @@ export interface ChatStep {
   locations?: ToolLocation[];
 }
 
-export type ChatStatus = "idle" | "thinking" | "streaming" | "done" | "error";
+/**
+ * `composing` is derived on the client, not sent by the server: §9 has no event
+ * for "tools are done, the model is writing". The ~10s silence between the last
+ * `tool_result` and the first `text` delta reads as a stall without it
+ * (HANDOFF, Phase 6 hardening input).
+ */
+export type ChatStatus =
+  | "idle"
+  | "thinking"
+  | "composing"
+  | "streaming"
+  | "done"
+  | "error";
 
 export interface ChatExchange {
   question: string;

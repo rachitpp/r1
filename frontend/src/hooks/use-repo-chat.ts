@@ -125,6 +125,7 @@ export function useRepoChat(repoId: string): RepoChat {
                   args: payload.args ?? {},
                 };
                 exchange.steps = [...exchange.steps, step];
+                setStatus("thinking"); // a new tool call: back to working
                 break;
               }
               case "tool_result": {
@@ -137,6 +138,9 @@ export function useRepoChat(repoId: string): RepoChat {
                       }
                     : s,
                 );
+                // Tools have produced something and no answer text has arrived
+                // yet: the model is composing. Covers the quiet gap.
+                if (!exchange.answer) setStatus("composing");
                 break;
               }
               case "text":
