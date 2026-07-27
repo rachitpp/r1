@@ -688,3 +688,57 @@ therefore executed on `vertex:gemini-2.5-flash`** — same Flash tier, closest
 continuity with the M2 live run. Note `gemini-2.5-flash` is reachable on Vertex
 even though AI Studio reports it "no longer available to new users"; provider
 catalogues are not interchangeable and a model id must be verified per provider.
+
+## 2026-07-26 — Phase 3 go/no-go checkpoint: GO, narrowly scoped
+**Ruling: GO.** Phase 3 passes. The thesis — *retrieval finds entry points;
+graph traversal finds the answer* — is **supported**, and the scope below is
+the claim. It is deliberately not rounded up; the README carries this exact
+three-tier framing.
+
+### (a) STRONG — the agent answers what retrieval cannot
+**q10** is answered by the agent and missed by the stuffed baseline across
+**four independent runs on two models** (`mistral-medium-latest`,
+`vertex:gemini-2.5-flash`; file-level and symbol-level metrics). q10 is the
+sole question missed by **every** retrieval mode — vector, fts, hybrid,
+hybrid+rerank — in **both** corpus conditions throughout Phase 2. **q14** joins
+it on Vertex under the symbol-level metric.
+
+This is the falsifiable core: a question retrieval provably cannot reach, which
+the graph reaches, repeatedly, on models from different providers.
+
+### (b) MODERATE — the agent leads at symbol level, directionally
+Symbol-hit, agent vs stuffed: **+2 on Mistral** (0.85 vs 0.75), **+1 on
+Vertex** (0.85 vs 0.80). The lead replicates in sign on both models, and the
+stricter metric recovered discrimination the file-level metric masked.
+
+**But both margins sit inside the ±2-question variance measured on the dev
+set** (identical configuration scored 7/7 then 5/7 at `temperature=0`). The
+direction is consistent; the magnitude is not resolved by single runs. Stated
+as directional, not conclusive.
+
+### (c) NOT SUPPORTED — graph-tool use as a causal mechanism
+The cross-tabulation of graph-tool use against symbol correctness **did not
+replicate**:
+
+| | Mistral | Vertex |
+|---|---|---|
+| used a graph tool → symbol-hit | 7 / 7 | 10 / 12 |
+| no graph tool → symbol-hit | 10 / 13 | 7 / 8 |
+
+Mistral's 7/7 looked like the mechanism made visible. Vertex — which uses graph
+tools far more heavily (53% of calls vs Mistral's 14%) — shows 83% with versus
+88% without, i.e. no advantage or a slight inversion. On 8 and 12 questions
+either reading is noise.
+
+**This remains an observation, not a claim.** The split is also not randomised:
+the agent chooses when to reach for a graph tool, so any correlation may
+reflect which questions it judges to need one. The mechanism is *plausible and
+consistent* with (a); it is *not demonstrated*.
+
+### What is explicitly NOT claimed
+- Not that the agent beats stuffing in aggregate. File-level scores tie or
+  differ by one, and that metric is retrieval-bound (see the metric-limitation
+  entry above).
+- Not that flow questions favour the agent. q16–q20 tie in every cell, against
+  the phase prompt's stated expectation.
+- Not that graph-tool use causes correctness. See (c).

@@ -67,7 +67,17 @@ def build_chat_model(
 
     Provider packages are imported lazily so a run on one provider never pays
     the import cost — or the failure — of the others.
+
+    **Temperature defaults to 0 on every provider.** Measurement runs must be
+    comparable across providers, and provider defaults are not: Gemini/Vertex
+    default to 1.0 while Mistral was explicitly pinned to 0. The M3 runs before
+    2026-07-26 therefore compared a temperature-0 model against a
+    temperature-1.0 one. Pinning it here makes that impossible to repeat by
+    omission. (Zero does not buy determinism — Mistral varies ±2 questions at
+    temperature 0 — it only removes one avoidable source of spread.)
     """
+    if temperature is None:
+        temperature = 0.0
     settings = get_settings()
     name = model or settings.AGENT_MODEL
     if not name:
@@ -86,7 +96,7 @@ def build_chat_model(
             google_api_key=settings.GOOGLE_API_KEY,
             max_output_tokens=max_tokens,
             max_retries=DEFAULT_MAX_RETRIES,
-            **({"temperature": temperature} if temperature is not None else {}),
+            temperature=temperature,
             **kwargs,
         )
 
@@ -147,5 +157,6 @@ def build_chat_model(
         location=settings.GCP_LOCATION,
         max_output_tokens=max_tokens,
         max_retries=DEFAULT_MAX_RETRIES,
+        temperature=temperature,
         **kwargs,
     )
