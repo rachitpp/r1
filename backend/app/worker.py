@@ -25,6 +25,7 @@ from app.db import queries
 from app.db.pool import close_pool, create_pool
 from app.ingest.embedder import get_embedder
 from app.ingest.pipeline import run_ingest
+from app.logging_setup import configure_logging
 
 logger = logging.getLogger("app.worker")
 
@@ -87,7 +88,7 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     # arq's CLI configures the `arq` logger and leaves the root logger alone, so
     # without this the pipeline's per-state progress lines go nowhere — the one
     # place an operator looks when an ingest seems stuck.
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging()
     settings = get_settings()
     ctx["pool"] = await create_pool(settings.DATABASE_URL)
     logger.info(

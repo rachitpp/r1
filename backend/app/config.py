@@ -36,6 +36,11 @@ TEST_FILE_NAMES: frozenset[str] = frozenset({"conftest.py"})
 MAX_FILE_BYTES: int = 500_000
 MAX_FILES: int = 10_000
 CHUNK_TOKEN_MAX: int = 480
+# Phase 6 naive-chunking baseline only (SPEC §2.7). Deliberately the common
+# off-the-shelf window/overlap default, fixed a priori and never tuned against
+# the benchmark — a baseline picked to lose is not evidence.
+NAIVE_CHUNK_CHARS: int = 1_000
+NAIVE_CHUNK_OVERLAP_CHARS: int = 100
 VEC_K: int = 40
 FTS_K: int = 40
 RRF_K: int = 60
@@ -98,9 +103,23 @@ class Settings(BaseSettings):
     # downloads. Read here so nothing else touches the environment (rule 12).
     HF_TOKEN: str | None = None
 
-    # Browser origin allowed by the CORS middleware (SPEC §8). Set before the
-    # frontend exists so Phase 5 does not open on a preflight failure.
+    # Browser origin(s) allowed by the CORS middleware (SPEC §8). Set before the
+    # frontend exists so Phase 5 does not open on a preflight failure. Accepts a
+    # comma-separated list: a forwarded dev port (VS Code / Codespaces) reaches
+    # the browser as a different host and port than the container binds, and
+    # CORS matches origins as exact strings.
     FRONTEND_ORIGIN: str = "http://localhost:3000"
+
+    # Optional regex alternative to listing origins one by one. A forwarded dev
+    # port is picked by the editor and changes between sessions, so pinning exact
+    # ports means editing .env every time one moves. Unset by default: a
+    # deployment allows only what FRONTEND_ORIGIN names.
+    FRONTEND_ORIGIN_REGEX: str | None = None
+
+    @property
+    def frontend_origins(self) -> list[str]:
+        """`FRONTEND_ORIGIN` split into the list the CORS middleware wants."""
+        return [o.strip() for o in self.FRONTEND_ORIGIN.split(",") if o.strip()]
 
     # Cross-encoder rerank — OFF by default (SPEC §5.3, DECISIONS 2026-07-26).
     # Measured worse-or-equal than plain fusion at every k and at MRR, in both

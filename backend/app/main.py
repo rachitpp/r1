@@ -26,6 +26,7 @@ from app.api.routes import router
 from app.config import get_settings
 from app.db.pool import close_pool, create_pool
 from app.ingest.embedder import get_embedder
+from app.logging_setup import configure_logging
 
 logger = logging.getLogger("app.main")
 
@@ -35,7 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # uvicorn configures its own loggers and leaves the root logger alone, so
     # without this every `app.*` INFO line (including "enqueued ingest") is
     # silently dropped.
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging()
     settings = get_settings()
     app.state.pool = None
     app.state.arq = None
@@ -77,7 +78,8 @@ app = FastAPI(title="Codebase Onboarding Assistant", lifespan=lifespan)
 # Phase 5 does not open with a preflight failure.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[get_settings().FRONTEND_ORIGIN],
+    allow_origins=get_settings().frontend_origins,
+    allow_origin_regex=get_settings().FRONTEND_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

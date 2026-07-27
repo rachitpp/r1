@@ -41,7 +41,14 @@ class SentenceTransformerEmbedder:
         from sentence_transformers import SentenceTransformer
 
         self._model = SentenceTransformer(model_name, token=token)
-        dim = self._model.get_sentence_embedding_dimension()
+        # get_sentence_embedding_dimension() was renamed in sentence-transformers
+        # 5.x; prefer the new name and fall back so either version works.
+        get_dim = getattr(
+            self._model,
+            "get_embedding_dimension",
+            self._model.get_sentence_embedding_dimension,
+        )
+        dim = get_dim()
         if dim is None:  # pragma: no cover — every real ST model reports a dim
             raise RuntimeError(f"model {model_name!r} did not report an embedding dim")
         self.dim: int = dim

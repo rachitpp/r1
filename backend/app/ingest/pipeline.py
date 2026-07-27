@@ -47,6 +47,7 @@ from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo
 from app.ingest.embedder import get_embedder
 from app.ingest.filters import SelectionResult, is_test_path, select_files
+from app.ingest.naive import naive_chunk_file
 from app.ingest.parser import ParsedFile, parse_file
 from app.ingest.symbols import EdgeStats, extract_edges, extract_symbols
 from app.ingest.tokens import HeuristicTokenCounter
@@ -61,6 +62,20 @@ EMBED_BATCH = 64
 # Called with one human-readable line per pipeline milestone. The CLI prints
 # these; the worker logs them.
 ProgressLog = Callable[[str], None]
+
+# Chunking strategies. "ast" is the product; "naive" is the Phase 6 measurement
+# baseline and is reachable only from the CLI (SPEC §2.7).
+STRATEGIES = ("ast", "naive")
+
+# Marks a baseline repo row. `repos.url` is UNIQUE (§3), so the naive corpus of
+# a repo needs a distinct URL string to coexist with its AST corpus; the
+# fragment is stripped before cloning and is never sent to git.
+NAIVE_URL_FRAGMENT = "#naive"
+
+
+def baseline_url(url: str) -> str:
+    """The naive corpus's row URL for ``url`` — a distinct, non-cloneable key."""
+    return f"{url}{NAIVE_URL_FRAGMENT}"
 
 
 @dataclasses.dataclass
@@ -150,6 +165,7 @@ async def run_ingest(
     *,
     pool: asyncpg.Pool | None = None,
     build_graph: bool = True,
+    strategy: str = "ast",
     log: ProgressLog | None = None,
 ) -> IngestStats:
     """Run the full pipeline for an existing ``repos`` row and store the result.
@@ -161,14 +177,21 @@ async def run_ingest(
 
     ``pool`` lets a long-lived caller (the worker) share its pool; when omitted
     one is created and closed here.
+
+    ``strategy`` selects the chunker. ``"naive"`` is the Phase 6 measurement
+    baseline (SPEC §2.7) and is never passed by the API or the worker.
     """
+    if strategy not in STRATEGIES:
+        raise IngestError(f"unknown chunk strategy {strategy!r}")
     say: ProgressLog = log if log is not None else (lambda _msg: None)
     own_pool = pool is None
     if pool is None:
         pool = await create_pool(get_settings().DATABASE_URL)
     try:
         async with pool.acquire() as conn:
-            return await _run(conn, repo_id, build_graph=build_graph, say=say)
+            return await _run(
+                conn, repo_id, build_graph=build_graph, strategy=strategy, say=say
+            )
     finally:
         if own_pool:
             await close_pool(pool)
@@ -179,23 +202,28 @@ async def _run(
     repo_id: UUID,
     *,
     build_graph: bool,
+    strategy: str,
     say: ProgressLog,
 ) -> IngestStats:
     row = await conn.fetchrow("SELECT url FROM repos WHERE id = $1", repo_id)
     if row is None:
         raise IngestError(f"no repo row {repo_id}")
     url = str(row["url"])
+    # A baseline row's URL carries the marker fragment; git must not see it.
+    clone_url = url.split("#", 1)[0]
 
     embedder = get_embedder()  # also the real TokenCounter for oversize splits
     await queries.start_ingest(conn, repo_id, status="cloning")
-    say(f"cloning {url}")
+    say(f"cloning {clone_url}")
 
     parse_start = time.perf_counter()
-    with cloned_repo(url) as info:
+    with cloned_repo(clone_url) as info:
         await queries.set_repo_clone_info(
             conn,
             repo_id,
-            name=info.name,
+            # The clone reports the upstream name, which would make a baseline
+            # row indistinguishable from its AST twin in /repos and the UI.
+            name=f"{info.name}@naive" if strategy == "naive" else info.name,
             head_sha=info.head_sha,
             default_branch=info.default_branch,
         )
@@ -230,12 +258,23 @@ async def _run(
         say(f"parsed {len(parsed)} files ({n_syntax_errors} syntax errors)")
 
         chunks: list[Chunk] = []
-        for pf in parsed:
-            chunks.extend(chunk_file(pf, embedder))
-        # Same chunker, heuristic counter — count only, to report the delta
-        # between the heuristic and the real tokenizer (Phase 2 Reconciliation 2).
-        heuristic = HeuristicTokenCounter()
-        heuristic_chunk_count = sum(len(chunk_file(pf, heuristic)) for pf in parsed)
+        if strategy == "naive":
+            # SPEC §2.7 baseline. The parse above still runs so the §10 progress
+            # contract and the syntax-error count are identical across the two
+            # corpora, but no chunk here touches the AST.
+            for source in selection.files:
+                chunks.extend(naive_chunk_file(source))
+            # No tokenizer is involved in fixed-window splitting, so there is no
+            # heuristic-vs-real delta to report.
+            heuristic_chunk_count = len(chunks)
+        else:
+            for pf in parsed:
+                chunks.extend(chunk_file(pf, embedder))
+            # Same chunker, heuristic counter — count only, to report the delta
+            # between the heuristic and the real tokenizer (Phase 2
+            # Reconciliation 2).
+            heuristic = HeuristicTokenCounter()
+            heuristic_chunk_count = sum(len(chunk_file(pf, heuristic)) for pf in parsed)
         parse_elapsed = time.perf_counter() - parse_start
         await queries.set_repo_progress(
             conn, repo_id, chunks_total=len(chunks), chunks_embedded=0

@@ -31,6 +31,7 @@ from app.agent.model import build_chat_model, provider_for
 from app.config import AGENT_TOOL_CAP, get_settings
 from app.db.pool import close_pool, create_pool
 from app.db.queries import resolve_repo_id
+from app.exceptions import AppError
 
 TRACE_DIR = Path(__file__).resolve().parents[2] / "var" / "traces"
 
@@ -175,9 +176,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--tool-cap", type=int, default=AGENT_TOOL_CAP)
     args = parser.parse_args(argv)
-    return asyncio.run(
-        run(args.repo, args.question, as_json=args.json, tool_cap=args.tool_cap)
-    )
+    try:
+        return asyncio.run(
+            run(args.repo, args.question, as_json=args.json, tool_cap=args.tool_cap)
+        )
+    except AppError as exc:
+        # A missing API key or an un-ingested repo is a setup problem, not a
+        # crash. Twenty lines of traceback bury the one line that says what to
+        # do about it. Unexpected exceptions still raise with a full trace.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

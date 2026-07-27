@@ -31,9 +31,11 @@ from app.exceptions import IngestError
 from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo, repo_name_from_url
 from app.ingest.filters import SelectionResult, select_files
+from app.ingest.naive import naive_chunk_file
 from app.ingest.parser import parse_file
-from app.ingest.pipeline import IngestStats, run_ingest
+from app.ingest.pipeline import STRATEGIES, IngestStats, baseline_url, run_ingest
 from app.ingest.tokens import HeuristicTokenCounter
+from app.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +53,12 @@ class IngestResult:
     elapsed_s: float
 
 
-def ingest(url: str) -> IngestResult:
-    """Run the Phase 1 pipeline for ``url`` and return chunks + stats."""
+def ingest(url: str, *, strategy: str = "ast") -> IngestResult:
+    """Run the Phase 1 pipeline for ``url`` and return chunks + stats.
+
+    ``strategy="naive"`` swaps in the §2.7 baseline chunker so chunk counts can
+    be compared without touching a database.
+    """
     counter = HeuristicTokenCounter()
     start = time.perf_counter()
     with cloned_repo(url) as info:
@@ -64,7 +70,10 @@ def ingest(url: str) -> IngestResult:
             if parsed is None:
                 n_syntax_errors += 1
                 continue
-            chunks.extend(chunk_file(parsed, counter))
+            if strategy == "naive":
+                chunks.extend(naive_chunk_file(source))
+            else:
+                chunks.extend(chunk_file(parsed, counter))
         elapsed = time.perf_counter() - start
         return IngestResult(
             name=info.name,
@@ -77,23 +86,37 @@ def ingest(url: str) -> IngestResult:
         )
 
 
-async def ingest_to_db(url: str, *, build_graph: bool = True) -> IngestStats:
+async def ingest_to_db(
+    url: str, *, build_graph: bool = True, strategy: str = "ast"
+) -> IngestStats:
     """Create (or reuse) the repo row for ``url`` and run the pipeline inline.
 
     The foreground twin of the ARQ task: same :func:`run_ingest`, same status
     transitions and progress writes, just with the stats printed instead of a
     job result. Accepts any git-cloneable URL — GitHub validation belongs to
     ``POST /repos`` (§8), not to a developer's local CLI.
+
+    ``strategy="naive"`` stores the baseline corpus under its own repo row
+    (``<url>#naive``, name ``<name>@naive``) so it coexists with — and cannot
+    clobber — the AST corpus at the pinned SHA. It also forces ``build_graph``
+    off: the symbol graph is an AST product and would not be a baseline.
     """
     settings = get_settings()
+    row_url = baseline_url(url) if strategy == "naive" else url
+    name = repo_name_from_url(url)
+    row_name = f"{name}@naive" if strategy == "naive" else name
     pool = await create_pool(settings.DATABASE_URL)
     try:
         async with pool.acquire() as conn:
             repo_id, _created = await queries.create_repo(
-                conn, url=url, name=repo_name_from_url(url)
+                conn, url=row_url, name=row_name
             )
         return await run_ingest(
-            repo_id, pool=pool, build_graph=build_graph, log=lambda m: print(f"  {m}")
+            repo_id,
+            pool=pool,
+            build_graph=build_graph and strategy != "naive",
+            strategy=strategy,
+            log=lambda m: print(f"  {m}"),
         )
     finally:
         await close_pool(pool)
@@ -251,6 +274,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip the Phase 3 symbol pass (--db only); chunks still stored",
     )
     parser.add_argument(
+        "--strategy",
+        choices=STRATEGIES,
+        default="ast",
+        help="chunk boundaries: 'ast' (the product) or 'naive' (SPEC §2.7 "
+        "measurement baseline — fixed character windows, own repo row, no "
+        "symbol graph). Baseline only; never the product path.",
+    )
+    parser.add_argument(
         "--dump", metavar="PATH", help="write all chunks as JSONL to PATH"
     )
     parser.add_argument(
@@ -263,15 +294,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(
-        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
-    )
+    configure_logging()
     args = build_parser().parse_args(argv)
 
     if args.db:
         try:
             db_result = asyncio.run(
-                ingest_to_db(args.github_url, build_graph=not args.no_graph)
+                ingest_to_db(
+                    args.github_url,
+                    build_graph=not args.no_graph,
+                    strategy=args.strategy,
+                )
             )
         except IngestError as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -286,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        result = ingest(args.github_url)
+        result = ingest(args.github_url, strategy=args.strategy)
     except IngestError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
