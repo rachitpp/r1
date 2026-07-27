@@ -1,9 +1,9 @@
 # HANDOFF.md — project state
 
 **Last updated:** 2026-07-27 · **Current position:** **Phase 6 in progress.**
-Backend, frontend, and docs are done, and the README comparison table is filled
-from measured numbers; one thing plus a human recording are outstanding before
-v1 can be called complete.
+Backend, frontend, and docs are done, the README comparison table is filled from
+measured numbers, and the clean-clone stranger re-run passed. **`demo.gif` is
+the only thing left before v1 is complete, and it needs a human.**
 
 **Outstanding:**
 1. ~~The README comparison table is a placeholder.~~ **Done 2026-07-27.** The
@@ -13,8 +13,12 @@ v1 can be called complete.
    and beats it on FTS (0.90 vs 0.80). Reported straight rather than resized;
    the AST case now rests on the symbol graph and the answer-level numbers,
    which is where it always actually lived.
-2. **The stranger re-run has not been done.** ROADMAP's "a stranger can run it
-   from the README alone" is meant to be *tested* by a clean clone, not assumed.
+2. ~~The stranger re-run has not been done.~~ **Done 2026-07-27** on a fresh
+   clone at `0405f37`: every README step worked and **nothing required off-page
+   knowledge**. One gap found and fixed (cold-machine model download); the cold
+   path itself remains untested because every cache here was warm. Full log in
+   "Immediate next steps" below. It also closed Phase 0's two never-executed
+   done-when criteria — this was the project's first host with a Docker daemon.
 
 **Deliberately not done:** a live deployment. Phase 6 finishes local-first;
 `docs/DEPLOY.md` is the followable guide, written but never executed (DECISIONS
@@ -67,7 +71,7 @@ v1 scope: public GitHub repos, Python only, single user, no auth.
 | — Go/no-go checkpoint | ✅ **GO** | Scoped, not rounded up — see the three-tier finding below |
 | 4 API & worker | ✅ **done** | §8 API + §9 SSE + ARQ ingest; Redis Cloud free tier |
 | 5 Frontend | ✅ **done** | Submit/status/chat + Shiki viewer; custom `useRepoChat`, no AI SDK |
-| 6 Evidence & ship | 🚧 in progress | Naive baseline + honest README + onboarding fixes done; table numbers and stranger re-run outstanding |
+| 6 Evidence & ship | 🚧 in progress | Table filled (naive ties AST at hit@10), finding (a) corrected to MODEL-DEPENDENT, stranger re-run passed; **only `demo.gif` left** |
 
 ## Phase 3 outcome — the thesis, and exactly how strong it is
 
@@ -259,9 +263,10 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
        count(*) FILTER (WHERE is_test)     AS test FROM chunks;   -- 825 / 697
 ```
 
-## Immediate next steps — the two things left in Phase 6
+## Immediate next steps — the one thing left in Phase 6
 
-Everything else in Phase 6 is done. These two close it.
+Items 1 and 2 are done (logged below with their numbers). **Only item 3,
+`demo.gif`, remains, and it cannot be done from inside Claude Code.**
 
 ### 1. ~~Re-run the naive eval and fill the README table~~ — DONE 2026-07-27
 
@@ -304,7 +309,51 @@ The placeholder is gone from `README.md`. Retrieval rows came from the
 the three controlled repeats per model — all copied from `EVAL.md`, none from
 memory.
 
-### 2. Do the clean-clone stranger re-run
+### 2. ~~Do the clean-clone stranger re-run~~ — DONE 2026-07-27
+
+**Executed on a fresh clone at `0405f37`, following only the README.** Result:
+**it works, and nothing required off-page knowledge.** No step needed CLAUDE.md,
+SPEC.md, this file, or any prior context.
+
+Measured, in order: `docker compose up -d --wait` both healthy **13 s** ·
+`uv sync` **6.9 s** *(warm cache)* · `cp .env.example .env` + one API key ·
+`migrate.py` 001–004 in **2.4 s**, re-run a clean no-op · API `/health` 200 at
+**29 s** · `pnpm install` **12 s** · `pnpm dev` ready **1.8 s** · submit
+`pallets-eco/blinker` → `ready` in **28.6 s** (7/7 files, 76/76 chunks) ·
+question → streamed answer in **~21 s** (2 tool calls: `search_code`,
+`read_file`; 5 validated citations) · citation click → `src/blinker/base.py`
+lines **91–115 washed exactly**, scrolled into view, line 91 =
+`def connect(self, receiver: F, ...)`, matching the file the API serves
+character-for-character · **zero console errors**.
+
+Also run from the README's Tests block: **163 backend tests pass** (including
+the integration tests, against the live compose Postgres and Redis), ruff and
+mypy clean; frontend `build` clean (chat page 181 kB, as recorded in Phase 5),
+`lint` clean, **16 vitest tests pass**.
+
+**README claims verified:** `.env.example` `DATABASE_URL` does match
+`docker-compose.yml`; the API's first start really is ~30 s; blinker really does
+ingest in under a minute.
+
+**The one gap found, and fixed.** The README said the first API start takes
+~30 s "while the embedding model loads" — but on a machine with a cold
+HuggingFace cache it must **download** the model (~130 MB) first. Every cache
+here (uv, HF, pnpm, Docker images) was warm, so that download never happened and
+the 29 s is a *warm-cache* number. The README now says so.
+
+**What this run did NOT test:** the cold path. `uv sync` took 6.9 s against a
+warm uv cache and hardlinked its 5.3 GB venv; the README's "~6 min on a cold
+cache" is still unverified, as is first-run model download time. A genuinely
+cold stranger run needs a machine with no `~/.cache/uv`, no `~/.cache/huggingface`,
+and no pulled Docker images. **The 18m13s dry-run baseline is therefore not
+comparable to this run and was not "beaten"** — different starting conditions.
+
+**Bonus: Phase 0 is now fully closed.** This was the first host in the project's
+history with a Docker daemon, so it executed the two Phase 0 done-when criteria
+that had been `[~]` since the beginning — compose health and migration
+idempotency against a live Postgres. Both pass; ROADMAP updated.
+
+### 2b. Reference — the original instructions
 
 ROADMAP's "a stranger can run it locally from README instructions alone" is
 meant to be *tested*, not assumed. Clone into a temp dir, follow **only** the
@@ -314,7 +363,9 @@ Log anything that still needs off-page knowledge, then tear the environment
 down — containers, volumes, the clone, and any `.env` you put a real key in.
 
 The 2026-07-27 dry run took **18m13s** clone-to-first-answer and produced the
-finding list the current README was written against; that is the number to beat.
+finding list the current README was written against. It is **not** a target the
+re-run above beat — that run had warm caches and is not comparable. Treat 18m13s
+as the cold-machine reference and the re-run as the warm-cache one.
 
 ### 3. Record `demo.gif`
 

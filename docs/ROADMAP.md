@@ -59,14 +59,14 @@ Tasks:
 - Tooling: ruff, mypy, pytest with one trivial passing test; pnpm lint
 
 Done when:
-- [~] `docker compose up -d` brings both services healthy — compose file
-      complete (pgvector/pg16 + redis, healthchecks, named volume); **not
-      executed on this dev machine (no Docker daemon installed)**. Verify on
-      a Docker host.
-- [~] `migrate.py` applies 001 idempotently (re-running is a no-op) — script
-      + 001 migration complete; discovery/idempotency logic verified in
-      isolation; **not run against a live Postgres here (no Docker)**. Verify
-      on a Docker host.
+- [x] `docker compose up -d` brings both services healthy — **executed
+      2026-07-27** during the Phase 6 stranger re-run, on the first host with a
+      Docker daemon: `docker compose up -d --wait` reported both containers
+      healthy in **13 s** from a cold volume.
+- [x] `migrate.py` applies 001 idempotently (re-running is a no-op) — **executed
+      2026-07-27** against the live compose Postgres: first run applied 001–004
+      (`4 applied, 0 skipped`) in 2.4 s, second run was a clean no-op
+      (`0 applied, 4 skipped`).
 - [x] `GET /health` returns 200; worker starts without error — `/health`
       verified live (returns `{"ok": true}` with DB down); worker boots,
       loads config, attempts Redis connection.
@@ -79,8 +79,10 @@ Done when:
 Do not: write any ingestion/retrieval/agent logic; add dependencies beyond
 the scaffold set.
 
-> **Phase 0 environment notes:** The two compose-dependent checks above remain
-> code-complete but unrun (verify on a Docker host). The earlier WDAC block on
+> **Phase 0 environment notes — now fully closed (2026-07-27).** The two
+> compose-dependent checks were unrun for the whole project because no dev host
+> had a Docker daemon; the Phase 6 stranger re-run happened to land on one and
+> executed both. Phase 0 has no remaining `[~]` boxes. The earlier WDAC block on
 > `ruff` and `mypy`'s `mypyc` extension no longer applies: backend development
 > moved to an unrestricted machine (2026-07-25) where both run natively —
 > `ruff check .` and `mypy app` (compiled build) are clean. See DECISIONS.
@@ -440,9 +442,14 @@ Done when:
       reproduced question-for-question); *GIF still pending a human*.
       **Result: naive does not lose on hit@k** — 0.95 hybrid hit@10 in both
       columns, naive ahead on FTS. Reported straight; see the README note.
-- [ ] A stranger can run it locally from README instructions alone
-      — *README rewritten against the 2026-07-27 dry-run findings, but the
-      clean-clone re-run that tests it has not been done*
+- [x] A stranger can run it locally from README instructions alone —
+      **clean-clone re-run executed 2026-07-27** on a fresh clone at `0405f37`,
+      following only the README: compose → `uv sync` → `.env` → migrate → three
+      processes → browser submit → streamed answer → citation click, with the
+      washed range verified character-for-character against the served file.
+      **Nothing required off-page knowledge.** One README gap found and fixed
+      (cold-machine model download). Caches were warm, so the cold-start timings
+      remain untested — see HANDOFF.
 
 **Remaining work is enumerated with exact commands in `docs/HANDOFF.md`,
 "Immediate next steps — the two things left in Phase 6".**

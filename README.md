@@ -266,7 +266,9 @@ cd frontend && pnpm install && pnpm dev
 ```
 
 The API's **first start takes ~30 seconds** while the embedding model loads, and
-the port refuses connections until it is ready. That is normal.
+the port refuses connections until it is ready. That is normal. On the very
+first run it also **downloads** the embedding model (~130 MB) before that, so
+budget a few minutes more on a cold machine; subsequent starts are the ~30 s.
 
 Then open http://localhost:3000 and submit a repo.
 [`pallets-eco/blinker`](https://github.com/pallets-eco/blinker) ingests in under
