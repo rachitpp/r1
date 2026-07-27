@@ -24,15 +24,37 @@ fixed 1000-character windows with 100 overlap; AST = chunks on tree-sitter
 function/class boundaries; AST + agent = the same corpus with the LangGraph
 agent traversing the symbol graph.
 
-<!-- TABLE:NAIVE_VS_AST — pending. The naive corpus is ingested (657 chunks vs
-     AST's 1522 on the same 60 files); the eval run that produces its hit@k
-     numbers has not completed yet. Fill from:
-       uv run python scripts/eval.py --mode vector,fts,hybrid --repo <naive-id>
-     Do not write numbers here from memory. -->
+| | Naive chunking | AST chunking | AST + agent |
+|---|---|---|---|
+| chunks (same 60 files) | 657 | 1522 | 1522 |
+| **Retrieval — hit@10** (hybrid, default) | **0.95** | **0.95** | n/a |
+| hit@5 | 0.80 | 0.85 | n/a |
+| hit@3 | 0.80 | 0.80 | n/a |
+| MRR | 0.734 | 0.752 | n/a |
+| vector hit@10 · fts hit@10 | 0.90 · 0.90 | 0.90 · 0.80 | n/a |
+| **Answer — file-level** | not run | 0.90 | 0.90–0.95 |
+| **Answer — symbol-level** | not run | 0.75 (Mistral) · 0.80 (Vertex) | 0.85–1.00 · 0.85–0.90 |
+| **q10** — missed by every retrieval mode | miss | miss | **5/5 Mistral · 2/5 Vertex** (see below) |
 
-> **This table is not filled in yet.** The naive baseline exists and is
-> measurable; its numbers are pending a completed eval run. The AST and
-> AST+agent figures below are measured and current.
+Retrieval rows: `scripts/eval.py`, implementation-only condition, 2026-07-27
+(naive re-run and reproduced question-for-question). Answer rows: the *stuffed*
+baseline (top-10 pool, one model call) vs the agent, three controlled repeat
+runs per model at temperature 0 — the AST-column figure is the baseline, the
+agent column its range across runs.
+
+**Read this table honestly: naive does not lose on hit@k.** Fixed 1000-character
+windows match AST chunking at hit@10 on both hybrid (0.95) and vector (0.90),
+and beat it on FTS (0.90 vs 0.80). Naive chunks are ~2.3× larger, which favours
+them on a metric that only asks whether a ground-truth symbol landed *somewhere*
+in a retrieved window. The window parameters were fixed before measurement and
+were not adjusted afterwards. A baseline tuned until it loses is not evidence,
+so this null result is reported as it came out.
+
+What AST chunking buys is not hit@k on this benchmark — it is the symbol graph,
+which fixed windows cannot produce (`build_graph` is forced off for the naive
+row by design), and which is what the agent column rests on. The naive corpus
+was never given an answer-level run; that measurement is available
+(`answer_eval.py --repo <naive-id>`) and simply was not spent.
 
 ---
 
@@ -44,14 +66,27 @@ top-10 retrieved chunks and the same citation contract — on 20 frozen question
 across two model families. Three findings, ranked by the strength of their
 evidence rather than by how good they sound:
 
-### (a) STRONG — the graph reaches what retrieval cannot
+### (a) MODEL-DEPENDENT — the graph reaches what retrieval cannot, on one model
 
-**q10 is answered by the agent and missed by the stuffed baseline in every run,
-on both models.** It is the one question missed by *every* retrieval mode —
-vector, FTS, hybrid, hybrid+rerank — in *both* corpus conditions, re-verified
-2026-07-27.
+**q10 — the only question no retrieval mode reaches in any condition — is
+answered by the agent in 3/3 controlled temperature-0 runs on Mistral and 0/3
+on Vertex (0/2 distinct results: two of Vertex's three blocks are byte-identical
+and probably a double-append), or 5/5 and 2/5 across all runs, both Vertex hits
+pre-temperature-pin: graph traversal can reach what retrieval cannot,
+demonstrated on one model family and not reproduced on the other.**
 
-This is the falsifiable core of the thesis, and it holds. **It is one question.**
+q10 is missed by every retrieval mode — vector, FTS, hybrid, hybrid+rerank — in
+both corpus conditions, on both the AST and naive corpora, re-verified
+2026-07-27, and the stuffed baseline misses it in every run. It is the thesis's
+falsifiable case: if graph traversal reaches anything retrieval cannot, it
+should reach this. On one model family it does.
+
+An earlier version of this section read "in every run, on both models". That was
+written from the pre-temperature-pin runs and is **corrected here (2026-07-27)**;
+the controlled Vertex runs contradict it. The correction, and how the error
+survived, are recorded in [`docs/DECISIONS.md`](docs/DECISIONS.md).
+
+**It is one question, and it replicates on one model family of two.**
 
 The agent also answers **q14**, which retrieval reaches only inconsistently:
 hybrid finds it in the implementation-only condition and misses it in the
@@ -107,9 +142,12 @@ accident the way it supplies a filename. Findings (a) and (b) rest on it.
 
 Two more results that cut against the project's own expectations:
 
-- **The flow tier (q16–q20) ties everywhere.** The phase plan predicted
-  cross-file "what happens when…" questions would favour the agent. They
-  didn't — a ten-chunk pool at 0.95 hit@10 already contains what they need.
+- **The flow tier (q16–q20) ties in every paired comparison.** The phase plan
+  predicted cross-file "what happens when…" questions would favour the agent.
+  They didn't — a ten-chunk pool at 0.95 hit@10 already contains what they need.
+  (Across all runs there is exactly one flow miss: q17, in one controlled
+  Mistral run — 49 of 50 agent cells and 20 of 20 baseline cells hit. An earlier
+  "✓ in every cell" was true of the first four runs and is corrected here.)
   That is a finding about the benchmark, not the agent, and harder cross-file
   questions are a v2 item.
 - **Temperature was not controlled across providers** until late: Mistral ran

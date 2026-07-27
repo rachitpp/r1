@@ -132,6 +132,12 @@ Rewrite `README.md` as the front door. Structure:
 2. **The comparison table** from Part A — the hero.
 3. **The result, stated in three tiers exactly as DECISIONS records
    them** — do NOT round up:
+   - > ⚠️ **SUPERSEDED 2026-07-27** — this instruction is preserved as the
+     > prompt that was actually given. The claim it asks for is **wrong**: see
+     > DECISIONS "Correction: finding (a) is model-dependent, not 'every run,
+     > both models'". Finding (a) is MODEL-DEPENDENT — q10 is answered in 3/3
+     > controlled runs on Mistral and 0/3 on Vertex. Do not re-derive README
+     > wording from this prompt.
    - (a) STRONG: the agent answers **q10** — the one question missed by
      every retrieval mode in *both* corpus conditions (re-verified
      2026-07-27) — in every run on both models, where the stuffed

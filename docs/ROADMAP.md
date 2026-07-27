@@ -270,8 +270,15 @@ code.
 
 > **Ruling 2026-07-26: GO**, with the scope stated rather than rounded up.
 > The margin is *not* uniformly "clear", and saying so is the point:
-> **(a) STRONG** — the agent answers q10 (unreachable by every retrieval mode
-> in every corpus condition) in every run on both models, plus q14 on Vertex.
+> **(a) MODEL-DEPENDENT** *(downgraded from STRONG, 2026-07-27 — DECISIONS
+> "Correction: finding (a) is model-dependent")* — **q10 — the only question no
+> retrieval mode reaches in any condition — is answered by the agent in 3/3
+> controlled temperature-0 runs on Mistral and 0/3 on Vertex (0/2 distinct
+> results: two of Vertex's three blocks are byte-identical and probably a
+> double-append), or 5/5 and 2/5 across all runs, both Vertex hits
+> pre-temperature-pin: graph traversal can reach what retrieval cannot,
+> demonstrated on one model family and not reproduced on the other.** q14
+> behaves the same way on Vertex.
 > **(b) MODERATE** — the agent leads at symbol level in 6/6 runs across two
 > model families (Mistral +5/+4/+2, Vertex +1/+1/+2); the sign is stable, the
 > magnitude is noisy.
@@ -429,13 +436,16 @@ Done when:
       `docs/DEPLOY.md` + a working local run.** Phase 6 finishes local-first;
       the live deploy is deferred by choice, not blocked (DECISIONS 2026-07-27).
 - [ ] README contains the comparison table with real numbers and a GIF
-      — *naive column pending a completed eval run; GIF pending a human*
+      — **table filled 2026-07-27** from a completed naive eval (re-run and
+      reproduced question-for-question); *GIF still pending a human*.
+      **Result: naive does not lose on hit@k** — 0.95 hybrid hit@10 in both
+      columns, naive ahead on FTS. Reported straight; see the README note.
 - [ ] A stranger can run it locally from README instructions alone
       — *README rewritten against the 2026-07-27 dry-run findings, but the
       clean-clone re-run that tests it has not been done*
 
 **Remaining work is enumerated with exact commands in `docs/HANDOFF.md`,
-"Immediate next steps — the three things left in Phase 6".**
+"Immediate next steps — the two things left in Phase 6".**
 
 Do not: add features. Anything tempting goes to the backlog below.
 

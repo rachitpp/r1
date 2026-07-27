@@ -1,14 +1,18 @@
 # HANDOFF.md — project state
 
 **Last updated:** 2026-07-27 · **Current position:** **Phase 6 in progress.**
-Backend, frontend, and docs are done; two things are outstanding before v1 can
-be called complete.
+Backend, frontend, and docs are done, and the README comparison table is filled
+from measured numbers; one thing plus a human recording are outstanding before
+v1 can be called complete.
 
 **Outstanding:**
-1. **The README comparison table is a placeholder** (`<!-- TABLE:NAIVE_VS_AST -->`).
-   The naive corpus is ingested and measurable, but the eval run that produces
-   its numbers was killed mid-flight. Re-run and fill it in:
-   `uv run python scripts/eval.py --mode vector,fts,hybrid --repo <naive-id>`.
+1. ~~The README comparison table is a placeholder.~~ **Done 2026-07-27.** The
+   naive eval had in fact completed — its block was already the last one in
+   EVAL.md — and a re-run reproduced it question-for-question. Table filled.
+   **The result is a null one at hit@k:** naive ties AST at 0.95 hybrid hit@10
+   and beats it on FTS (0.90 vs 0.80). Reported straight rather than resized;
+   the AST case now rests on the symbol graph and the answer-level numbers,
+   which is where it always actually lived.
 2. **The stranger re-run has not been done.** ROADMAP's "a stranger can run it
    from the README alone" is meant to be *tested* by a clean clone, not assumed.
 
@@ -71,10 +75,16 @@ v1 scope: public GitHub repos, Python only, single user, no auth.
 DECISIONS "Phase 3 FINAL RESULT"; the same three tiers are the README's core
 claim.
 
-- **(a) STRONG** — the agent answers **q10** in every run on both models; the
-  stuffed baseline misses it in every run. q10 is the one question missed by
-  *every* retrieval mode in *both* corpus conditions across Phase 2. **q14**
-  behaves the same on Vertex. The thesis holds where it is falsifiable.
+- **(a) MODEL-DEPENDENT** *(downgraded from STRONG on 2026-07-27; the earlier
+  "every run on both models" was read off the pre-temperature-pin runs and is
+  wrong)* — **q10 — the only question no retrieval mode reaches in any
+  condition — is answered by the agent in 3/3 controlled temperature-0 runs on
+  Mistral and 0/3 on Vertex (0/2 distinct results: two of Vertex's three blocks
+  are byte-identical and probably a double-append), or 5/5 and 2/5 across all
+  runs, both Vertex hits pre-temperature-pin: graph traversal can reach what
+  retrieval cannot, demonstrated on one model family and not reproduced on the
+  other.** The stuffed baseline misses q10 in every run. **q14** behaves the
+  same on Vertex.
 - **(b) MODERATE, directionally stable** — the agent leads at symbol level in
   **6/6 runs across two model families** (Mistral +5/+4/+2, mean 0.93 vs 0.75;
   Vertex +1/+1/+2, mean 0.87 vs 0.80). **Sign stable, magnitude noisy** —
@@ -92,7 +102,9 @@ The **symbol-level** metric (added to `scripts/answer_eval.py`) is what findings
 (a) and (b) rest on — it requires the answer to *name* the construct, which a
 pool cannot supply by accident.
 
-**Also against expectation:** the flow tier (q16–q20) ties in every cell. A
+**Also against expectation:** the flow tier (q16–q20) ties in every paired cell
+— one q17 miss in one controlled Mistral run is the only flow miss in 70 cells
+(DECISIONS 2026-07-27, "Correction: the flow-tier 'every cell' claim"). A
 ten-chunk pool already contains what those questions need. That is a finding
 about the benchmark — harder cross-file questions are a v2 item.
 
@@ -247,24 +259,36 @@ SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
        count(*) FILTER (WHERE is_test)     AS test FROM chunks;   -- 825 / 697
 ```
 
-## Immediate next steps — the three things left in Phase 6
+## Immediate next steps — the two things left in Phase 6
 
-Everything else in Phase 6 is done and pushed (`0787c6f`). These three close it.
+Everything else in Phase 6 is done. These two close it.
 
-### 1. Re-run the naive eval and fill the README table
+### 1. ~~Re-run the naive eval and fill the README table~~ — DONE 2026-07-27
 
 ```bash
 cd backend
 uv run python scripts/eval.py --mode vector,fts,hybrid \
-  --repo c7815d7b-ab57-4b30-95ee-510e014e2ba3     # encode/httpx@naive
+  --repo c7815d7b-ab57-4b30-95ee-510e014e2ba3     # encode/httpx@naive · 2m48s
 ```
 
-**Use `--mode vector,fts,hybrid`, not `--mode all`.** The `hybrid+rerank` mode
-is a cross-encoder on CPU and is what made both previous runs take 20–50
-minutes; it carries no claim in the comparison table and is off by default
-anyway (SPEC §5.3). The three cheap modes finish in about a minute.
+Ran clean and **reproduced the existing EVAL.md block exactly**, mode for mode
+and question for question — so the earlier "killed mid-flight" note was wrong;
+that run had completed and only the README text lagged behind it. The naive
+numbers: vector 0.90 / fts 0.90 / hybrid 0.95 at hit@10, hybrid MRR 0.734.
 
-**No re-ingest is needed.** Both corpora are in the database and verified:
+**Naive ties AST on the headline metric.** That is a finding about hit@k on this
+benchmark — a 2.3×-larger window is more likely to contain a truth symbol by
+accident — not a gap to close by resizing windows. The README says so in the
+table note. The parameters were fixed a priori (DECISIONS 2026-07-27) and were
+not touched after seeing the result.
+
+**Use `--mode vector,fts,hybrid`, not `--mode all`.** The `hybrid+rerank` mode
+is a cross-encoder on CPU and is what made the earlier runs take 20–50
+minutes; it carries no claim in the comparison table and is off by default
+anyway (SPEC §5.3).
+
+**No re-ingest was needed.** Both corpora are in the database and verified
+(re-confirmed 2026-07-27):
 
 | row | url | chunks | graph |
 |---|---|---|---|
@@ -275,13 +299,10 @@ The AST benchmark row is intact at the pinned `b5addb64` — 825/697 confirmed
 both before and after the baseline ingest. The naive row exists **only** for
 this table; never point a demo or the agent at it.
 
-Then replace the `<!-- TABLE:NAIVE_VS_AST -->` placeholder in `README.md` and
-delete the "this table is not filled in yet" note above it. Take the AST column
-from the 2026-07-27 block in `EVAL.md` and the AST+agent column from the
-answer-level runs — do not retype numbers from memory.
-
-If naive is not dramatically worse, **report that straight.** A null result is
-a finding about this benchmark, not a gap to close by resizing windows.
+The placeholder is gone from `README.md`. Retrieval rows came from the
+`eval.py` runs, the answer rows from the paired `stuffed` vs `agent` blocks and
+the three controlled repeats per model — all copied from `EVAL.md`, none from
+memory.
 
 ### 2. Do the clean-clone stranger re-run
 

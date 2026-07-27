@@ -619,6 +619,14 @@ gone (noted as a backfill gap in `docs/phase-2-rerank-review.md`). Persisting
 first and printing second removes the whole class of loss.
 
 ## 2026-07-26 — What the M3 answer-hit metric can and cannot show
+> ⚠️ **PARTIALLY SUPERSEDED 2026-07-27** — see "Correction: finding (a) is
+> model-dependent". Two sentences below — "The agent answers it on both models"
+> and "**q10** — the one falsifiable question, won on both models" — are
+> **false** as standing claims: q10 is won in 3/3 controlled runs on Mistral and
+> 0/3 on Vertex. The entry's actual argument (the file-level metric is
+> retrieval-bound; 19 of 20 questions cannot discriminate) is **unaffected and
+> still correct**. Text left as written.
+
 Recorded because the aggregate numbers (0.95 / 1.00) invite a stronger claim
 than the evidence supports.
 
@@ -647,6 +655,13 @@ answer demonstrably *use* the truth symbol, which a top-10 pool cannot supply
 by accident the way it supplies a filename.
 
 ## 2026-07-26 — The flow tier is answerable from retrieval alone
+> ⚠️ **AMENDED 2026-07-27** — see "Correction: the flow-tier 'every cell' claim".
+> "All five flow questions scored ✓ in every cell" was true of the four blocks
+> that existed when this was written, and is **false across all ten**: one
+> controlled Mistral run misses **q17**. The entry's conclusion — the flow tier
+> does not discriminate retrieval from traversal — is **unaffected**. Text left
+> as written.
+
 The Phase 3 prompt predicted the agent's advantage would appear on the **flow**
 tier (q16–q20) — "what happens when…" questions whose answers span files, which
 `expand_context` exists to assemble.
@@ -696,6 +711,12 @@ the claim. It is deliberately not rounded up; the README carries this exact
 three-tier framing.
 
 ### (a) STRONG — the agent answers what retrieval cannot
+> ⚠️ **SUPERSEDED 2026-07-27** — see "Correction: finding (a) is
+> model-dependent, not 'every run, both models'". This tier is downgraded to
+> **MODEL-DEPENDENT**: q10 is answered in 3/3 controlled runs on Mistral and
+> 0/3 on Vertex. The text below is left exactly as written — the record that
+> the claim was made and then corrected is part of the log.
+
 **q10** is answered by the agent and missed by the stuffed baseline across
 **four independent runs on two models** (`mistral-medium-latest`,
 `vertex:gemini-2.5-flash`; file-level and symbol-level metrics). q10 is the
@@ -750,6 +771,12 @@ ranked by the strength of their evidence. This exact framing is the README's
 core claim.
 
 ### (a) STRONG — graph traversal reaches what retrieval cannot
+> ⚠️ **SUPERSEDED 2026-07-27** — see "Correction: finding (a) is
+> model-dependent, not 'every run, both models'". "Every run on both models" is
+> **false**: it was read off the pre-temperature-pin runs, and in all three
+> controlled temperature-0 Vertex runs the agent misses q10. Text left as
+> written.
+
 The agent answers **q10** in **every run on both models**; the stuffed
 baseline misses it in every run. q10 is the sole question missed by *every*
 retrieval mode — vector, fts, hybrid, hybrid+rerank — in *both* corpus
@@ -1024,3 +1051,142 @@ actually wanted.
 a Known Gaps section, that it has never been executed. The ROADMAP done-when box
 is ticked against that guide plus a working local run, with the deferral noted
 as a choice.
+
+## 2026-07-27 — The naive baseline is a null result at hit@k, and the README says so
+The Phase 6 comparison table is filled. **Fixed 1000-character windows match AST
+chunking on the headline retrieval metric** — hybrid hit@10 0.95 in both columns,
+vector 0.90 in both — and naive is *ahead* on FTS (0.90 vs 0.80). Naive trails
+only on hit@5 (0.80 vs 0.85) and MRR (0.734 vs 0.752).
+
+**The run.** `eval.py --mode vector,fts,hybrid --repo c7815d7b…` (2m48s)
+reproduced the pre-existing EVAL.md block exactly, mode for mode and question
+for question. HANDOFF had recorded that run as "killed mid-flight"; it had in
+fact completed, and only the README text lagged. Both corpora re-verified in the
+database at the time of the re-run: AST 1522 (825/697) at the pinned
+`b5addb64`, naive 657 (327/330).
+
+**Why this is reported rather than fixed.** The window parameters were fixed a
+priori (see the entry above) and were not touched after the result was seen.
+Naive chunks are ~2.3× larger, and hit@k asks only whether a ground-truth symbol
+landed *somewhere* in a retrieved window — a metric that structurally rewards
+bigger windows. Resizing the baseline until it loses would make the table
+worthless, which is the one thing this project's headline cannot afford.
+
+**What it changes about the claim.** Nothing that was actually claimed, but it
+removes a claim a reader might have expected. The case for AST chunking on this
+benchmark is **not** retrieval hit-rate. It is (1) the symbol graph, which fixed
+windows cannot produce at all — `build_graph` is forced off for the naive row —
+and (2) the answer-level and symbol-level numbers the agent rests on, which are
+measured only on the AST corpus. The naive corpus was never given an
+answer-level run; that measurement is available via `answer_eval.py --repo` and
+was simply not spent. Stating that gap is cheaper than implying it isn't there.
+
+**Consistent with the Phase 3 finding**, which already refused to quote
+file-level aggregates as the result for the same reason: a metric a retrieved
+pool can satisfy by accident does not discriminate. hit@k on 60 files of httpx
+is now a second instance of that.
+
+## 2026-07-27 — Correction: finding (a) is model-dependent, not "every run, both models"
+Filling the Phase 6 comparison table required writing a q10 row, and checking it
+against every answer-level block in EVAL.md showed the standing claim is wrong.
+
+**What was claimed.** "q10 is answered by the agent and missed by the stuffed
+baseline in every run, on both models" — the STRONG tier of the Phase 3 finding,
+repeated in README, ROADMAP, and HANDOFF.
+
+**What the blocks actually show** (`| q10 |` row of every agent block):
+
+| Model | q10 hit | of runs | detail |
+|---|---|---|---|
+| `mistral-medium-latest` | 5 | 5 | every run, including all three controlled |
+| `vertex:gemini-2.5-flash` | 2 | 5 | **both hits pre-temperature-pin (default 1.0)** |
+
+In all **three controlled Vertex runs at temperature 0** — the six repeats that
+this project itself calls its first like-for-like cross-model comparison — the
+agent **misses** q10.
+
+**How it hid.** The claim was written when the paired `stuffed` vs `agent`
+blocks were the newest evidence, and in those Vertex does hit q10. The three
+controlled Vertex repeats were appended afterwards, as part of the very run set
+added to fix the uncontrolled-temperature problem, and the prose was never
+re-derived from them. The same defect as the retracted 7/7 cross-tab: a reading
+taken once and then carried forward instead of recomputed.
+
+**Correction.** Finding (a) is downgraded from **STRONG** to **MODEL-DEPENDENT**
+in all four documents. The canonical wording, used verbatim in README, ROADMAP,
+HANDOFF, and here so the four cannot drift again:
+
+> **q10 — the only question no retrieval mode reaches in any condition — is
+> answered by the agent in 3/3 controlled temperature-0 runs on Mistral and 0/3
+> on Vertex (0/2 distinct results: two of Vertex's three blocks are
+> byte-identical and probably a double-append), or 5/5 and 2/5 across all runs,
+> both Vertex hits pre-temperature-pin: graph traversal can reach what retrieval
+> cannot, demonstrated on one model family and not reproduced on the other.**
+
+Any future change to this claim edits all four sites or none.
+
+**What is unaffected.** Finding (b) still holds exactly as stated — the six
+controlled runs give a symbol-level lead in 6/6 (Mistral +5/+4/+2 vs baseline
+0.75; Vertex +1/+1/+2 vs 0.80), and Vertex's q10 misses are already inside its
+0.85/0.85/0.90. Finding (c) is unchanged. That (b) survives while (a) weakens is
+the expected shape: the aggregate lead was always the more replicated result,
+and the single-question proof was always the more fragile one.
+
+## 2026-07-27 — Two Vertex eval blocks are byte-identical: probable double-append, unresolved
+While re-deriving finding (a), the eighth and ninth answer-level blocks in
+EVAL.md — both `vertex:gemini-2.5-flash`, both part of the "three controlled
+repeat runs" — were found to be **identical line for line**: same summary row
+(file 0.95, symbol 0.85, cited 1.00, tools 3.5/9), same `Model calls: 89`, same
+20-row per-question grid, same graph-tool cross-tab.
+
+**Why this probably is not determinism.** The third Vertex block differs
+(symbol 0.90, tools 3.7/9, 94 calls) under the same configuration, so Vertex is
+**not** deterministic at temperature 0. Two runs agreeing on every one of those
+figures — including the exact model-call count — is far more consistent with the
+same run's block being appended twice than with a reproduced result.
+
+**Consequence for the record.** Vertex's controlled evidence is **2 distinct
+results, not 3**. Every statement of the q10 tally now carries "0/2 distinct"
+alongside "0/3 runs" (see the canonical sentence in the correction entry). The
+direction is unchanged — q10 is missed in both distinct Vertex results — but the
+sample is smaller than the block count suggests.
+
+**Unresolved, and left that way.** Distinguishing a duplicate append from a
+genuinely reproduced run needs the run logs or agent traces from those two
+invocations, which are not available here. Guessing would be worse than the
+caveat. Recorded so nobody counts three Vertex runs again.
+
+**Measurement-hygiene lesson for any future eval work.** `answer_eval.py` and
+`eval.py` both append a block with no run identity and no idempotency check, so
+a duplicate append is invisible and a re-run is indistinguishable from a
+double-write. Any future eval work should stamp each block with a **run id**
+(uuid), the **git SHA**, the **config hash**, and a **wall-clock start time**,
+and refuse to append a block whose run id already exists. This is the same class
+of defect as the uncontrolled temperature and the carried-forward 7/7 cross-tab:
+the measurement was trustworthy, the *bookkeeping around it* was not.
+
+## 2026-07-27 — Correction: the flow-tier "every cell" claim
+Found by the same re-derivation that broke finding (a), and recorded separately
+because it is a distinct claim.
+
+**What was claimed** (DECISIONS 2026-07-26, "The flow tier is answerable from
+retrieval alone"): "All five flow questions scored ✓ in every cell: both modes,
+both models."
+
+**What the blocks show.** True of the four blocks that existed when it was
+written. **False across all ten:** the third controlled Mistral run misses
+**q17**. Every other flow cell in every other block is ✓ — 49 of 50 agent cells
+and 20 of 20 stuffed cells.
+
+**What survives.** The entry's conclusion is untouched: the flow tier does not
+discriminate retrieval from traversal, and a single q17 miss in one Mistral run
+is noise of exactly the magnitude already documented for that model (±2
+questions on a 7-question dev set). The v2 backlog item — design cross-file
+questions a top-10 pool cannot satisfy — stands unchanged.
+
+**Same failure mode, third instance.** A reading taken once and carried forward
+rather than recomputed when new blocks landed. The first two were the retracted
+7/7 cross-tab and finding (a). All three would have been caught by re-deriving
+every claim from the blocks at the end of each measurement round, which is now
+the practice: **no claim in these documents is quoted from prose; each is
+recomputed from EVAL.md before it ships.**
