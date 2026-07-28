@@ -143,7 +143,11 @@ async def test_chat_before_ready_is_409_with_status(
         f"/repos/{INDEXING_REPO_ID}/chat", json={"question": "how does auth work?"}
     )
     assert resp.status_code == 409
-    assert resp.json() == {"detail": "repo not ready", "status": "embedding"}
+    body = resp.json()
+    assert body["detail"] == "repo not ready"
+    assert body["status"] == "embedding"
+    # Every error carries the id that finds its server-side log line.
+    assert body["request_id"] == resp.headers["x-request-id"]
 
 
 async def test_chat_unknown_repo_is_404(client: httpx.AsyncClient) -> None:

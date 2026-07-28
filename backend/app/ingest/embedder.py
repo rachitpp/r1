@@ -11,13 +11,33 @@ depend on it) does not drag in torch. Both models load once per process
 (lazily, on first ``get_*`` call) and are cached for the lifetime of the
 process — never per request. Model ids and the optional HF token come from
 ``app.config``.
+
+**Async callers must use** :func:`encode_async` / :func:`rerank_async`.
+``encode`` and ``score`` are synchronous torch forward passes: called directly
+from a coroutine they hold the event loop for their whole duration, which stalls
+every other request in the process — other answers, ``/health``, the SSE
+heartbeats — not just the caller. The async wrappers run them on a small
+dedicated thread pool instead. Torch releases the GIL inside its kernels, so
+this is real parallelism rather than bookkeeping, and the pool is deliberately
+*small*: the constraint is cores, and unbounded threads on a 4-core box make
+every request slower rather than only the extra ones.
+
+The synchronous methods stay public and are the right thing for the ingest
+worker, which is a separate process whose entire job is this work.
 """
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol
 
+from app import metrics
 from app.config import RERANK_PASSAGE_TOKENS, get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
@@ -40,6 +60,7 @@ class SentenceTransformerEmbedder:
     def __init__(self, model_name: str, token: str | None = None) -> None:
         from sentence_transformers import SentenceTransformer
 
+        _pin_torch_threads()
         self._model = SentenceTransformer(model_name, token=token)
         # get_sentence_embedding_dimension() was renamed in sentence-transformers
         # 5.x; prefer the new name and fall back so either version works.
@@ -82,6 +103,7 @@ class Reranker:
     def __init__(self, model_name: str, token: str | None = None) -> None:
         from sentence_transformers import CrossEncoder
 
+        _pin_torch_threads()
         self._model = CrossEncoder(
             model_name, max_length=RERANK_PASSAGE_TOKENS, token=token
         )
@@ -94,25 +116,128 @@ class Reranker:
         return [float(s) for s in scores]
 
 
+def _pin_torch_threads() -> None:
+    """Cap torch's intra-op threads before any model is built.
+
+    Without this, torch sizes its own thread pool from the core count — so N
+    concurrent forward passes on the inference pool each try to use every core,
+    and the resulting oversubscription makes all of them slower than running one
+    at a time would have been. ``INFERENCE_THREADS × TORCH_NUM_THREADS`` should
+    land at or under the core count.
+
+    Best-effort: torch refuses the call once parallel work has begun, and a
+    thread-count hint is never worth failing a request over.
+    """
+    n = get_settings().TORCH_NUM_THREADS
+    if n is None:
+        return
+    try:
+        import torch
+
+        torch.set_num_threads(n)
+    except Exception as exc:  # noqa: BLE001 — a hint, not a requirement
+        logger.debug("could not pin torch threads: %s", exc)
+
+
 _embedder: SentenceTransformerEmbedder | None = None
 _reranker: Reranker | None = None
+
+# Guards construction, not use. The models themselves are read-only once built
+# and safe to call from several threads; building one twice would load a second
+# copy of a 130 MB (or 2.4 GB) model into the same process, which is the failure
+# this prevents now that two inference threads can race into a cold singleton.
+_load_lock = threading.Lock()
+
+_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
 
 
 def get_embedder() -> SentenceTransformerEmbedder:
     """Return the process-wide embedder singleton, loading it on first use."""
     global _embedder
-    if _embedder is None:
-        settings = get_settings()
-        _embedder = SentenceTransformerEmbedder(
-            settings.EMBEDDING_MODEL, token=settings.HF_TOKEN
-        )
-    return _embedder
+    with _load_lock:
+        if _embedder is None:
+            settings = get_settings()
+            _embedder = SentenceTransformerEmbedder(
+                settings.EMBEDDING_MODEL, token=settings.HF_TOKEN
+            )
+        return _embedder
 
 
 def get_reranker() -> Reranker:
     """Return the process-wide reranker singleton, loading it on first use."""
     global _reranker
-    if _reranker is None:
-        settings = get_settings()
-        _reranker = Reranker(settings.RERANKER_MODEL, token=settings.HF_TOKEN)
-    return _reranker
+    with _load_lock:
+        if _reranker is None:
+            settings = get_settings()
+            _reranker = Reranker(settings.RERANKER_MODEL, token=settings.HF_TOKEN)
+        return _reranker
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """The process-wide inference thread pool, created on first use.
+
+    Bounded at ``INFERENCE_THREADS``. Work beyond that queues in the executor
+    rather than spawning threads, which is the bound: an overloaded API answers
+    slowly, it does not thrash.
+    """
+    global _executor
+    with _executor_lock:
+        if _executor is None:
+            _executor = ThreadPoolExecutor(
+                max_workers=get_settings().INFERENCE_THREADS,
+                thread_name_prefix="inference",
+            )
+        return _executor
+
+
+def shutdown_inference() -> None:
+    """Tear down the inference pool (API lifespan shutdown)."""
+    global _executor
+    with _executor_lock:
+        if _executor is not None:
+            _executor.shutdown(wait=False, cancel_futures=True)
+            _executor = None
+
+
+async def encode_async(texts: list[str], batch_size: int = 64) -> list[list[float]]:
+    """:meth:`Embedder.encode`, off the event loop.
+
+    The model load itself happens inside the worker thread too — it is the one
+    call that can take ten seconds, and the whole point of this function is that
+    no such thing runs where it can stop the loop.
+    """
+    if not texts:
+        return []
+    loop = asyncio.get_running_loop()
+    metrics.inference_queue_depth.inc()
+    try:
+        # Timed around the await, so the number is what the caller waited —
+        # queueing behind other inference included. That is the latency a user
+        # feels; pure forward-pass time is not.
+        with metrics.inference_duration.time(op="embed"):
+            return await loop.run_in_executor(
+                _get_executor(), lambda: get_embedder().encode(texts, batch_size)
+            )
+    finally:
+        metrics.inference_queue_depth.inc(-1)
+
+
+async def rerank_async(query: str, passages: list[str]) -> list[float]:
+    """:meth:`Reranker.score`, off the event loop.
+
+    Heavier than embedding by a wide margin — a cross-encoder scores every
+    (query, passage) pair — which is why the default pipeline leaves rerank off
+    (SPEC §5.3) and why running it inline would be the worst offender of the two.
+    """
+    if not passages:
+        return []
+    loop = asyncio.get_running_loop()
+    metrics.inference_queue_depth.inc()
+    try:
+        with metrics.inference_duration.time(op="rerank"):
+            return await loop.run_in_executor(
+                _get_executor(), lambda: get_reranker().score(query, passages)
+            )
+    finally:
+        metrics.inference_queue_depth.inc(-1)

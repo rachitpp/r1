@@ -13,11 +13,13 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, Field
 
+from app.config import QUESTION_MAX_CHARS, REPO_URL_MAX_CHARS
+
 
 class RepoCreate(BaseModel):
     """``POST /repos`` body. Validation of the URL itself is §8's 422 path."""
 
-    url: str
+    url: str = Field(min_length=1, max_length=REPO_URL_MAX_CHARS)
 
 
 class RepoProgress(BaseModel):
@@ -62,9 +64,39 @@ class RepoList(BaseModel):
 
 
 class FileOut(BaseModel):
+    """``GET /repos/{id}/files``.
+
+    ``n_lines`` is the whole file's line count even when a range was requested,
+    so a viewer can show "lines 40-80 of 900" without a second call.
+    ``start_line``/``end_line`` describe what ``content`` actually contains.
+    """
+
     path: str
     content: str
     n_lines: int
+    start_line: int
+    end_line: int
+
+
+class ReadyCheck(BaseModel):
+    """One dependency's verdict in the readiness response."""
+
+    ok: bool
+    detail: str | None = None
+
+
+class ReadyOut(BaseModel):
+    """``GET /ready``: whether this process can actually serve a request.
+
+    Distinct from ``/health``, which only says the process is alive. Startup
+    tolerates an unreachable Postgres or Redis on purpose (see
+    :mod:`app.main`), which means "the process is up" and "the process can do
+    anything" are genuinely different questions — and routing traffic on the
+    first one sends it to a process that will 503 every request.
+    """
+
+    ok: bool
+    checks: dict[str, ReadyCheck]
 
 
 class ChatRequest(BaseModel):
@@ -72,6 +104,9 @@ class ChatRequest(BaseModel):
 
     Chat is POST, not EventSource: questions do not belong in URLs, and the
     frontend consumes the stream with fetch + ReadableStream (§8).
+
+    The length cap is not decoration: this string goes straight into a model
+    context billed per token, so an unbounded field here is an unbounded bill.
     """
 
-    question: str = Field(min_length=1)
+    question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)

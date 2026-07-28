@@ -83,3 +83,58 @@ class AgentError(AppError):
     exceptions: they return ``{"error": ...}`` so the loop keeps going
     (SPEC §7.1).
     """
+
+
+class AgentTimeoutError(AgentError):
+    """An agent run exceeded ``CHAT_TIMEOUT_S``.
+
+    The §7.2 tool cap bounds how many calls a run may make, not how long it may
+    take; a provider that stops responding mid-stream is unbounded without a
+    wall clock. Surfaces as an ``error`` SSE event, not an HTTP status — by the
+    time it fires, the response headers are long gone.
+    """
+
+
+class TooManyRequestsError(AppError):
+    """The caller is over a limit and should come back later (429).
+
+    ``retry_after`` is seconds, and lands in the ``Retry-After`` header: a 429
+    that does not say when to retry invites the exact hammering it exists to
+    stop. ``rule`` names which limit tripped, for the metric label and the logs.
+    """
+
+    def __init__(self, message: str, *, retry_after: int, rule: str) -> None:
+        self.retry_after = retry_after
+        self.rule = rule
+        super().__init__(message)
+
+
+class ServiceBusyError(TooManyRequestsError):
+    """Capacity, not quota: every concurrency slot for this work is taken.
+
+    Distinct from a rate limit because the caller did nothing wrong — the
+    process is simply full, and accepting the work would mean serving it (and
+    everything already in flight) badly.
+    """
+
+
+class PayloadTooLargeError(AppError):
+    """A request body exceeds ``MAX_REQUEST_BYTES`` (413)."""
+
+    def __init__(self, size: int, limit: int) -> None:
+        self.size = size
+        self.limit = limit
+        super().__init__(f"request body is {size} bytes, over the {limit}-byte limit")
+
+
+class InvalidLineRangeError(AppError):
+    """A ``start_line``/``end_line`` pair that describes no lines (422)."""
+
+    def __init__(self, start: int, end: int) -> None:
+        self.start = start
+        self.end = end
+        super().__init__(f"line range {start}-{end} ends before it starts")
+
+
+class UnauthorizedError(AppError):
+    """A protected endpoint was called without the right credentials (401)."""

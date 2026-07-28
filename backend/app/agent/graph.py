@@ -22,7 +22,6 @@ from collections.abc import Awaitable, Callable
 from typing import Annotated, Any, TypedDict
 from uuid import UUID
 
-import asyncpg
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -39,6 +38,7 @@ from app.agent import tools as t
 from app.agent.citations import Citation, parse_citations, validate_citations
 from app.agent.prompts import FORCED_ANSWER, system_prompt
 from app.config import AGENT_TOOL_CAP
+from app.db.pool import ConnSource, acquire
 
 logger = logging.getLogger(__name__)
 
@@ -53,36 +53,50 @@ class AgentState(TypedDict):
     citations: list[Citation]
 
 
-def build_tools(conn: asyncpg.Connection, repo_id: UUID) -> list[StructuredTool]:
-    """Bind ``conn``/``repo_id`` into the six tools (SPEC §7.1).
+def build_tools(source: ConnSource, repo_id: UUID) -> list[StructuredTool]:
+    """Bind ``source``/``repo_id`` into the six tools (SPEC §7.1).
 
     The model never sees the connection or the repo id — they are closure
     state, not parameters it could get wrong.
+
+    ``source`` is a pool or a single connection, and each tool borrows one for
+    the length of its own call. That distinction is the difference between an
+    answer holding a database connection for its entire two-minute run and
+    holding one for the few milliseconds each query actually takes: the API
+    passes the pool, and the CLIs pass the connection they already own.
     """
 
     async def search_code(query: str, k: int = 10) -> str:
-        return json.dumps(await t.search_code(conn, repo_id, query, k))
+        async with acquire(source) as conn:
+            return json.dumps(await t.search_code(conn, repo_id, query, k))
 
     async def read_file(
         path: str, start_line: int | None = None, end_line: int | None = None
     ) -> str:
-        return json.dumps(await t.read_file(conn, repo_id, path, start_line, end_line))
+        async with acquire(source) as conn:
+            return json.dumps(
+                await t.read_file(conn, repo_id, path, start_line, end_line)
+            )
 
     async def get_definition(symbol: str) -> str:
-        return json.dumps(await t.get_definition(conn, repo_id, symbol))
+        async with acquire(source) as conn:
+            return json.dumps(await t.get_definition(conn, repo_id, symbol))
 
     async def find_references(symbol: str, kind: str | None = None) -> str:
-        return json.dumps(await t.find_references(conn, repo_id, symbol, kind))
+        async with acquire(source) as conn:
+            return json.dumps(await t.find_references(conn, repo_id, symbol, kind))
 
     async def expand_context(
         symbol: str, depth: int = 1, direction: str = "out"
     ) -> str:
-        return json.dumps(
-            await t.expand_context(conn, repo_id, symbol, depth, direction)
-        )
+        async with acquire(source) as conn:
+            return json.dumps(
+                await t.expand_context(conn, repo_id, symbol, depth, direction)
+            )
 
     async def list_directory(path: str = "") -> str:
-        return json.dumps(await t.list_directory(conn, repo_id, path))
+        async with acquire(source) as conn:
+            return json.dumps(await t.list_directory(conn, repo_id, path))
 
     # Descriptions state WHEN to call, not just what the tool does. Trigger
     # conditions in the description measurably raise should-call rate, and the
@@ -132,13 +146,13 @@ def _count_tool_calls(message: AnyMessage) -> int:
 
 def build_graph(
     model: BaseChatModel,
-    conn: asyncpg.Connection,
+    source: ConnSource,
     repo_id: UUID,
     *,
     tool_cap: int = AGENT_TOOL_CAP,
 ) -> Any:
     """Compile the agent graph for one repo (SPEC §7.2)."""
-    tool_list = build_tools(conn, repo_id)
+    tool_list = build_tools(source, repo_id)
     by_name = {tool.name: tool for tool in tool_list}
     model_with_tools = model.bind_tools(tool_list)
 
@@ -214,24 +228,25 @@ def build_graph(
 
 
 async def repo_facts(
-    conn: asyncpg.Connection, repo_id: UUID
+    source: ConnSource, repo_id: UUID
 ) -> tuple[str, int, list[str]]:
     """Name, file count, and top-level dirs for the system prompt (§7.3)."""
-    row = await conn.fetchrow("SELECT name FROM repos WHERE id = $1", repo_id)
-    name = str(row["name"]) if row else "(unknown)"
-    paths = [
-        str(r["path"])
-        for r in await conn.fetch(
-            "SELECT path FROM files WHERE repo_id = $1", repo_id
-        )
-    ]
+    async with acquire(source) as conn:
+        row = await conn.fetchrow("SELECT name FROM repos WHERE id = $1", repo_id)
+        name = str(row["name"]) if row else "(unknown)"
+        paths = [
+            str(r["path"])
+            for r in await conn.fetch(
+                "SELECT path FROM files WHERE repo_id = $1", repo_id
+            )
+        ]
     tops = sorted({p.split("/")[0] for p in paths if "/" in p})
     return name, len(paths), tops
 
 
 async def answer_question(
     model: BaseChatModel,
-    conn: asyncpg.Connection,
+    source: ConnSource,
     repo_id: UUID,
     question: str,
     *,
@@ -242,8 +257,8 @@ async def answer_question(
     Citations are parsed from the final answer and validated against the
     ``files`` table, so a fabricated path never reaches the caller (§7.5).
     """
-    name, n_files, tops = await repo_facts(conn, repo_id)
-    app = build_graph(model, conn, repo_id, tool_cap=tool_cap)
+    name, n_files, tops = await repo_facts(source, repo_id)
+    app = build_graph(model, source, repo_id, tool_cap=tool_cap)
     initial: AgentState = {
         "repo_id": str(repo_id),
         "question": question,
@@ -261,7 +276,8 @@ async def answer_question(
         if isinstance(m, AIMessage) and not (getattr(m, "tool_calls", None) or []):
             answer = m.text() if callable(getattr(m, "text", None)) else str(m.content)
             break
-    final["citations"] = await validate_citations(
-        conn, repo_id, parse_citations(answer)
-    )
+    async with acquire(source) as conn:
+        final["citations"] = await validate_citations(
+            conn, repo_id, parse_citations(answer)
+        )
     return final

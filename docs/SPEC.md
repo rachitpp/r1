@@ -521,20 +521,46 @@ answer, validates paths against `files`, and emits a `citations` event
 FastAPI, JSON, Pydantic v2 models in `app/api/schemas.py`.
 
 ```
-POST /repos            {"url": "https://github.com/owner/repo"}
+POST /repos            {"url": "https://github.com/owner/repo"}   url ≤ 500 chars
   201 RepoOut (created, job enqueued) | 200 RepoOut (URL already known)
   422 invalid/non-GitHub URL
+  429 too many ingests queued/running, or per-IP rate limit
 GET  /repos            {"repos": [RepoOut]}
 GET  /repos/{id}       RepoOut | 404
-GET  /repos/{id}/files?path=src/auth.py
-  {"path": str, "content": str, "n_lines": int} | 404
+GET  /repos/{id}/files?path=src/auth.py[&start_line=&end_line=]
+  {"path": str, "content": str, "n_lines": int,
+   "start_line": int, "end_line": int} | 404
+  304 when If-None-Match matches the ETag
+  422 end_line < start_line
   (powers the frontend code viewer and citation clicks)
-POST /repos/{id}/chat  {"question": str}
+POST /repos/{id}/chat  {"question": str}          question 1..4000 chars
   → text/event-stream (§9)
   409 {"detail": "repo not ready", "status": "<current>"} if not ready
   404 unknown repo
-GET  /health           {"ok": true}
+  429 every answer slot busy, or per-IP rate limit
+GET  /health           {"ok": true}                      liveness only
+GET  /ready            {"ok": bool, "checks": {name: {"ok": bool,
+                                                      "detail": str | None}}}
+                       200 when servable, 503 otherwise
+GET  /metrics          Prometheus text exposition (optional bearer token)
 ```
+
+Every error body is `{"detail": str, "request_id": str, ...}` and every
+response carries an `X-Request-ID` header. 5xx bodies say only
+`"internal server error"`: the real message is in the server log under that
+same id (`app/redact.py` explains why the ones that *are* shown are redacted).
+Request bodies are capped at 64 KB (413).
+
+`GET /repos/{id}/files` is cacheable — a strong `ETag` over
+`head_sha + path + range` and `Cache-Control: immutable`, because the content
+of a pinned commit cannot change. `n_lines` is always the whole file; a range
+narrows `content`, `start_line`, and `end_line` only. Repos with no `head_sha`
+yet get `no-store` and no ETag: there is nothing stable to name.
+
+`/health` deliberately touches nothing. A liveness probe that fails when
+Postgres is down gets the process restarted for someone else's outage;
+`/ready` is the one that answers "can this process serve a request", and it is
+what a load balancer should route on.
 
 ```python
 RepoOut = {
@@ -557,9 +583,19 @@ a known URL re-queues an ingest (200) unless a job is already in flight, in
 which case the row is returned untouched.
 
 CORS allows one origin, from `FRONTEND_ORIGIN` (default
-`http://localhost:3000`). `POST /repos` returns **503** when Redis is
-unreachable: ingestion never runs in the handler (hard rule 1), so there is no
-inline fallback.
+`http://localhost:3000`), and exposes `X-Request-ID`. `POST /repos` returns
+**503** when Redis is unreachable: ingestion never runs in the handler (hard
+rule 1), so there is no inline fallback.
+
+**Limits** (DECISIONS 2026-07-28; values in `app/config.py`, all env-tunable).
+Per-IP fixed-window rate limits counted in Redis — tight on `POST /repos` and
+`POST /chat`, generous elsewhere, and `/health`, `/ready`, `/metrics` exempt.
+A 429 always carries `Retry-After`. Concurrent agent runs are capped
+(`CHAT_MAX_CONCURRENCY`) and refused immediately rather than queued: a caller
+parked behind eight agent runs holds a socket open for minutes to be served
+badly. Concurrent ingests are capped by `MAX_ACTIVE_INGESTS`. The limiter
+**fails open** if Redis is unreachable — that outage already costs the ingest
+queue, and refusing reads too would make it total.
 
 ## §9 SSE event schema
 
@@ -577,12 +613,18 @@ event: text         data: {"delta": "Auth starts in "}
 event: citations    data: {"citations": [{"file_path": "...",
                                           "start_line": 12, "end_line": 48}]}
 event: done         data: {"tool_calls_used": 5}
-event: error        data: {"message": "..."}
+event: error        data: {"message": "...", "request_id": "..."}
 ```
 
 `tool_result` payloads carry locations and summaries only — never full
 code bodies over the wire. The frontend renders steps from these and
 fetches code via `/files` on demand.
+
+A run ends in `done` or in exactly one `error`. `error.message` is redacted
+(`app/redact.py`) and paired with the `request_id` that finds the unredacted
+server-side log line. Three things end a run early: the §7.2 tool cap (which
+produces a normal answer), `CHAT_TIMEOUT_S` (an `error` event), and a client
+disconnect (the run is cancelled, and nothing further is sent or billed).
 
 ## §10 Ingestion job lifecycle
 

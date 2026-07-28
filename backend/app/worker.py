@@ -26,6 +26,7 @@ from app.db.pool import close_pool, create_pool
 from app.ingest.embedder import get_embedder
 from app.ingest.pipeline import run_ingest
 from app.logging_setup import configure_logging
+from app.redact import safe_error_text
 
 logger = logging.getLogger("app.worker")
 
@@ -71,9 +72,15 @@ async def ingest_repo(ctx: dict[str, Any], repo_id: str) -> str:
         raise
     except Exception as exc:  # noqa: BLE001 — every failure belongs on the row
         logger.exception("ingest failed for %s", repo_id)
+        # Redacted, because `repos.error` is not an operator-only field: it is
+        # served straight to the browser by `RepoOut`. A clone failure that
+        # embeds a credentialed URL, or an asyncpg error carrying the DSN, would
+        # otherwise be published to whoever submitted the repo. The unredacted
+        # exception is in the log line above, with the traceback.
+        detail = safe_error_text(exc, include_type=True)
         async with pool.acquire() as conn:
-            await queries.fail_repo(conn, rid, f"{type(exc).__name__}: {exc}")
-        return f"failed: {type(exc).__name__}: {exc}"
+            await queries.fail_repo(conn, rid, detail)
+        return f"failed: {detail}"
 
     summary = (
         f"ready: {stats.name} files={stats.selection.n_kept} "
@@ -90,7 +97,13 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     # place an operator looks when an ingest seems stuck.
     configure_logging()
     settings = get_settings()
-    ctx["pool"] = await create_pool(settings.DATABASE_URL)
+    # One job at a time (`max_jobs = 1`), so a handful of connections is plenty
+    # — and `command_timeout=None` because the API's 30-second ceiling is wrong
+    # here: a batched insert of a few thousand embeddings legitimately runs
+    # longer than any HTTP request should.
+    ctx["pool"] = await create_pool(
+        settings.DATABASE_URL, min_size=1, max_size=4, command_timeout=None
+    )
     logger.info(
         "arq worker up | embedding_model=%s | agent_model=%s | poll_delay=%ss",
         settings.EMBEDDING_MODEL,

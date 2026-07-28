@@ -54,14 +54,26 @@ export interface RepoOut {
 export interface FileOut {
   path: string;
   content: string;
+  /** Lines in the whole file, even when a range was requested. */
   n_lines: number;
+  /** The range `content` actually covers; 1..n_lines for a whole-file read. */
+  start_line: number;
+  end_line: number;
 }
 
-/** Error carrying the HTTP status and the backend's `detail`, when present. */
+/**
+ * Error carrying the HTTP status and the backend's `detail`, when present.
+ *
+ * `requestId` is the backend's correlation id for the failed request (also in
+ * the `X-Request-ID` response header). Quoting it in a bug report is what finds
+ * the server-side log line, which matters because 5xx bodies deliberately say
+ * only "internal server error" — the real message stays on the server.
+ */
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly detail: string,
+    public readonly requestId: string | null = null,
   ) {
     super(detail);
     this.name = "ApiError";
@@ -80,16 +92,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!resp.ok) {
     let detail = `${resp.status} ${resp.statusText}`;
+    let requestId = resp.headers.get("x-request-id");
     try {
       const body = await resp.json();
       if (typeof body?.detail === "string") detail = body.detail;
       // FastAPI's own 422 validation errors carry a list, not a string.
       else if (Array.isArray(body?.detail) && body.detail[0]?.msg)
         detail = body.detail[0].msg;
+      if (typeof body?.request_id === "string") requestId = body.request_id;
     } catch {
       // Non-JSON error body — keep the status line.
     }
-    throw new ApiError(resp.status, detail);
+    throw new ApiError(resp.status, detail, requestId);
   }
   return resp.json() as Promise<T>;
 }

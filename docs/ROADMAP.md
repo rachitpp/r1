@@ -430,8 +430,15 @@ Tasks:
   README
 - README: what/why, architecture diagram, the numbers table, demo GIF,
   link to DECISIONS.md
-- Hardening pass: repo-size guard at submit, friendly error surfaces,
-  timeouts on clone and model calls
+- ~~Hardening pass: repo-size guard at submit, friendly error surfaces,
+  timeouts on clone and model calls~~ — **done 2026-07-28**, and wider than
+  this line described. Prompted by an API review; the seven changes are in
+  DECISIONS 2026-07-28. Beyond what was listed here: per-tool-call connection
+  checkouts (the SSE endpoint used to pin one for the whole run), torch
+  inference moved off the event loop, per-IP rate limits and a concurrency cap,
+  a cacheable file endpoint, `/ready` + request ids + `/metrics`, and redacted
+  error text. Clone timeouts were already in place (§2.1); the repo-size guard
+  is `MAX_FILES` at selection, now joined by `MAX_ACTIVE_INGESTS` at submit.
 
 Done when:
 - [x] ~~Deployed URL works end-to-end on a fresh repo~~ → **satisfied by

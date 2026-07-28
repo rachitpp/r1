@@ -86,6 +86,16 @@ def build_chat_model(
     provider = provider_for(name)
     logger.info("building chat model: %s (provider=%s)", name, provider)
 
+    # Every provider client takes `timeout`, and every one of them defaults it
+    # to something unhelpful — Anthropic to no limit at all. Without it, a
+    # provider that stops responding mid-request holds an SSE stream, its
+    # concurrency slot, and the caller's browser tab open indefinitely: the §7.2
+    # tool cap bounds how many calls a run makes, never how long one may take.
+    # Passed explicitly per provider below because Mistral's field is an `int`
+    # and the rest are floats. A caller can still override through **kwargs.
+    timeout_s = float(settings.AGENT_REQUEST_TIMEOUT_S)
+    kwargs.setdefault("timeout", timeout_s)
+
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -109,6 +119,8 @@ def build_chat_model(
                 "Get one at console.mistral.ai (free tier needs phone "
                 "verification), then add MISTRAL_API_KEY=... to backend/.env"
             )
+        # Mistral declares `timeout: int`, so hand it one.
+        kwargs["timeout"] = int(kwargs["timeout"])
         return ChatMistralAI(
             model_name=name,
             api_key=SecretStr(settings.MISTRAL_API_KEY),
@@ -128,7 +140,6 @@ def build_chat_model(
             api_key=SecretStr(settings.ANTHROPIC_API_KEY),
             max_tokens_to_sample=max_tokens,
             max_retries=DEFAULT_MAX_RETRIES,
-            timeout=None,
             stop=None,
             **kwargs,
         )

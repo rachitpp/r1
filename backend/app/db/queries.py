@@ -110,6 +110,27 @@ async def get_file(
     )
 
 
+# Everything a worker will get to without anyone submitting anything further.
+# ``queued`` is included here and excluded from the zombie sweep, for the same
+# reason in both cases: a queued job is real work that exists, it just has not
+# started.
+ACTIVE_STATUSES: tuple[str, ...] = ("queued", *IN_FLIGHT_STATUSES)
+
+
+async def count_active_ingests(conn: asyncpg.Connection) -> int:
+    """How many repos are queued or mid-ingest right now.
+
+    ``POST /repos`` refuses past ``MAX_ACTIVE_INGESTS``: each ingest is minutes
+    of tree-sitter, Jedi, and embedding on the same box that serves chat, and a
+    queue nobody bounded is just a slower way to run out of machine.
+    """
+    value = await conn.fetchval(
+        "SELECT count(*) FROM repos WHERE status = ANY($1::text[])",
+        list(ACTIVE_STATUSES),
+    )
+    return int(value)
+
+
 async def start_ingest(
     conn: asyncpg.Connection, repo_id: UUID, *, status: str = "cloning"
 ) -> None:

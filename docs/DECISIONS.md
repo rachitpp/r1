@@ -1385,3 +1385,102 @@ from 715px to **414px** — the whole primary flow now lands above the fold on a
 Verified: `pnpm build`, `pnpm lint`, `tsc --noEmit` clean; 30 vitest tests
 green; chat route 0 vertical and 0 horizontal overflow after the header change;
 no console errors.
+
+## 2026-07-28 — Serving hardening: the API under concurrent load
+
+A review of `backend/app/api/` found the layering sound — thin routes, one
+exception→status map, an SSE adapter that pairs tool calls by `run_id` — and
+the *serving* behaviour written for one user asking one question at a time.
+Seven changes, in the order they would have hurt.
+
+**1. Connections are borrowed per tool call, not per request.** `get_conn`
+checked a pooled connection out for the whole request, and the chat route's
+request is an agent run: up to 8 tool calls plus N provider round-trips. With
+asyncpg's unstated default of min=max=10, ten concurrent answers emptied the
+pool and every other endpoint — including the ingest-progress polling the
+frontend does on a timer — blocked on `pool.acquire()`.
+
+`app/db/pool.acquire(source)` now takes **either a pool or a connection** and
+yields one for the length of a block. `build_tools`, `repo_facts`, and
+`answer_question` take that `ConnSource`, so the API passes the pool and the
+CLIs pass the connection they already own — with no call site special-casing
+the other. Pool sizing is explicit (`DB_POOL_MIN_SIZE`/`MAX_SIZE`,
+`DB_COMMAND_TIMEOUT_S`), and `hybrid_search` no longer builds and destroys an
+entire pool per call.
+
+Rejected: a `Callable` connection factory. The pool-or-connection union reads
+better and left the eight existing `build_graph` test call sites untouched.
+
+**2. Torch inference moved off the event loop.** `hybrid.py` called
+`get_embedder().encode(...)` and the cross-encoder's `.score(...)`
+synchronously from `async def`. Each one froze the entire process for its
+duration — every other answer, `/health`, the SSE heartbeats. Now
+`encode_async`/`rerank_async` run them on a **bounded** `ThreadPoolExecutor`
+(`INFERENCE_THREADS`, default 2), with `torch.set_num_threads` pinned so N
+inference threads do not each claim every core. Singleton construction is
+lock-guarded, which it had to become the moment two threads could race a cold
+model.
+
+A `ThreadPoolExecutor` rather than an `asyncio.Semaphore`: a module-level
+semaphore binds to the first event loop that touches it and breaks under
+pytest-asyncio's loop-per-test. The executor is loop-agnostic and queues
+naturally.
+
+**3. Time is bounded, and a disconnect stops the work.** `CHAT_TIMEOUT_S`
+wraps the whole run (setup queries included — a wedged database stalls a
+stream as well as a wedged provider), `AGENT_REQUEST_TIMEOUT_S` reaches every
+provider client, and `ChatAnthropic`'s explicit `timeout=None` is gone. A
+`CancelledError` is now counted and re-raised rather than swallowed, so a
+closed tab stops the run instead of paying for an answer nobody reads. The
+chat model is `lru_cache`d — it was being rebuilt per request, discarding
+keep-alive to the provider and paying a TLS handshake before the first token.
+
+**4. Limits, in Redis, without a new dependency.** Fixed-window per-IP rate
+limits (`app/api/ratelimit.py`), a request-body ceiling, `max_length` on
+`question` (the field that becomes billed context) and on `url`, and a cap on
+concurrent ingests. `slowapi` and `prometheus-client` were the obvious
+dependencies; rule 11 says ask, and both are ~30 lines against infrastructure
+already present, so they are written out. Fixed window over sliding: it costs
+**one Redis command per request** instead of a sorted-set read-modify-write,
+and the worker's poll-delay note already records that the command budget on a
+managed free tier is a real constraint. The limiter **fails open** — an
+unreachable Redis already costs the ingest queue, and refusing reads because
+the thing counting reads is down turns a partial outage into a total one.
+
+**5. `GET /repos/{id}/files` is cacheable.** ETag keyed on `head_sha` + path +
+range, so a repeat request is answered 304 *without reading the row*;
+`Cache-Control: immutable` (the content cannot change — the commit is pinned);
+optional `start_line`/`end_line`; and `GZipMiddleware`, which is safe here
+because Starlette excludes `text/event-stream` by default.
+
+**6. `/health` no longer lies.** It stays trivial — a liveness probe that fails
+on someone else's outage gets this process *restarted* — and the real question
+moved to `/ready`, which pings Postgres and Redis and 503s when either is
+down. Startup deliberately tolerates both being unreachable, which is exactly
+what made a truthful readiness endpoint necessary. Plus an `X-Request-ID` on
+every response bound into every log line through a `ContextVar`, optional JSON
+logs, and `/metrics` — where **`db_pool_acquire_wait_seconds` is the metric
+that would have surfaced finding 1 before a user did**. Metric paths are
+labelled by route template; labelling by raw path mints a series per repo id.
+
+**7. Errors stop leaking.** `chat_stream` sent `f"{type(exc).__name__}: {exc}"`
+straight to the browser and `worker.py` wrote the same into `repos.error`,
+which `RepoOut` serves — an asyncpg failure carries the DSN, a provider client
+can echo the key it just sent. `app/redact.py` strips credential shapes and
+keeps the sentence, because replacing every message with "internal error" would
+also delete the only diagnostic a failed ingest has. Unmapped exceptions get a
+detail-free 500 in the same `{detail, request_id}` envelope as everything else;
+previously they were a bare Starlette 500 in a different shape from the one the
+frontend parses.
+
+The catch-all lives in `RequestContextMiddleware`, not as an `Exception`
+handler on the app: Starlette re-raises after running one of those, which would
+leave the status metric and the access log disagreeing with what the client
+actually received.
+
+**Scope.** None of this is a Phase 6 done-when criterion. It was requested
+explicitly after the review, and is recorded here as a hardening pass rather
+than as phase work; Phase 6's remaining items are unchanged.
+
+Verified: `ruff check` and `mypy app` clean; 249 backend tests green (including
+the live-Postgres/Redis integration suite); frontend `tsc --noEmit` clean.

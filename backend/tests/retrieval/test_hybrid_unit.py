@@ -115,7 +115,7 @@ def test_hybrid_search_mode_selection(
         captured["mode"] = mode
         return []
 
-    async def fake_create_pool(dsn):
+    async def fake_create_pool(dsn, **kwargs):
         class _Pool:
             def acquire(self):
                 class _Ctx:

@@ -55,6 +55,28 @@ JEDI_FILE_TIMEOUT_S: int = 10
 ZOMBIE_AFTER_S: int = 1_200
 PROGRESS_EVERY_N: int = 25
 
+# ---------------------------------------------------------------------------
+# Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.
+#
+# They are constants rather than settings because they are part of the API
+# contract (a client can rely on them), not a per-deployment knob. Everything
+# an operator has to size against their own hardware lives on `Settings` below.
+# ---------------------------------------------------------------------------
+
+# A question is a question, not a payload. The agent puts this straight into a
+# model context that is billed per token, and a 10 MB "question" is either a
+# mistake or an attack — never a user.
+QUESTION_MAX_CHARS: int = 4_000
+REPO_URL_MAX_CHARS: int = 500
+
+# Whole-request ceiling, checked before the body is parsed. Both endpoints take
+# a small JSON object; the largest legitimate body is a max-length question.
+MAX_REQUEST_BYTES: int = 64 * 1024
+
+# `GET /repos/{id}/files` line-range cap. The viewer renders a window, not a
+# 10_000-line file, and an unbounded range is the same response as no range.
+FILE_RANGE_MAX_LINES: int = 5_000
+
 
 class Settings(BaseSettings):
     """Environment-backed settings, loaded from ``backend/.env``."""
@@ -127,6 +149,67 @@ class Settings(BaseSettings):
     # loaded so the ablation stays permanently measurable
     # (`scripts/eval.py --mode hybrid+rerank`).
     RERANK_ENABLED: bool = False
+
+    # -----------------------------------------------------------------------
+    # Serving: pool sizing, timeouts, limits (DECISIONS 2026-07-28).
+    #
+    # Everything below has to be sized against the machine it runs on, which is
+    # why these are env-tunable and the §12/contract numbers above are not.
+    # -----------------------------------------------------------------------
+
+    # asyncpg defaults to min=max=10, which is invisible until the day it is the
+    # bottleneck. Named here so the number is a decision rather than an accident.
+    DB_POOL_MIN_SIZE: int = 5
+    DB_POOL_MAX_SIZE: int = 20
+    # Per-statement ceiling for the API. A query that runs longer than this is
+    # holding a pooled connection hostage; failing it is cheaper than the queue
+    # it builds behind itself. The worker overrides this — batch inserts of a
+    # few thousand embeddings legitimately take longer.
+    DB_COMMAND_TIMEOUT_S: float = 30.0
+    DB_POOL_MAX_IDLE_S: float = 300.0
+
+    # Concurrent SSE chat streams. Each one is an agent loop: up to 8 tool
+    # calls, N provider round-trips, and real money. Past this the API answers
+    # 429 immediately rather than accepting work it will serve badly.
+    CHAT_MAX_CONCURRENCY: int = 8
+    # Wall-clock ceiling for one agent run. The 8-call cap bounds tool count,
+    # not time — a wedged provider is unbounded without this.
+    CHAT_TIMEOUT_S: float = 180.0
+    # Per-request provider timeout, passed to whichever client model.py builds.
+    AGENT_REQUEST_TIMEOUT_S: float = 60.0
+
+    # Concurrent ingests (queued or in flight). Each is minutes of CPU and
+    # hundreds of MB of disk on a box that is also serving chat.
+    MAX_ACTIVE_INGESTS: int = 3
+
+    # Per-IP rate limits, enforced in Redis (app/api/ratelimit.py). Windows are
+    # in seconds; the defaults are deliberately generous for reads and tight for
+    # the two endpoints that spend CPU and money.
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_INGEST_PER_HOUR: int = 10
+    RATE_LIMIT_CHAT_PER_HOUR: int = 60
+    RATE_LIMIT_DEFAULT_PER_MINUTE: int = 120
+
+    # Whether X-Forwarded-For may be believed when identifying a client. OFF by
+    # default: behind no proxy the header is attacker-controlled, and trusting
+    # it turns every rate limit into a suggestion. Turn on only when a proxy you
+    # control is the sole path to this process.
+    TRUST_PROXY_HEADERS: bool = False
+
+    # Threads available to CPU-bound model inference. Sized for a 4-core box:
+    # two concurrent forward passes, each pinned to two intra-op threads, leaves
+    # the event loop a core to run on. Oversubscribing here makes every request
+    # slower, not just the extra ones.
+    INFERENCE_THREADS: int = 2
+    TORCH_NUM_THREADS: int | None = 2
+
+    # Observability.
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "text"  # "text" for humans, "json" for log shipping
+    METRICS_ENABLED: bool = True
+    # When set, /metrics requires `Authorization: Bearer <token>`. Unset means
+    # open — fine behind a private network, not fine on a public URL.
+    METRICS_TOKEN: str | None = None
 
 
 @lru_cache

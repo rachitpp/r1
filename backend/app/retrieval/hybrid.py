@@ -22,8 +22,8 @@ from uuid import UUID
 import asyncpg
 
 from app.config import FTS_K, RRF_K, SEARCH_K, VEC_K, get_settings
-from app.db.pool import close_pool, create_pool
-from app.ingest.embedder import get_embedder, get_reranker
+from app.db.pool import ConnSource, acquire, close_pool, create_pool
+from app.ingest.embedder import encode_async, rerank_async
 
 Mode = Literal["vector", "fts", "hybrid", "hybrid+rerank"]
 MODES: tuple[Mode, ...] = ("vector", "fts", "hybrid", "hybrid+rerank")
@@ -346,7 +346,9 @@ async def search(
         rows = await _fetch_rows(conn, [i for i, _ in scored])
         return [_hit(rows[i], s) for i, s in scored if i in rows]
 
-    qvec = get_embedder().encode([query])[0]
+    # Off the event loop: this is a torch forward pass, and run inline it stalls
+    # every other request in the process for its duration (see embedder module).
+    qvec = (await encode_async([query]))[0]
 
     if mode == "vector":
         async with conn.transaction():
@@ -377,7 +379,7 @@ async def search(
     if not pool_ids:
         return []
     passages = [f"{rows[i]['header']}\n{rows[i]['code']}" for i in pool_ids]
-    scores = get_reranker().score(query, passages)
+    scores = await rerank_async(query, passages)
     ranked = sorted(zip(pool_ids, scores, strict=True), key=lambda t: t[1], reverse=True)
     return [_hit(rows[i], s) for i, s in ranked[:k]]
 
@@ -387,14 +389,21 @@ async def hybrid_search(
     query: str,
     k: int = SEARCH_K,
     *,
+    source: ConnSource | None = None,
     include_tests: bool = False,
     rerank: bool | None = None,
 ) -> list[SearchHit]:
     """The single public retrieval entry point (SPEC §5.3, CLAUDE.md rule 2).
 
-    Runs the default production pipeline and manages its own pooled connection.
-    Feature code (agent, API) calls this; it never touches the single-signal
-    legs directly.
+    Runs the default production pipeline. Feature code (agent, API) calls this;
+    it never touches the single-signal legs directly.
+
+    **Pass ``source``** — a pool or a connection — from anything that serves
+    requests. Without it this function builds an entire asyncpg pool, uses one
+    connection, and tears the pool down again: several TCP handshakes and
+    ``init`` round-trips per search, on a code path a user is waiting on. That
+    self-managed path exists for the standalone scripts (``scripts/eval.py``,
+    ``scripts/debug_search.py``), which have no pool and run one query at a time.
 
     **Rerank is OFF by default** (``RERANK_ENABLED``, SPEC §5.3): the default
     pipeline returns RRF fusion order. The cross-encoder measured worse-or-equal
@@ -415,16 +424,18 @@ async def hybrid_search(
     settings = get_settings()
     use_rerank = settings.RERANK_ENABLED if rerank is None else rerank
     mode: Mode = "hybrid+rerank" if use_rerank else "hybrid"
-    pool = await create_pool(settings.DATABASE_URL)
-    try:
-        async with pool.acquire() as conn:
+
+    if source is not None:
+        async with acquire(source) as conn:
             return await search(
-                conn,
-                repo_id,
-                query,
-                k=k,
-                mode=mode,
-                include_tests=include_tests,
+                conn, repo_id, query, k=k, mode=mode, include_tests=include_tests
+            )
+
+    pool = await create_pool(settings.DATABASE_URL, min_size=1, max_size=2)
+    try:
+        async with acquire(pool) as conn:
+            return await search(
+                conn, repo_id, query, k=k, mode=mode, include_tests=include_tests
             )
     finally:
         await close_pool(pool)

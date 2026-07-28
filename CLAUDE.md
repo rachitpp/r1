@@ -134,6 +134,7 @@ pnpm install && pnpm dev                  # :3000
 | `FRONTEND_ORIGIN` | CORS origin for the web app; default `http://localhost:3000` |
 | `EMBEDDING_MODEL` | Default `BAAI/bge-small-en-v1.5` |
 | `RERANKER_MODEL` | Default `BAAI/bge-reranker-v2-m3` |
+| *serving limits* | Pool sizing, timeouts, rate limits, inference threads, logging, metrics — all defaulted; see `backend/.env.example` and DECISIONS 2026-07-28 |
 
 `.env` at `backend/.env`, loaded by config.py. Commit `.env.example`, never `.env`.
 
