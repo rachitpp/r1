@@ -14,7 +14,7 @@ the only thing left before v1 is complete, and it needs a human.**
    the AST case now rests on the symbol graph and the answer-level numbers,
    which is where it always actually lived.
 2. ~~The stranger re-run has not been done.~~ **Done 2026-07-27** on a fresh
-   clone at `0405f37`: every README step worked and **nothing required off-page
+   clone at `31038ed`: every README step worked and **nothing required off-page
    knowledge**. One gap found and fixed (cold-machine model download); the cold
    path itself remains untested because every cache here was warm. Full log in
    "Immediate next steps" below. It also closed Phase 0's two never-executed
@@ -311,7 +311,7 @@ memory.
 
 ### 2. ~~Do the clean-clone stranger re-run~~ — DONE 2026-07-27
 
-**Executed on a fresh clone at `0405f37`, following only the README.** Result:
+**Executed on a fresh clone at `31038ed`, following only the README.** Result:
 **it works, and nothing required off-page knowledge.** No step needed CLAUDE.md,
 SPEC.md, this file, or any prior context.
 
