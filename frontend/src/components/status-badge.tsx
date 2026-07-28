@@ -19,7 +19,10 @@ export function StatusBadge({ status }: { status: RepoStatus }) {
   return (
     <Badge
       variant="outline"
-      className={cn("gap-1.5 border-transparent font-medium", STYLES[status])}
+      className={cn(
+        "shrink-0 gap-1.5 border-transparent font-medium",
+        STYLES[status],
+      )}
     >
       {inFlight && (
         <span

@@ -6,37 +6,180 @@
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ChevronRight,
+  Clock,
+  FileCode2,
+  GitCommitHorizontal,
+  Github,
+  Layers,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, createRepo, listRepos, type RepoOut } from "@/lib/api";
+import {
+  shortSha,
+  splitRepoName,
+  strategyTag,
+  stripStrategySuffix,
+  timeAgo,
+} from "@/lib/format";
+import { cn } from "@/lib/utils";
 
-function progressHint(repo: RepoOut): string {
-  const p = repo.progress;
-  switch (repo.status) {
-    case "ready":
-      return `${p.files_total} files · ${p.chunks_total} chunks`;
-    case "embedding":
-      return `embedding ${p.chunks_embedded}/${p.chunks_total} chunks`;
-    case "parsing":
-      return `parsing ${p.files_parsed}/${p.files_total || "…"} files`;
-    case "failed":
-      return repo.error ?? "ingest failed";
-    default:
-      return "indexing…";
+/** Small, pure-Python repos that index quickly — a starting point for a visitor
+ * who has no URL to hand. Clicking one fills the field; submitting is still
+ * their call, because POST /repos re-queues a repo that is already indexed. */
+const EXAMPLES = [
+  "pallets/click",
+  "psf/requests",
+  "encode/starlette",
+] as const;
+
+const MONOGRAM_TINTS = [
+  "bg-indigo-100 text-indigo-700",
+  "bg-emerald-100 text-emerald-700",
+  "bg-amber-100 text-amber-700",
+  "bg-sky-100 text-sky-700",
+  "bg-rose-100 text-rose-700",
+  "bg-violet-100 text-violet-700",
+];
+
+function tintFor(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i++) hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  return MONOGRAM_TINTS[Math.abs(hash) % MONOGRAM_TINTS.length];
+}
+
+/** Owner avatar from GitHub, falling back to a monogram tile when the request
+ * fails — offline, a 404 owner, or a blocked image host. */
+function RepoAvatar({ owner, name }: { owner: string | null; name: string }) {
+  const [failed, setFailed] = useState(false);
+  if (owner && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- a remote avatar host we deliberately do not route through next/image
+      <img
+        src={`https://github.com/${owner}.png?size=80`}
+        alt=""
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="size-10 shrink-0 rounded-lg border bg-muted object-cover"
+      />
+    );
   }
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "flex size-10 shrink-0 items-center justify-center rounded-lg text-sm font-semibold",
+        tintFor(owner ?? name),
+      )}
+    >
+      {(name[0] ?? "?").toUpperCase()}
+    </span>
+  );
+}
+
+function Meta({
+  icon: Icon,
+  children,
+}: {
+  icon: typeof FileCode2;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Icon className="size-3.5 shrink-0 text-muted-foreground/70" />
+      {children}
+    </span>
+  );
+}
+
+/** The one-line summary under a repo name, by lifecycle state (§10). */
+function RepoMeta({ repo }: { repo: RepoOut }) {
+  const p = repo.progress;
+  const sha = shortSha(repo.head_sha);
+
+  if (repo.status === "failed") {
+    return (
+      <span className="truncate text-destructive">
+        {repo.error ?? "ingest failed"}
+      </span>
+    );
+  }
+  if (repo.status !== "ready") {
+    const hint =
+      repo.status === "embedding"
+        ? `embedding ${p.chunks_embedded}/${p.chunks_total} chunks`
+        : repo.status === "parsing"
+          ? `parsing ${p.files_parsed}/${p.files_total || "…"} files`
+          : "indexing…";
+    return <span className="truncate">{hint}</span>;
+  }
+  return (
+    <>
+      <Meta icon={FileCode2}>{p.files_total} files</Meta>
+      <Meta icon={Layers}>{p.chunks_total} chunks</Meta>
+      {sha && (
+        <Meta icon={GitCommitHorizontal}>
+          <span className="font-mono">{sha}</span>
+        </Meta>
+      )}
+      <Meta icon={Clock}>{timeAgo(repo.created_at)}</Meta>
+    </>
+  );
+}
+
+function RepoRow({ repo }: { repo: RepoOut }) {
+  const displayName = stripStrategySuffix(repo.name);
+  const { owner, name } = splitRepoName(displayName);
+  const tag = strategyTag(repo.url);
+
+  return (
+    <Link
+      href={`/repos/${repo.id}`}
+      className="group block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+    >
+      <div className="flex items-center gap-3.5 rounded-xl border bg-card p-3.5 shadow-sm transition-all duration-150 group-hover:-translate-y-px group-hover:border-primary/30 group-hover:shadow-md">
+        <RepoAvatar owner={owner} name={name} />
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate font-mono text-sm font-medium">
+              {owner && <span className="text-muted-foreground">{owner}/</span>}
+              {name}
+            </span>
+            {tag && (
+              <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-amber-700">
+                {tag}
+                {/* The badge is shrink-0, so on a narrow screen the long form
+                    would eat the repo name's width instead of its own. */}
+                <span className="hidden sm:inline"> baseline</span>
+              </span>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <RepoMeta repo={repo} />
+          </div>
+        </div>
+
+        <StatusBadge status={repo.status} />
+        <ChevronRight className="size-4 shrink-0 text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
+      </div>
+    </Link>
+  );
 }
 
 function SubmitForm() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState("");
   const [fieldError, setFieldError] = useState<string | null>(null);
 
@@ -55,34 +198,73 @@ function SubmitForm() {
 
   return (
     <form
-      className="mb-8"
       onSubmit={(e) => {
         e.preventDefault();
         setFieldError(null);
-        if (url.trim()) submit.mutate(url.trim());
+        // The button stays live even on an empty field — a primary action that
+        // renders disabled at rest reads as broken. Validate on submit instead.
+        if (!url.trim()) {
+          setFieldError("Paste a GitHub repository URL to index.");
+          inputRef.current?.focus();
+          return;
+        }
+        submit.mutate(url.trim());
       }}
     >
-      <div className="flex gap-2">
-        <Input
-          value={url}
-          onChange={(e) => {
-            setUrl(e.target.value);
-            setFieldError(null);
-          }}
-          placeholder="https://github.com/owner/repo"
-          aria-label="GitHub repository URL"
-          aria-invalid={fieldError != null}
-          className="font-mono text-sm"
-        />
-        <Button type="submit" disabled={submit.isPending || !url.trim()}>
-          {submit.isPending ? "Submitting…" : "Index repo"}
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="relative flex-1">
+          <Github
+            aria-hidden
+            className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            ref={inputRef}
+            value={url}
+            onChange={(e) => {
+              setUrl(e.target.value);
+              setFieldError(null);
+            }}
+            placeholder="https://github.com/owner/repo"
+            aria-label="GitHub repository URL"
+            aria-invalid={fieldError != null}
+            className={cn(
+              "h-12 rounded-xl bg-card pl-10 font-mono text-sm shadow-sm",
+              fieldError && "border-destructive focus-visible:ring-destructive",
+            )}
+          />
+        </div>
+        <Button
+          type="submit"
+          disabled={submit.isPending}
+          className="h-12 w-full rounded-xl px-6 text-sm sm:w-auto"
+        >
+          {submit.isPending ? "Indexing…" : "Index repo"}
         </Button>
       </div>
+
       {fieldError && (
-        <p role="alert" className="mt-2 text-sm text-red-600">
+        <p role="alert" className="mt-2 text-sm text-destructive">
           {fieldError}
         </p>
       )}
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted-foreground">Try one:</span>
+        {EXAMPLES.map((example) => (
+          <button
+            key={example}
+            type="button"
+            onClick={() => {
+              setUrl(`https://github.com/${example}`);
+              setFieldError(null);
+              inputRef.current?.focus();
+            }}
+            className="rounded-full border bg-card px-2.5 py-1 font-mono text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/30 hover:text-foreground"
+          >
+            {example}
+          </button>
+        ))}
+      </div>
     </form>
   );
 }
@@ -94,7 +276,7 @@ function RepoList() {
     return (
       <div className="space-y-3">
         {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-16 w-full" />
+          <Skeleton key={i} className="h-[74px] w-full rounded-xl" />
         ))}
       </div>
     );
@@ -113,31 +295,29 @@ function RepoList() {
   }
   if (repos.data.length === 0) {
     return (
-      <p className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-        No repositories yet — submit one above to get started.
-      </p>
+      <div className="rounded-xl border border-dashed bg-card/50 p-10 text-center">
+        <p className="text-sm font-medium">No repositories indexed yet</p>
+        <p className="mx-auto mt-1 max-w-xs text-sm text-muted-foreground">
+          Submit a URL above, or pick one of the examples, to get started.
+        </p>
+      </div>
     );
   }
   return (
-    <div className="space-y-3">
-      {repos.data.map((repo) => (
-        <Link key={repo.id} href={`/repos/${repo.id}`} className="block">
-          <Card className="transition-colors hover:bg-muted/50">
-            <CardContent className="flex items-center justify-between gap-4 p-4">
-              <div className="min-w-0">
-                <div className="truncate font-mono text-sm font-medium">
-                  {repo.name}
-                </div>
-                <div className="truncate text-xs text-muted-foreground">
-                  {progressHint(repo)}
-                </div>
-              </div>
-              <StatusBadge status={repo.status} />
-            </CardContent>
-          </Card>
-        </Link>
-      ))}
-    </div>
+    <>
+      <div className="mb-3 flex items-baseline justify-between gap-4">
+        <h2 className="text-sm font-medium">Indexed repositories</h2>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {repos.data.length}{" "}
+          {repos.data.length === 1 ? "repository" : "repositories"}
+        </span>
+      </div>
+      <div className="space-y-2.5">
+        {repos.data.map((repo) => (
+          <RepoRow key={repo.id} repo={repo} />
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -145,7 +325,9 @@ export function RepoDashboard() {
   return (
     <>
       <SubmitForm />
-      <RepoList />
+      <div className="mt-9">
+        <RepoList />
+      </div>
     </>
   );
 }

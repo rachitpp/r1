@@ -1190,3 +1190,198 @@ rather than recomputed when new blocks landed. The first two were the retracted
 every claim from the blocks at the end of each measurement round, which is now
 the practice: **no claim in these documents is quoted from prose; each is
 recomputed from EVAL.md before it ships.**
+
+## 2026-07-28 — Landing-page visual pass: design tokens, a typeface, and a hero
+
+Phase 6 is a feature freeze ("Do not: add features"), and this stays inside it:
+no new screens, no new API surface, no new backend behaviour. What changed is
+how the existing three screens look. Recorded because it edits the shipped
+design tokens, which every page inherits, and because it adds a build-time
+network dependency the repo did not have.
+
+**Why.** The landing page rendered as an internal CRUD list: six near-identical
+white slabs, the system font stack, one green pill for colour, and no statement
+of what the product does. The measured evidence the project is built around —
+AST chunking, the symbol-graph agent, clickable `file:line` citations — was
+invisible above the fold, which is exactly what Phase 6's "legible to a stranger
+in 60 seconds" goal asks for.
+
+**What changed, in tokens.**
+- `--primary` moved from near-black (`222 47% 11%`) to indigo (`243 75% 59%`),
+  and `--ring` with it, so every interactive affordance shares one accent. This
+  is inherited: the chat page's user bubbles and active citation chips are now
+  indigo too. That consistency is the point.
+- `--background` is a hair off-white (`210 20% 98%`) and a new `--card` is pure
+  white. **`Card` had always rendered `bg-card`, but the token was never
+  registered in `tailwind.config.ts`** — cards were transparent and only looked
+  white because the page behind them was. Registering it is the fix that lets
+  the surface carry a tint.
+- `--radius` 0.5rem → 0.75rem, plus a `rounded-xl` step.
+
+**Typography — the one trade-off worth naming.** `next/font/google` (Inter +
+JetBrains Mono) is built into Next, so **no package was added** and rule 11 is
+untouched. But it fetches the font files at build time: a **first** build on a
+machine with no network now fails where it previously succeeded. Subsequent
+builds hit `.next/cache`. Accepted — this repo already needs the network to
+`uv sync`, pull the HF embedding model, and reach Postgres/Redis — but it is a
+real change to the offline story and `next/font/local` with committed woff2
+files is the escape hatch if that ever matters.
+
+**Rejected: GitHub avatars via `next/image`.** Owner avatars come from
+`github.com/{owner}.png` through a plain `<img>` with an `onError` fallback to a
+monogram tile. `next/image` would need `remotePatterns` config and leans on
+`sharp`, which this project lists under `ignoredBuiltDependencies`. One lint
+rule is suppressed on that line with a reason; the fallback means an offline or
+404 owner degrades to a tile rather than a broken image.
+
+**Header height.** `h-12` → `h-14`, which required updating the chat page's
+`h-[calc(100vh-3rem)]`. It is now `calc(100vh-3.5rem-1px)` — the extra pixel is
+the header's bottom border, whose omission had been leaving a 1px page
+scrollbar on the chat route since Phase 5.
+
+**Verified.** `pnpm build`, `pnpm lint`, `npx tsc --noEmit` clean; 16 vitest
+tests green; chat page still 181 kB first load (unchanged from the Phase 5
+record), landing 130 kB. Screenshotted at 1440px and 390px on all three routes
+via Playwright against the running api+worker: zero console errors, zero
+horizontal overflow, and the chat route's vertical overflow now measures 0.
+
+## 2026-07-28 — Chat-page pass: markdown answers, a following code pane, and stop/clear
+
+Companion to the landing-page entry above, same reasoning about the Phase 6
+freeze: no new screens and no new API surface. Two items are small behaviour
+changes rather than pure styling, and are named as such below.
+
+**The defect that mattered most.** Answers rendered as `whitespace-pre-wrap`
+plain text while the model emits markdown, so every answer showed literal
+`**bold**` and `` `backticks` ``. Fixed with a **hand-written parser**
+(`lib/markdown.ts`), not a library — **no dependency added** (rule 11).
+
+Three reasons a library was the wrong tool here:
+1. Answers interleave `[path:start-end]` markers (SPEC §7.5) that must become
+   interactive chips *inside* the prose, so the citation split has to happen
+   in the same pass as the markdown one.
+2. The text streams token by token, so every intermediate render is
+   half-written markdown. The parser leaves anything unmatched literal, which
+   is precisely the degradation a streaming renderer needs.
+3. **`_underscore_` emphasis is deliberately not supported.** In a Python
+   assistant, `__name__` would render as emphasised "name". A rare literal
+   underscore pair is a far cheaper failure than mangling every dunder.
+`lib/markdown.test.ts` covers exactly these: dunders, markdown inside inline
+code, malformed ranges, unterminated fences, and half-written markers.
+
+**The right pane no longer starts dead.** It was ~600px of "Click a citation…"
+until the first click. It now follows the agent — each `tool_result` opens the
+file just read, and the finished answer opens its first validated citation —
+and yields permanently to the viewer's own click for that exchange. *Behaviour
+change, deliberate.*
+
+**Auto-follow is a wide-viewport behaviour only (≥1024px), and that limit was
+learned the hard way.** Shipped unconditionally, it was reported as the page
+looking "zoomed". Below `lg` the viewer is not a side pane but a full-screen
+sheet, so auto-opening one threw a code overlay across the whole page the
+moment an answer landed, with unwrapped code needing horizontal scrolling
+inside it. Opening a *pane* unasked is helpful; opening a *sheet* unasked
+hijacks the screen. Narrow screens keep tap-to-open, and wrapping now defaults
+on wherever the pane is narrow. **The general rule: an affordance that is
+ambient at one breakpoint can be modal at another, and auto-behaviour has to be
+scoped to the breakpoint it was designed for.**
+
+**Stop and New chat.** `useRepoChat` had held an `AbortController` and a
+`clear()` since Phase 5 with no UI attached to either. Both are now buttons.
+Stop keeps the partial exchange rather than discarding it (`stopped: true`),
+which required distinguishing the three reasons a stream aborts: viewer stop
+(keep), replacing question (discard), unmount (discard). *Behaviour change,
+deliberate.*
+
+**Highlighting is a gutter accent, not a background wash.** A citation can
+legally span a whole file — the measured case was `main.py:1-215`, where the
+old `bg-amber-100/80` washed all 215 lines and emphasised nothing. A 2px
+gutter bar plus a 6% tint scales from a 4-line citation to a whole-file one,
+and the start line stays distinctly marked at either extreme.
+
+**Mobile was broken, not merely cramped.** The viewer was a fixed `h-80` strip
+*below* the composer, so a phone showed a squeezed conversation, then the
+input, then 320px of code that could not be dismissed. It is now a sheet that
+slides over on citation click. One `CodeViewer` instance serves both layouts
+(`fixed` below `lg`, `static` at `lg`), so nothing is mounted twice.
+
+Also: step timings measured client-side between `tool_call` and `tool_result`
+(§9 carries none); per-tool icons; a finished timeline collapsing to
+`3 tool calls · list_directory → read_file → read_file · 703ms`; `read_file`'s
+summary no longer printed next to the identical chip it duplicates (backend
+`summarize_tool_result` returns exactly `path:start-end` for it); Sources
+listing only citations the prose did not already show inline; copy/ask-again
+per exchange; auto-growing composer with Enter-to-send; auto-scroll that stops
+fighting a reader who has scrolled up; `aria-live` on the working indicators.
+
+**Verified.** `pnpm build`, `pnpm lint`, `tsc --noEmit` clean; **30** vitest
+tests green (16 → 30, the 14 new ones all parser). Driven end to end in
+Chromium against the live api+worker: suggestion chip → stream → Stop button
+present mid-stream → 8 citation chips → viewer auto-opened at `L34-108` →
+trace collapse/expand → wrap toggle → mobile sheet open/close. Zero console
+errors, zero horizontal overflow, and zero code overflow in wrap mode. Chat
+route 181 kB → **187 kB** first load; landing unchanged at 130 kB.
+
+**Unrelated backend bug found while testing, NOT fixed.** One run died with
+`TypeError: string indices must be integers, not 'str'` raised inside
+`langchain_core/utils/_merge.py:122` (`merge_lists`), reached from
+`graph.py:146` `model_node`. It is a chunk-merge incompatibility between the
+Mistral provider's streamed content shape and langchain_core — intermittent,
+entirely within library code, and present before this frontend work. Recorded
+here so it is not mistaken for a UI regression; fixing it means moving a
+backend dependency pin, which is its own decision.
+
+## 2026-07-28 — The chat route is full-bleed; the header follows the route
+
+Reported from two screenshots: dead background either side of the chat panes.
+The chat page was `mx-auto max-w-7xl` (1280px) inside a ~1347px viewport, so
+~33px of unused surface sat left of the conversation and right of the code
+viewer. A centred max-width is right for a document column and wrong for a
+split view — **the chat route is an app shell, and app shells fill the window.**
+It is now `w-full`, measured at 0px dead space on both sides at 1347px and
+1920px.
+
+**The consequence, handled rather than shipped.** Making the panes full-bleed
+puts their left edge at the 16px gutter while the shared header stayed a
+centred 1024px column — at 1347px the wordmark would have floated 145px right
+of the pane beneath it, re-introducing the exact misalignment the landing-page
+pass had just fixed. So the header's inner container is now route-aware
+(`components/header-container.tsx`): full-bleed on `/repos/{id}/chat`, the
+shared `.page-container` everywhere else. `layout.tsx` stays a server
+component; only the container is a client boundary, for `usePathname`.
+
+Verified: chat 0px dead space at both widths; landing and repo-status wordmark
+and `h1` both at 186px — still aligned, unchanged. `pnpm build`, `pnpm lint`,
+`tsc --noEmit` clean; 30 vitest tests green; no console errors.
+
+## 2026-07-28 — Header full-bleed everywhere; hero compressed
+
+Two requests, both about the landing page spending too much vertical space
+before anything useful.
+
+**Header.** Now full-bleed on *every* route, not just the chat one: wordmark
+hard left, source link hard right, `h-12` instead of `h-14`, and a `size-6`
+mark. **This supersedes the route-aware header container added earlier today**
+— with every route full-bleed there is nothing to switch on, so
+`components/header-container.tsx` is deleted rather than left as dead
+machinery. The knock-on the earlier entry warned about is now the accepted
+design: header edges no longer align with the centred content column below
+them, which is the trade the request asked for. Both edges still read
+symmetrically at 24px, because the source link's `-mr-2` cancels its own hover
+padding.
+
+The header shrinking by 8px moved two chat-route constants that encode it:
+`h-[calc(100vh-3rem-1px)]` and the mobile sheet's `top-12`. **These three
+numbers are coupled and have now been wrong twice** — worth a shared token if
+the header height ever moves again.
+
+**Hero.** Dropped the "Hybrid retrieval + symbol-graph agent" eyebrow (it
+restated the stat tiles), cut the intro from 45 words to 28, `text-5xl` →
+`text-3xl`, and tightened every gap plus the stat tiles. Measured at 1347px:
+the URL input moved from 595px down the page to **292px**, and the repo list
+from 715px to **414px** — the whole primary flow now lands above the fold on a
+860px-tall viewport instead of below it.
+
+Verified: `pnpm build`, `pnpm lint`, `tsc --noEmit` clean; 30 vitest tests
+green; chat route 0 vertical and 0 horizontal overflow after the header change;
+no console errors.

@@ -7,7 +7,7 @@ export default async function RepoPage({
 }) {
   const { id } = await params;
   return (
-    <main className="mx-auto max-w-3xl px-4 py-10">
+    <main className="page-container py-10">
       <RepoStatusView repoId={id} />
     </main>
   );

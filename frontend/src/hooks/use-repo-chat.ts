@@ -59,6 +59,8 @@ export interface RepoChat {
   /** Set when the server answered 409: the repo regressed to this status. */
   notReadyStatus: string | null;
   ask: (question: string) => void;
+  /** End the live stream and keep whatever arrived as a finished exchange. */
+  stop: () => void;
   clear: () => void;
 }
 
@@ -68,6 +70,10 @@ export function useRepoChat(repoId: string): RepoChat {
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [notReadyStatus, setNotReadyStatus] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  // Distinguishes the three reasons a stream can abort: the viewer pressed Stop
+  // (keep the partial exchange), a new question replaced it, or the page
+  // unmounted (both discard it).
+  const stoppedRef = useRef(false);
 
   // Restore after mount: sessionStorage does not exist during SSR, and reading
   // it in the initial state would make hydration mismatch.
@@ -98,6 +104,7 @@ export function useRepoChat(repoId: string): RepoChat {
       if (abortRef.current) abortRef.current.abort();
       const controller = new AbortController();
       abortRef.current = controller;
+      stoppedRef.current = false;
       setNotReadyStatus(null);
 
       // The exchange is mutated locally and mirrored into state per event —
@@ -123,6 +130,7 @@ export function useRepoChat(repoId: string): RepoChat {
                   n: payload.n,
                   tool: payload.tool,
                   args: payload.args ?? {},
+                  startedAt: Date.now(),
                 };
                 exchange.steps = [...exchange.steps, step];
                 setStatus("thinking"); // a new tool call: back to working
@@ -135,6 +143,7 @@ export function useRepoChat(repoId: string): RepoChat {
                         ...s,
                         summary: payload.summary as string,
                         locations: (payload.locations ?? []) as ToolLocation[],
+                        ms: s.startedAt ? Date.now() - s.startedAt : undefined,
                       }
                     : s,
                 );
@@ -165,7 +174,14 @@ export function useRepoChat(repoId: string): RepoChat {
           exchange.error ??= "stream ended unexpectedly";
           finish({ ...exchange }, "error");
         } catch (err) {
-          if (controller.signal.aborted) return; // unmount/new question
+          if (controller.signal.aborted) {
+            // Stop is the one abort whose partial result is worth keeping.
+            if (stoppedRef.current) {
+              exchange.stopped = true;
+              finish({ ...exchange }, "done");
+            }
+            return; // otherwise: unmount or a replacing question
+          }
           if (err instanceof SseRequestError && err.status === 409) {
             // Repo regressed to not-ready (e.g. re-ingest kicked off). The
             // page redirects; do not record an exchange.
@@ -183,7 +199,14 @@ export function useRepoChat(repoId: string): RepoChat {
     [repoId, finish],
   );
 
+  const stop = useCallback(() => {
+    if (!abortRef.current) return;
+    stoppedRef.current = true;
+    abortRef.current.abort();
+  }, []);
+
   const clear = useCallback(() => {
+    stoppedRef.current = false;
     abortRef.current?.abort();
     setTranscript([]);
     setCurrent(null);
@@ -191,5 +214,5 @@ export function useRepoChat(repoId: string): RepoChat {
     saveTranscript(repoId, []);
   }, [repoId]);
 
-  return { transcript, current, status, notReadyStatus, ask, clear };
+  return { transcript, current, status, notReadyStatus, ask, stop, clear };
 }

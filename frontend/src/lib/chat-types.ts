@@ -14,13 +14,21 @@ export interface ToolLocation {
   end_line: number;
 }
 
-/** One tool_call, later completed in place by its tool_result (same `n`). */
+/**
+ * One tool_call, later completed in place by its tool_result (same `n`).
+ *
+ * §9 carries no timing, so `startedAt`/`ms` are measured on the client between
+ * the two events. That is wall-clock including transport, which is the number a
+ * viewer actually experiences.
+ */
 export interface ChatStep {
   n: number;
   tool: string;
   args: Record<string, unknown>;
   summary?: string;
   locations?: ToolLocation[];
+  startedAt?: number;
+  ms?: number;
 }
 
 /**
@@ -44,6 +52,9 @@ export interface ChatExchange {
   citations: Citation[];
   toolCallsUsed: number | null;
   error: string | null;
+  /** True when the viewer pressed Stop: whatever streamed is kept, and the
+   * exchange is not an error. */
+  stopped?: boolean;
 }
 
 export function emptyExchange(question: string): ChatExchange {
