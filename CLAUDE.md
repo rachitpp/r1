@@ -49,7 +49,7 @@ do not invent its contents.
 
 | Layer | Choice |
 |---|---|
-| Backend | Python 3.11+, FastAPI, fully async, Pydantic v2, uv |
+| Backend | Python 3.11+, FastAPI, fully async, Pydantic v2, uv; serving hardening (pool, inference limits, observability, per-IP rate limiting; 2026-07-28) |
 | Parsing | tree-sitter (bindings ≥0.22, grammars as pip packages) + tree-sitter-python; Jedi for import resolution |
 | Embeddings | sentence-transformers; model from env, default `BAAI/bge-small-en-v1.5` |
 | Store | Postgres 16 + pgvector (HNSW, cosine) + tsvector FTS; RRF fusion in one SQL query |
@@ -57,7 +57,7 @@ do not invent its contents.
 | Agent | LangGraph state machine; **provider-configurable via `AGENT_MODEL`** (Gemini / Claude / Vertex), built only by `app/agent/model.py` |
 | Queue | ARQ on Redis |
 | Transport | SSE via sse-starlette |
-| Frontend | Next.js 15, TS strict, pnpm, Tailwind + shadcn/ui, custom `useRepoChat` over hand-rolled SSE (DECISIONS 2026-07-27; no Vercel AI SDK), Shiki (fine-grained, python-only), TanStack Query |
+| Frontend | Next.js 15, TS strict, pnpm, Tailwind + shadcn/ui, custom `useRepoChat` over hand-rolled SSE (DECISIONS 2026-07-27; no Vercel AI SDK), Shiki (fine-grained, python-only), TanStack Query; markdown answers + citation viewer (2026-07-28) |
 | Local dev | Docker Compose for pg + redis; apps run on host |
 
 Agent tools (signatures in SPEC): `search_code`, `read_file`,
@@ -137,6 +137,41 @@ pnpm install && pnpm dev                  # :3000
 | *serving limits* | Pool sizing, timeouts, rate limits, inference threads, logging, metrics — all defaulted; see `backend/.env.example` and DECISIONS 2026-07-28 |
 
 `.env` at `backend/.env`, loaded by config.py. Commit `.env.example`, never `.env`.
+
+**Database note:** Neon holds the ingested benchmark corpus (`encode/httpx`
+@ `b5addb64`, 1522 chunks: 825 impl / 697 test). Re-ingest only if schema or
+chunker changes. Verify with:
+```sql
+SELECT count(*) FILTER (WHERE NOT is_test), count(*) FILTER (WHERE is_test) FROM chunks;
+```
+Should return `825 | 697`.
+
+## Phase status (2026-07-28)
+
+**Phase 6 — Evidence & ship: nearly complete.** Only `demo.gif` remains
+(human task — record a 20s clip: submit repo → progress → question → tool
+timeline streams → answer with citations → click citation → viewer highlights).
+ROADMAP marked done-when satisfied: README table filled from measured eval,
+stranger re-run passed, findings (a) corrected to MODEL-DEPENDENT.
+
+**Recent work (2026-07-28):** Landing page visual pass (design tokens, typeface,
+hero), chat page polish (markdown answers, following code pane, stop/clear),
+backend serving hardening (pool, inference limits, observability, per-IP
+rate limiting).
+
+**Phase 3 findings (exact wording for README/docs):**
+- **(a) MODEL-DEPENDENT** — q10 answered 3/3 controlled temp-0 Mistral, 0/3
+  Vertex; graph traversal can reach what retrieval cannot, demonstrated on
+  one model family and not reproduced on the other.
+- **(b) MODERATE, directionally stable** — agent leads at symbol level in
+  6/6 runs (Mistral +5/+4/+2 vs 0.75, Vertex +1/+1/+2 vs 0.80); sign stable,
+  magnitude noisy.
+- **(c) NOT SUPPORTED** — graph-tool use does not predict correctness; perfect
+  model inversion at temperature 0.
+
+**Naive baseline result:** Fixed 1000-char windows tie AST at hit@10 0.95;
+case for AST rests on symbol graph and answer-level numbers, not retrieval
+hit-rate.
 
 ## Working agreement
 
