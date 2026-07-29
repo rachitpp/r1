@@ -85,6 +85,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     resp = await fetch(apiUrl(path), {
       ...init,
+      // The session is an HttpOnly cookie the API sets (SPEC §13.4), so every
+      // call has to opt in to sending it — a cross-origin fetch omits cookies
+      // by default, and without this every request is anonymous and 401s.
+      credentials: "include",
       headers: { "content-type": "application/json", ...init?.headers },
     });
   } catch {
@@ -132,4 +136,49 @@ export function getFile(repoId: string, path: string): Promise<FileOut> {
   return request<FileOut>(
     `/repos/${repoId}/files?path=${encodeURIComponent(path)}`,
   );
+}
+
+/* -------------------------------------------------------------------------
+ * Identity (SPEC §13)
+ * ---------------------------------------------------------------------- */
+
+/** `GET /auth/me`. Mirrors the backend's `UserOut` — no `github_id` (§13.2). */
+export interface UserOut {
+  id: string;
+  login: string;
+  name: string | null;
+  avatar_url: string | null;
+  created_at: string;
+}
+
+/**
+ * Where to send the browser to sign in.
+ *
+ * A full-page navigation, never a fetch: the OAuth flow is three redirects
+ * across two origins, and XHR cannot follow a cross-origin redirect chain or
+ * let the user see GitHub's consent screen.
+ */
+export const loginUrl = apiUrl("/auth/github/login");
+
+/**
+ * The signed-in user, or `null` when nobody is.
+ *
+ * 401 is the *expected* answer for a signed-out visitor, so it is translated
+ * to `null` rather than thrown — a logged-out homepage is not an error state.
+ * Every other failure still throws.
+ */
+export async function getMe(): Promise<UserOut | null> {
+  try {
+    return await request<UserOut>("/auth/me");
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
+}
+
+export async function logout(): Promise<void> {
+  await fetch(apiUrl("/auth/logout"), {
+    method: "POST",
+    credentials: "include",
+  });
 }

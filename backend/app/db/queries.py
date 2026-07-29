@@ -93,10 +93,128 @@ async def get_repo(conn: asyncpg.Connection, repo_id: UUID) -> asyncpg.Record | 
     )
 
 
-async def list_repos(conn: asyncpg.Connection) -> list[asyncpg.Record]:
-    """All repo rows, newest first."""
-    rows = await conn.fetch(f"SELECT {REPO_COLUMNS} FROM repos ORDER BY created_at DESC")
+async def get_owned_repo(
+    conn: asyncpg.Connection, user_id: UUID, repo_id: UUID
+) -> asyncpg.Record | None:
+    """``get_repo``, but only if ``user_id`` has it in their library (§13.5).
+
+    Returning ``None`` for "exists but is not yours" is what lets the API answer
+    404 rather than 403 — a 403 would confirm the id names a real repo, which is
+    the fact being protected.
+    """
+    return await conn.fetchrow(
+        f"""SELECT {REPO_COLUMNS} FROM repos r
+             JOIN user_repos ur ON ur.repo_id = r.id
+            WHERE r.id = $1 AND ur.user_id = $2""",
+        repo_id,
+        user_id,
+    )
+
+
+async def list_repos(
+    conn: asyncpg.Connection, user_id: UUID | None = None
+) -> list[asyncpg.Record]:
+    """Repo rows, newest first — the caller's library when ``user_id`` is given.
+
+    ``None`` means every repo and is for the CLIs and the worker, which act
+    outside any user's session. No HTTP route may pass ``None`` (§13.6).
+    """
+    if user_id is None:
+        rows = await conn.fetch(
+            f"SELECT {REPO_COLUMNS} FROM repos ORDER BY created_at DESC"
+        )
+    else:
+        rows = await conn.fetch(
+            f"""SELECT {REPO_COLUMNS} FROM repos r
+                 JOIN user_repos ur ON ur.repo_id = r.id
+                WHERE ur.user_id = $1
+                ORDER BY r.created_at DESC""",
+            user_id,
+        )
     return list(rows)
+
+
+# ---------------------------------------------------------------------------
+# Users and libraries (SPEC §13.2)
+# ---------------------------------------------------------------------------
+
+USER_COLUMNS = "id, github_id, login, name, avatar_url, created_at"
+
+
+async def upsert_user(
+    conn: asyncpg.Connection,
+    *,
+    github_id: int,
+    login: str,
+    name: str | None,
+    avatar_url: str | None,
+) -> asyncpg.Record:
+    """Get-or-create the user for ``github_id``, refreshing their profile.
+
+    Keyed on ``github_id``, never ``login`` (§13.2): GitHub accounts can be
+    renamed, and keying on the mutable name would strand the old row's library.
+    This is also what adopts the §13.7 bootstrap row — the operator sets
+    ``BOOTSTRAP_GITHUB_ID`` to their own id, and their first sign-in updates
+    that row in place rather than creating a second one, inheriting every
+    pre-auth repo with it.
+    """
+    row = await conn.fetchrow(
+        f"""INSERT INTO users (github_id, login, name, avatar_url)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (github_id) DO UPDATE
+              SET login = EXCLUDED.login,
+                  name = EXCLUDED.name,
+                  avatar_url = EXCLUDED.avatar_url,
+                  last_seen_at = now()
+            RETURNING {USER_COLUMNS}""",
+        github_id,
+        login,
+        name,
+        avatar_url,
+    )
+    assert row is not None  # INSERT ... RETURNING always yields a row here
+    return row
+
+
+async def get_user(conn: asyncpg.Connection, user_id: UUID) -> asyncpg.Record | None:
+    """One user row by internal id (the session token's subject)."""
+    return await conn.fetchrow(
+        f"SELECT {USER_COLUMNS} FROM users WHERE id = $1", user_id
+    )
+
+
+async def adopt_bootstrap_user(conn: asyncpg.Connection, github_id: int) -> None:
+    """Hand the §13.7 placeholder's identity to a real account, once.
+
+    Runs before the sign-in upsert. A no-op unless the placeholder still exists
+    and the real account has never signed in — if both rows exist they are
+    already distinct users, and merging libraries silently would be a surprise
+    rather than a migration.
+    """
+    await conn.execute(
+        """UPDATE users SET github_id = $1
+            WHERE github_id = 0
+              AND NOT EXISTS (SELECT 1 FROM users WHERE github_id = $1)""",
+        github_id,
+    )
+
+
+async def link_user_repo(
+    conn: asyncpg.Connection, user_id: UUID, repo_id: UUID
+) -> None:
+    """Put ``repo_id`` in ``user_id``'s library; idempotent (§13.6).
+
+    A second user submitting a known URL joins the existing repo rather than
+    re-ingesting it — the v1 schema already made a repo a singleton keyed by
+    URL, and V2's snapshot split is what turns that from an accident into the
+    design.
+    """
+    await conn.execute(
+        """INSERT INTO user_repos (user_id, repo_id) VALUES ($1, $2)
+           ON CONFLICT DO NOTHING""",
+        user_id,
+        repo_id,
+    )
 
 
 async def get_file(

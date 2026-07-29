@@ -3,6 +3,8 @@ import { Fraunces, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
 
+import { UserMenu } from "@/components/auth/user-menu";
+
 import { Providers } from "./providers";
 
 // Three faces: a display serif for headings, a humanist grotesque for UI text,
@@ -93,15 +95,18 @@ export default function RootLayout({
                   Codebase Onboarding Assistant
                 </span>
               </Link>
-              <a
-                href={SOURCE_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="-mr-2 flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <GithubIcon />
-                <span className="hidden sm:inline">Source</span>
-              </a>
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={SOURCE_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <GithubIcon />
+                  <span className="hidden sm:inline">Source</span>
+                </a>
+                <UserMenu />
+              </div>
             </div>
           </header>
           {children}

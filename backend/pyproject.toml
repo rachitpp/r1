@@ -22,6 +22,9 @@ dependencies = [
     "langchain-google-vertexai>=3.2.4",
     "langchain-mistralai>=1.1.6",
     "sse-starlette>=3.4.6",
+    # Promoted from the dev group in v2 phase V1: the GitHub OAuth exchange
+    # (SPEC §13.3) is a runtime dependency, not just the test client's.
+    "httpx",
 ]
 
 [dependency-groups]
@@ -30,7 +33,6 @@ dev = [
     "mypy",
     "pytest",
     "pytest-asyncio",
-    "httpx",
 ]
 
 [build-system]

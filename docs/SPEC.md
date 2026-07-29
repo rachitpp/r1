@@ -710,3 +710,181 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 
 Constants live in `app/config.py` under these exact names so SPEC and
 code stay greppable against each other.
+
+---
+
+## §13 Identity & tenancy (v2 phase V1)
+
+v1 had one user and no auth. This section is the contract for making the
+system multi-user. It is v2 work: nothing here applies while a v1 phase is
+open. Rationale for every choice: DECISIONS 2026-07-29.
+
+### 13.1 Provider — GitHub OAuth only
+
+One provider, no signup form, **no password ever stored**. The `users` table
+holds no credential material. Two consequences that are the point rather than
+side effects: there is nothing to leak, and the OAuth token is exactly the
+credential a private-repo clone will need (deferred, but this is the door).
+
+Implemented by hand in `app/auth/`, no new dependency, following the 2026-07-28
+precedent that set `slowapi` and `prometheus-client` aside for the same reason.
+`httpx` moves from the dev group to the main dependencies — it is the client
+for the two GitHub calls, and it was already present.
+
+### 13.2 Schema
+
+```sql
+-- 006
+CREATE TABLE users (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  github_id   BIGINT NOT NULL UNIQUE,   -- immutable; the join key, not `login`
+  login       TEXT NOT NULL,            -- mutable: GitHub lets you rename
+  name        TEXT,
+  avatar_url  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE user_repos (
+  user_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  repo_id   UUID NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  added_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, repo_id)
+);
+CREATE INDEX user_repos_repo ON user_repos (repo_id);
+```
+
+`github_id` is the identity, never `login` — GitHub accounts can be renamed,
+and a renamed account that re-registers as a new row silently orphans a
+library. `login` is refreshed on every sign-in.
+
+Purely additive: no existing table is altered. Existing repo rows are backfilled
+to a bootstrap user so nothing orphans (§13.7).
+
+### 13.3 Flow
+
+```
+GET  /auth/github/login     302 → github.com/login/oauth/authorize
+                            sets `oauth_state` cookie (HttpOnly, SameSite=Lax)
+GET  /auth/github/callback?code=&state=
+                            302 → FRONTEND_ORIGIN, sets `session` cookie
+                            400 on state mismatch or a GitHub error
+POST /auth/logout           204, clears the session cookie
+GET  /auth/me               UserOut | 401
+```
+
+`state` is a random 32-byte URL-safe token, stored in a short-lived cookie and
+compared on return. A callback whose `state` does not match the cookie is
+refused — without it, an attacker can complete a login in a victim's browser
+against their own GitHub account (login CSRF).
+
+The backend owns the whole dance because it owns the client secret. The
+frontend never sees it.
+
+### 13.4 Session token
+
+An opaque signed string, not a JWT — there is no third party to verify it and
+no claim to carry beyond a user id:
+
+```
+v1.<base64url(user_id)>.<base64url(expiry_unix)>.<base64url(hmac_sha256)>
+```
+
+signed with `SESSION_SECRET` over the first three fields, compared with
+`hmac.compare_digest` (constant time). Expiry is `SESSION_TTL_S`, checked
+before the signature is trusted for anything.
+
+Delivered **both** ways, deliberately:
+
+* **`session` cookie** — HttpOnly, SameSite=Lax, `Secure` when the frontend
+  origin is https. This is what the browser uses; HttpOnly means XSS cannot
+  read it.
+* **`Authorization: Bearer <token>`** — accepted on every route, and what the
+  CLIs and tests use. The cookie is checked first, the header second.
+
+No refresh tokens, no rotation, no server-side session table in V1. Signing out
+clears the cookie; a stolen bearer token is valid until it expires. Both are
+`user_sessions`-table work and are deferred with that noted here rather than
+discovered later.
+
+**Deployment constraint, and the one thing that will break first.** `SameSite`
+is evaluated against the registrable domain, not the origin — ports are
+ignored. So `localhost:3000` → `localhost:8000` is *same-site*, and `Lax`
+cookies flow in local development. A deployment that puts the frontend and API
+on different domains (`app.vercel.app` → `api.fly.dev`) is **cross-site**, and
+`Lax` means the browser sends no cookie at all: every request arrives
+anonymous and 401s, with nothing in either log to say why.
+
+Three ways out, in preference order:
+
+1. **Serve both from one site** — API under `/api` on the frontend's domain, or
+   the frontend behind the API. Keeps `Lax`, which is the setting that actually
+   defends against CSRF.
+2. `SameSite=None; Secure`, which permits the cross-site cookie and gives up
+   that defence — acceptable only because every state-changing route is a POST
+   the API's CORS allowlist already gates.
+3. Use the `Authorization` header instead of the cookie, storing the token in
+   JS. Portable and CORS-friendly; it also puts the token where XSS can read
+   it, which is what HttpOnly was chosen to prevent.
+
+The frontend sends `credentials: "include"` on every call including the SSE
+stream, which is necessary for all three and sufficient for the first two.
+
+### 13.5 The ownership rule
+
+**Authorization is enforced at the route boundary and nowhere else.**
+
+`_require_repo` becomes `_require_owned_repo(conn, user_id, repo_id)`, which
+joins `user_repos`. Every `/repos/*` route calls it. The six agent tools (§7.1)
+already scope every query by `repo_id`, so a route that resolved an *owned*
+repo makes everything downstream safe by construction.
+
+Tools MUST NOT take a `user_id` or repeat the check. It sounds strictly safer
+and is not: six more places to get wrong, six more tests, and a user identity
+pushed into a layer that has no other reason to know users exist.
+
+**An unowned repo returns 404, never 403.** A 403 confirms the UUID names a
+real repo, which is the fact being protected. `RepoNotFoundError` already maps
+to 404, so this costs nothing.
+
+### 13.6 §8 amendments
+
+Every `/repos/*` route requires authentication and gains `401` to its status
+list. `GET /repos` returns only the caller's repos. `POST /repos` adds a
+`user_repos` row on both the 201 and 200 paths — a second user submitting a
+known URL *joins* it, and gets 200.
+
+Rate limits (2026-07-28) re-key from IP to `user_id` on authenticated routes;
+`/auth/*` stays per-IP, since there is no user yet. `/health`, `/ready`,
+`/metrics` stay exempt and unauthenticated.
+
+The §9 SSE event schema does not change.
+
+### 13.7 Migration of existing data
+
+`006` backfills every existing `repos` row to a single bootstrap user, resolved
+from `BOOTSTRAP_GITHUB_ID` if set and otherwise created as a placeholder that
+the first real sign-in with that `github_id` adopts. No repo is left without an
+owner, because an unowned repo is unreachable through §13.5 and would look like
+data loss.
+
+### 13.8 Constants
+
+| Name | Value | Used in |
+|---|---|---|
+| `SESSION_TTL_S` | 1_209_600 (14 days) | §13.4 |
+| `OAUTH_STATE_TTL_S` | 600 | §13.3 |
+| `SESSION_COOKIE` | `"session"` | §13.4 |
+| `OAUTH_STATE_COOKIE` | `"oauth_state"` | §13.3 |
+| `GITHUB_AUTHORIZE_URL` | `https://github.com/login/oauth/authorize` | §13.3 |
+| `GITHUB_TOKEN_URL` | `https://github.com/login/oauth/access_token` | §13.3 |
+| `GITHUB_API_USER_URL` | `https://api.github.com/user` | §13.3 |
+| `GITHUB_SCOPES` | `"read:user"` | §13.3 |
+
+`GITHUB_SCOPES` is deliberately minimal: V1 reads an identity and nothing else.
+Private-repo cloning would need `repo`, which is a scope escalation every user
+sees on the consent screen — a v3 decision, not a quiet default.
+
+New env (`app/config.py`, §Environment): `GITHUB_CLIENT_ID`,
+`GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, optional `BOOTSTRAP_GITHUB_ID`.
+Callback URL registered with GitHub is `<API origin>/auth/github/callback`.

@@ -1,3 +1,4 @@
+import { RequireAuth } from "@/components/auth/require-auth";
 import { AnswerPreview } from "@/components/landing/answer-preview";
 import { RepoList, SubmitForm } from "@/components/repo-dashboard";
 
@@ -84,7 +85,12 @@ export default function Home() {
               symbol graph, then answers your questions with citations you can
               click straight into the source.
             </p>
-            <SubmitForm />
+            <RequireAuth
+              title="Sign in to index a repo"
+              description="Indexing is per-account, so your repositories stay yours."
+            >
+              <SubmitForm />
+            </RequireAuth>
           </div>
 
           <div className="lg:col-span-5">
@@ -96,6 +102,8 @@ export default function Home() {
       <Measures />
 
       <section className="page-container pt-14">
+        {/* No gate: RepoList renders nothing for a signed-out visitor rather
+            than a second sign-in card under the one in the hero. */}
         <RepoList />
       </section>
     </main>

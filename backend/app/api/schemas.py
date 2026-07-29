@@ -63,6 +63,32 @@ class RepoList(BaseModel):
     repos: list[RepoOut]
 
 
+class UserOut(BaseModel):
+    """``GET /auth/me`` (SPEC §13.3).
+
+    Deliberately narrow: the internal ``id`` and the profile fields the header
+    renders. ``github_id`` is not exposed — it is the join key, and nothing in
+    the browser has a use for it.
+    """
+
+    id: UUID
+    login: str
+    name: str | None
+    avatar_url: str | None
+    created_at: dt.datetime
+
+    @classmethod
+    def from_row(cls, row: asyncpg.Record) -> UserOut:
+        """Build from a ``queries.USER_COLUMNS`` row."""
+        return cls(
+            id=row["id"],
+            login=row["login"],
+            name=row["name"],
+            avatar_url=row["avatar_url"],
+            created_at=row["created_at"],
+        )
+
+
 class FileOut(BaseModel):
     """``GET /repos/{id}/files``.
 

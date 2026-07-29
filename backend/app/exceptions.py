@@ -138,3 +138,24 @@ class InvalidLineRangeError(AppError):
 
 class UnauthorizedError(AppError):
     """A protected endpoint was called without the right credentials (401)."""
+
+
+class AuthNotConfiguredError(AppError):
+    """Sign-in was attempted without OAuth credentials in the environment (503).
+
+    Deliberately a runtime failure on the auth routes rather than a startup
+    one: the API serves an already-signed-in user, `/health`, and `/ready`
+    perfectly well without GitHub credentials, and refusing to boot over a
+    missing optional secret takes the whole service down for a feature most
+    operators configure second (SPEC §13).
+    """
+
+
+class OAuthError(AppError):
+    """The GitHub OAuth exchange failed or was tampered with (§13.3, 400).
+
+    Covers a `state` mismatch, a denied consent screen, and a token exchange
+    GitHub rejected. One exception for all three on purpose — the difference
+    matters to the log, never to the caller, and a response that distinguishes
+    them tells a probe which half of the flow it broke.
+    """

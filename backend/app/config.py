@@ -77,6 +77,24 @@ MAX_REQUEST_BYTES: int = 64 * 1024
 # 10_000-line file, and an unbounded range is the same response as no range.
 FILE_RANGE_MAX_LINES: int = 5_000
 
+# ---------------------------------------------------------------------------
+# Identity & tenancy — SPEC §13.8 (v2 phase V1)
+# ---------------------------------------------------------------------------
+
+SESSION_TTL_S: int = 14 * 24 * 3_600
+OAUTH_STATE_TTL_S: int = 600
+SESSION_COOKIE: str = "session"
+OAUTH_STATE_COOKIE: str = "oauth_state"
+
+GITHUB_AUTHORIZE_URL: str = "https://github.com/login/oauth/authorize"
+GITHUB_TOKEN_URL: str = "https://github.com/login/oauth/access_token"
+GITHUB_API_USER_URL: str = "https://api.github.com/user"
+
+# Minimal on purpose (§13.8): V1 reads an identity and nothing else. Private
+# repo cloning would need `repo`, which every user sees on the consent screen —
+# a v3 decision, not a quiet default.
+GITHUB_SCOPES: str = "read:user"
+
 
 class Settings(BaseSettings):
     """Environment-backed settings, loaded from ``backend/.env``."""
@@ -90,6 +108,25 @@ class Settings(BaseSettings):
     # Required infrastructure.
     DATABASE_URL: str
     REDIS_URL: str
+
+    # Identity (SPEC §13). All optional so the app still boots without them —
+    # an unconfigured deployment must fail at /auth/github/login with a clear
+    # message, not at import, which would take the whole API down over a
+    # feature most operators configure second.
+    GITHUB_CLIENT_ID: str | None = None
+    GITHUB_CLIENT_SECRET: str | None = None
+    # Signs session tokens (§13.4). Rotating it invalidates every session,
+    # which is the intended emergency lever.
+    SESSION_SECRET: str | None = None
+    # Adopts the pre-auth repo rows on first sign-in (§13.7).
+    BOOTSTRAP_GITHUB_ID: int | None = None
+
+    @property
+    def auth_configured(self) -> bool:
+        """Whether the OAuth flow can actually run."""
+        return bool(
+            self.GITHUB_CLIENT_ID and self.GITHUB_CLIENT_SECRET and self.SESSION_SECRET
+        )
 
     # Optional / defaulted so Phase 0 runs without model keys.
     #

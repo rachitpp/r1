@@ -28,8 +28,10 @@ from fastapi.responses import JSONResponse
 
 from app.exceptions import (
     AppError,
+    AuthNotConfiguredError,
     InvalidLineRangeError,
     InvalidRepoUrlError,
+    OAuthError,
     PayloadTooLargeError,
     QueueUnavailableError,
     RepoFileNotFoundError,
@@ -53,6 +55,8 @@ _STATUS: dict[type[Exception], int] = {
     InvalidRepoUrlError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     InvalidLineRangeError: status.HTTP_422_UNPROCESSABLE_CONTENT,
     UnauthorizedError: status.HTTP_401_UNAUTHORIZED,
+    OAuthError: status.HTTP_400_BAD_REQUEST,
+    AuthNotConfiguredError: status.HTTP_503_SERVICE_UNAVAILABLE,
     RepoNotReadyError: status.HTTP_409_CONFLICT,
     QueueUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     TooManyRequestsError: status.HTTP_429_TOO_MANY_REQUESTS,

@@ -34,8 +34,26 @@ INDEXING_REPO_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 UNKNOWN_REPO_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
 FAILED_REPO_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 
+# Two tenants (SPEC §13). USER_ID owns every seeded repo; OTHER_USER_ID owns
+# nothing, which is what makes it useful — it is the caller every cross-tenant
+# assertion is written from.
+USER_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+OTHER_USER_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+
 FILE_PATH = "pkg/auth.py"
 FILE_CONTENT = "def verify_token(token):\n    return SECRET_SENTINEL_VALUE\n"
+
+
+def _user_row(user_id: uuid.UUID, login: str) -> dict[str, Any]:
+    """A `users` row as `queries.USER_COLUMNS` selects it."""
+    return {
+        "id": user_id,
+        "github_id": 1 if user_id == USER_ID else 2,
+        "login": login,
+        "name": login.title(),
+        "avatar_url": None,
+        "created_at": "2026-07-29T00:00:00+00:00",
+    }
 
 
 def _repo_row(repo_id: uuid.UUID, name: str, status: str) -> dict[str, Any]:
@@ -76,6 +94,16 @@ class FakeConn:
             FAILED_REPO_ID: _repo_row(FAILED_REPO_ID, "owner/failed", "failed"),
         }
         self.repos[FAILED_REPO_ID]["error"] = "worker died"
+        self.users: dict[uuid.UUID, dict[str, Any]] = {
+            USER_ID: _user_row(USER_ID, "owner"),
+            OTHER_USER_ID: _user_row(OTHER_USER_ID, "stranger"),
+        }
+        # §13.2 `user_repos`. Every seeded repo belongs to USER_ID and to nobody
+        # else, so an OTHER_USER_ID request that reaches any of them is a
+        # tenancy failure rather than a fixture gap.
+        self.user_repos: set[tuple[uuid.UUID, uuid.UUID]] = {
+            (USER_ID, repo_id) for repo_id in self.repos
+        }
         self.files: dict[str, dict[str, Any]] = {
             FILE_PATH: {
                 "path": FILE_PATH,
@@ -104,11 +132,45 @@ class FakeConn:
             )
         if "FROM repos WHERE id" in sql:
             return self.repos.get(args[0])
+        # §13.5 ownership join: (repo_id, user_id). Returns None for a repo that
+        # exists but belongs to someone else, which is what makes the route 404.
+        if "JOIN user_repos ur" in sql and "WHERE r.id = $1" in sql:
+            repo_id, user_id = args[0], args[1]
+            if (user_id, repo_id) not in self.user_repos:
+                return None
+            return self.repos.get(repo_id)
+        if "FROM users WHERE id" in sql:
+            return self.users.get(args[0])
+        if "INSERT INTO users" in sql:
+            github_id, login = args[0], args[1]
+            existing = next(
+                (u for u in self.users.values() if u["github_id"] == github_id), None
+            )
+            if existing is not None:
+                existing["login"] = login
+                return existing
+            new_id = uuid.uuid4()
+            self.users[new_id] = {
+                "id": new_id,
+                "github_id": github_id,
+                "login": login,
+                "name": args[2],
+                "avatar_url": args[3],
+                "created_at": "2026-07-29T00:00:00+00:00",
+            }
+            return self.users[new_id]
         if "FROM files WHERE repo_id = $1 AND path = $2" in sql:
             return self.files.get(str(args[1]))
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "JOIN user_repos ur" in sql and "WHERE ur.user_id = $1" in sql:
+            user_id = args[0]
+            return [
+                row
+                for repo_id, row in self.repos.items()
+                if (user_id, repo_id) in self.user_repos
+            ]
         if "FROM repos ORDER BY created_at" in sql:
             return list(self.repos.values())
         if "path = ANY" in sql:
@@ -129,6 +191,9 @@ class FakeConn:
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.executed.append((sql, args))
+        if "INSERT INTO user_repos" in sql:
+            self.user_repos.add((args[0], args[1]))
+            return "INSERT 0 1"
         if "UPDATE repos" in sql and "status = $2" in sql:
             row = self.repos.get(args[0])
             if row is not None:
@@ -247,6 +312,34 @@ def scripted_model() -> FakeChatModel:
     )
 
 
+def _wire(
+    conn: FakeConn,
+    arq: FakeArq,
+    model: FakeChatModel,
+    *,
+    as_user: uuid.UUID | None,
+) -> None:
+    """Point the app's dependencies at the fakes.
+
+    ``as_user`` overrides ``get_current_user`` so route tests do not each have
+    to mint a session. ``None`` leaves the real dependency in place, which is
+    how the unauthenticated cases reach a genuine 401 instead of a faked one.
+    """
+
+    async def _get_conn() -> AsyncIterator[FakeConn]:
+        yield conn
+
+    app.dependency_overrides[deps.get_conn] = _get_conn
+    app.dependency_overrides[deps.get_pool] = lambda: conn
+    app.dependency_overrides[deps.get_arq] = lambda: arq
+    app.dependency_overrides[deps.get_chat_model] = lambda: model
+    if as_user is not None:
+        app.dependency_overrides[deps.get_current_user] = lambda: conn.users[as_user]
+    app.state.pool = conn
+    app.state.arq = arq
+    app.state.embedder_ready = False
+
+
 @pytest.fixture
 async def client(
     conn: FakeConn, arq: FakeArq, scripted_model: FakeChatModel
@@ -261,18 +354,54 @@ async def client(
     ``app.state`` is populated too, because the middleware and the operational
     endpoints read it directly rather than through a dependency, and the
     lifespan that would normally fill it is bypassed here.
+
+    **Signed in as ``USER_ID``**, who owns every seeded repo. Since V1 every
+    ``/repos`` route requires a user, and making each of these tests perform a
+    sign-in would test the fixture, not the route.
     """
+    _wire(conn, arq, scripted_model, as_user=USER_ID)
+    try:
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as c:
+            yield c
+    finally:
+        app.dependency_overrides.clear()
+        app.state.pool = None
+        app.state.arq = None
 
-    async def _get_conn() -> AsyncIterator[FakeConn]:
-        yield conn
 
-    app.dependency_overrides[deps.get_conn] = _get_conn
-    app.dependency_overrides[deps.get_pool] = lambda: conn
-    app.dependency_overrides[deps.get_arq] = lambda: arq
-    app.dependency_overrides[deps.get_chat_model] = lambda: scripted_model
-    app.state.pool = conn
-    app.state.arq = arq
-    app.state.embedder_ready = False
+@pytest.fixture
+async def other_client(
+    conn: FakeConn, arq: FakeArq, scripted_model: FakeChatModel
+) -> AsyncIterator[httpx.AsyncClient]:
+    """A second, signed-in tenant who owns nothing (SPEC §13.5).
+
+    Shares the same ``conn`` fixture as ``client``, so both see one database and
+    a cross-tenant test is asking a real question about the same rows.
+    """
+    _wire(conn, arq, scripted_model, as_user=OTHER_USER_ID)
+    try:
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as c:
+            yield c
+    finally:
+        app.dependency_overrides.clear()
+        app.state.pool = None
+        app.state.arq = None
+
+
+@pytest.fixture
+async def anon_client(
+    conn: FakeConn, arq: FakeArq, scripted_model: FakeChatModel
+) -> AsyncIterator[httpx.AsyncClient]:
+    """No session at all — ``get_current_user`` is *not* overridden.
+
+    The only fixture that exercises the real dependency, so a 401 here means
+    the route is genuinely protected rather than that a fake said so.
+    """
+    _wire(conn, arq, scripted_model, as_user=None)
     try:
         async with httpx.AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

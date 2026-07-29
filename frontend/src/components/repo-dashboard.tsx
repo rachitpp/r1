@@ -25,6 +25,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useUser } from "@/hooks/use-user";
 import { ApiError, createRepo, listRepos, type RepoOut } from "@/lib/api";
 import {
   shortSha,
@@ -285,7 +286,19 @@ export function SubmitForm() {
 }
 
 export function RepoList() {
-  const repos = useQuery({ queryKey: ["repos"], queryFn: listRepos });
+  const { user, isLoading: userLoading } = useUser();
+  const repos = useQuery({
+    queryKey: ["repos"],
+    queryFn: listRepos,
+    // The library is per-account (§13.6). Asking for it while signed out is a
+    // guaranteed 401, which would render as "Could not load repositories" —
+    // an error where the truth is simply that nobody is signed in.
+    enabled: Boolean(user),
+  });
+
+  // Signed out: the hero already shows the sign-in card. A second one here
+  // would be the same prompt twice on one screen.
+  if (userLoading || !user) return null;
 
   if (repos.isPending) {
     return (

@@ -1,3 +1,4 @@
+import { RequireAuth } from "@/components/auth/require-auth";
 import { ChatView } from "@/components/chat/chat-view";
 
 export default async function ChatPage({
@@ -6,5 +7,12 @@ export default async function ChatPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  return <ChatView repoId={id} />;
+  return (
+    <RequireAuth
+      title="Sign in to ask questions"
+      description="Repositories are private to the account that indexed them."
+    >
+      <ChatView repoId={id} />
+    </RequireAuth>
+  );
 }

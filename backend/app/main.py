@@ -24,6 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from app.api.auth_routes import router as auth_router
 from app.api.errors import register_error_handlers
 from app.api.middleware import (
     REQUEST_ID_HEADER,
@@ -122,4 +123,5 @@ app.add_middleware(
 )
 
 register_error_handlers(app)
+app.include_router(auth_router)
 app.include_router(router)

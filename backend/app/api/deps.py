@@ -27,8 +27,11 @@ from fastapi import Depends, Request
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.agent.model import build_chat_model
+from app.auth import tokens
+from app.config import SESSION_COOKIE, get_settings
+from app.db import queries
 from app.db.pool import acquire
-from app.exceptions import QueueUnavailableError
+from app.exceptions import QueueUnavailableError, UnauthorizedError
 
 
 def get_pool(request: Request) -> asyncpg.Pool:
@@ -89,3 +92,50 @@ Conn = Annotated[asyncpg.Connection, Depends(get_conn)]
 Pool = Annotated[asyncpg.Pool, Depends(get_pool)]
 Arq = Annotated[ArqRedis, Depends(get_arq)]
 ChatModel = Annotated[BaseChatModel, Depends(get_chat_model)]
+
+
+# ---------------------------------------------------------------------------
+# Identity (SPEC §13)
+# ---------------------------------------------------------------------------
+
+
+def session_token(request: Request) -> str | None:
+    """The caller's session token, cookie first, then bearer header (§13.4).
+
+    Cookie first because that is what a browser sends and what HttpOnly
+    protects; the header exists for the CLIs and the tests, which have no
+    cookie jar. Neither is trusted here — this only locates the string.
+    """
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if cookie:
+        return cookie
+    header = request.headers.get("authorization", "")
+    scheme, _, value = header.partition(" ")
+    if scheme.lower() == "bearer" and value:
+        return value
+    return None
+
+
+async def get_current_user(request: Request, conn: Conn) -> asyncpg.Record:
+    """Resolve the signed-in user, or 401 (§13.5).
+
+    The user row is re-read on every request rather than trusted from the
+    token: a token is a claim about *who*, not a snapshot of the account, and a
+    deleted user must stop working immediately rather than at expiry.
+    """
+    settings = get_settings()
+    token = session_token(request)
+    if not token or not settings.SESSION_SECRET:
+        raise UnauthorizedError("sign-in required")
+    user_id = tokens.verify(token, settings.SESSION_SECRET)
+    if user_id is None:
+        raise UnauthorizedError("session is invalid or has expired")
+    row = await queries.get_user(conn, user_id)
+    if row is None:
+        # Signed correctly, but the account is gone. Same message as an invalid
+        # token: the difference is the server's business, not a probe's.
+        raise UnauthorizedError("session is invalid or has expired")
+    return row
+
+
+CurrentUser = Annotated[asyncpg.Record, Depends(get_current_user)]

@@ -1914,3 +1914,72 @@ with a `Windows fatal exception: access violation` inside torch's weight
 materialisation. Nothing to do with this change — the new test avoids the
 reranker and passes in 78 s. Rerank is off by default (SPEC §5.3), so this only
 bites the integration suite.
+
+## 2026-07-29 — V1 built: opaque session tokens, one enforcement point, and a cookie that will not survive a two-domain deploy
+
+SPEC §13 written first, per V2.md's own prerequisite rule, then implemented.
+Three choices are worth more than the diff.
+
+**The session token is not a JWT.** A JWT's value is that a third party can
+verify it without asking the issuer. Here the only verifier *is* the issuer and
+the only claim is a user id, so what is left of the format is a header nobody
+reads and an `alg` field that has been its own vulnerability class. Instead:
+`v1.<user_id>.<expiry>.<hmac-sha256>`, base64url, compared with
+`compare_digest`, signature checked *before* the expiry is read so an unsigned
+expiry is never trusted. The version prefix is inside the signed material, so a
+future format change cannot be replayed against the old parser.
+
+**Authorization is enforced in exactly one function.** `_require_repo` became
+`_require_owned_repo`, and all five `/repos` routes call it. The six agent tools
+(§7.1) already scope every query by `repo_id`, so a route that resolved an
+*owned* repo makes everything downstream safe by construction. Rejected:
+defence-in-depth checks inside each tool — six more places to get wrong, six
+more tests, and a user identity forced into a layer that has no other reason to
+know users exist. The blast radius of the single check being wrong is bounded by
+its being one function with a test module aimed at it.
+
+An unowned repo answers **404, not 403**, and ownership is checked **before**
+readiness — otherwise a stranger's indexing repo would answer 409 "repo not
+ready" and confirm both that it exists and what it is doing.
+
+**Rate limits re-key to the user, and the token is verified before it is
+believed.** Parsing the subject without checking the signature would let anyone
+mint a fresh quota by editing a cookie. A forged or junk token falls back to the
+IP rather than raising: this middleware counts, it does not authenticate, and an
+exception on attacker-controlled cookie input is a 500 anyone can trigger from a
+browser console.
+
+**Zero new dependencies.** `httpx` moved dev → main; the OAuth dance is ~130
+hand-written lines, following the 2026-07-28 precedent that set `slowapi` and
+`prometheus-client` aside for the same reason. The GitHub access token is used
+once and never stored — `read:user` grants nothing else, and keeping it would
+mean holding a live credential per user in exchange for no feature.
+
+**The deployment trap, recorded because it fails silently.** `SameSite` is
+evaluated against the registrable domain, not the origin — ports are ignored. So
+`localhost:3000 → localhost:8000` is *same-site* and `Lax` cookies flow in
+development. `app.vercel.app → api.fly.dev` is **cross-site**: the browser sends
+no cookie, every request arrives anonymous and 401s, and neither log says why.
+Three ways out are in SPEC §13.4 in preference order; the frontend already sends
+`credentials: "include"` everywhere, including the SSE stream, which is
+necessary for all of them. This is also the payoff for the 2026-07-27 decision
+to parse SSE over `fetch` rather than use `EventSource`, which can neither send
+credentials cross-origin nor set a header.
+
+**Migration `006_users.sql` is additive** — no row rewritten, deliberately,
+since 2026-07-29 is a standing reminder of what rewriting rows does to tied
+orderings. Every pre-auth repo is adopted by a placeholder user (`github_id 0`,
+a value no real account can hold) which the first sign-in matching
+`BOOTSTRAP_GITHUB_ID` takes over, library included. Verified on the live
+database: 12 of 12 repos adopted, 0 orphans, corpus still 825 impl / 697 test.
+
+**Frontend gating is client-side, not Next middleware.** Middleware can only
+read cookies on the frontend's own origin; on localhost that happens to be the
+same site, so it would appear to work and then fail the first time the API is
+deployed separately. Asking `/auth/me` behaves identically in both. The backend
+is the real enforcement either way — this only decides what renders.
+
+Verified: 286 backend tests (24 tenancy, 14 token), `ruff` and `mypy` clean
+across 46 files; frontend `pnpm build`, `pnpm lint`, `tsc --noEmit` and 30
+vitest tests clean. **One V1 done-when box stays open**: the live browser
+sign-in, which needs a registered OAuth app's credentials.

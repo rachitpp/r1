@@ -26,6 +26,7 @@ import logging
 import re
 import time
 import uuid
+from http.cookies import CookieError, SimpleCookie
 from typing import Any
 
 from starlette.datastructures import Headers, MutableHeaders
@@ -34,7 +35,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from app import metrics
 from app.api.errors import error_response
 from app.api.ratelimit import RedisRateLimiter, Rule, match_rule, rules_for
-from app.config import MAX_REQUEST_BYTES, Settings
+from app.auth import tokens
+from app.config import (
+    MAX_REQUEST_BYTES,
+    SESSION_COOKIE,
+    Settings,
+    get_settings,
+)
 from app.exceptions import AppError, PayloadTooLargeError, TooManyRequestsError
 from app.logging_setup import set_request_id
 
@@ -64,19 +71,67 @@ def route_template(scope: Scope) -> str:
 
 
 def client_identity(scope: Scope, *, trust_proxy: bool) -> str:
-    """Who to rate-limit, as an IP string.
+    """Who to rate-limit: the signed-in user if there is one, else the IP.
+
+    **User first (SPEC §13.6).** An IP is a poor identity for a quota — a
+    corporate NAT or a mobile carrier puts hundreds of unrelated people in one
+    bucket, so one heavy user throttles a building. A verified user id is the
+    thing the limit is actually about. `/auth/*` has no user yet and stays
+    per-IP, which is also what keeps sign-in itself from being a free-for-all.
+
+    The token is verified, not merely parsed, before it is trusted as an
+    identity — an unverified subject would let anyone mint themselves a fresh
+    quota by editing a cookie. Falling back to the IP on a bad token is
+    deliberate: this middleware does not authenticate, it only counts, and
+    rejecting the request is `get_current_user`'s job a few frames later.
 
     ``X-Forwarded-For`` is only believed when ``TRUST_PROXY_HEADERS`` says a
     proxy we control is the only way in. Otherwise it is a client-supplied
     string, and honouring it would let anyone reset their own limit by changing
     a header — a rate limiter that trusts the rate-limited is not one.
     """
+    user_id = _identity_from_session(scope)
+    if user_id is not None:
+        return f"user:{user_id}"
     if trust_proxy:
         forwarded = Headers(scope=scope).get("x-forwarded-for")
         if forwarded:
             return forwarded.split(",")[0].strip()
     client = scope.get("client")
     return str(client[0]) if client else "unknown"
+
+
+def _identity_from_session(scope: Scope) -> str | None:
+    """The verified user id behind this request's session token, if any.
+
+    Reads the raw ASGI scope rather than a `Request` because this runs as pure
+    middleware, below FastAPI's dependency machinery.
+    """
+    secret = get_settings().SESSION_SECRET
+    if not secret:
+        return None
+    headers = Headers(scope=scope)
+
+    token: str | None = None
+    cookie_header = headers.get("cookie")
+    if cookie_header:
+        jar = SimpleCookie()
+        try:
+            jar.load(cookie_header)
+        except CookieError:
+            return None
+        morsel = jar.get(SESSION_COOKIE)
+        if morsel:
+            token = morsel.value
+    if token is None:
+        scheme, _, value = headers.get("authorization", "").partition(" ")
+        if scheme.lower() == "bearer" and value:
+            token = value
+    if token is None:
+        return None
+
+    user_id = tokens.verify(token, secret)
+    return str(user_id) if user_id else None
 
 
 class RequestContextMiddleware:

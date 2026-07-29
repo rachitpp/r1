@@ -22,7 +22,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app import metrics
 from app.api.chat_stream import chat_event_stream
-from app.api.deps import Arq, ChatModel, Conn, Pool
+from app.api.deps import Arq, ChatModel, Conn, CurrentUser, Pool
 from app.api.ratelimit import Slots
 from app.api.schemas import (
     ChatRequest,
@@ -154,8 +154,22 @@ async def metrics_endpoint(request: Request) -> Response:
 # ---------------------------------------------------------------------------
 
 
-async def _require_repo(conn: asyncpg.Connection, repo_id: UUID) -> asyncpg.Record:
-    row = await queries.get_repo(conn, repo_id)
+async def _require_owned_repo(
+    conn: asyncpg.Connection, user_id: UUID, repo_id: UUID
+) -> asyncpg.Record:
+    """The caller's repo, or 404 (SPEC §13.5).
+
+    **This is the only place tenancy is enforced.** The six agent tools already
+    scope every query by `repo_id`, so a route that resolved an *owned* repo
+    makes everything downstream safe by construction; adding checks there too
+    would be six more places to get wrong and would push a user identity into a
+    layer with no other reason to know users exist.
+
+    A repo that exists but belongs to someone else raises `RepoNotFoundError`,
+    not an authorization error: 403 would confirm the id names a real repo,
+    which is the fact being protected.
+    """
+    row = await queries.get_owned_repo(conn, user_id, repo_id)
     if row is None:
         raise RepoNotFoundError(repo_id)
     return row
@@ -163,7 +177,7 @@ async def _require_repo(conn: asyncpg.Connection, repo_id: UUID) -> asyncpg.Reco
 
 @router.post("/repos", response_model=RepoOut)
 async def create_repo(
-    body: RepoCreate, response: Response, conn: Conn, arq: Arq
+    body: RepoCreate, response: Response, conn: Conn, arq: Arq, user: CurrentUser
 ) -> RepoOut:
     """Register a repo and queue its ingest (§8: 201 created / 200 already known).
 
@@ -174,10 +188,16 @@ async def create_repo(
     Refuses past ``MAX_ACTIVE_INGESTS``. The queue would otherwise accept work
     indefinitely: ARQ is happy to hold ten thousand jobs, and the machine that
     has to run them is the same one serving chat.
+
+    A repo is a singleton keyed by URL (§3), so a *second* user submitting a
+    known URL joins the existing row rather than duplicating the corpus — they
+    get the 200 path and a library link. The link is written before anything
+    else can fail, so a submission never leaves a repo the submitter cannot see.
     """
     url, name = normalize_github_url(body.url)
     repo_id, created = await queries.create_repo(conn, url=url, name=name)
-    row = await _require_repo(conn, repo_id)
+    await queries.link_user_repo(conn, user["id"], repo_id)
+    row = await _require_owned_repo(conn, user["id"], repo_id)
 
     if created or row["status"] not in queries.IN_FLIGHT_STATUSES:
         limit = get_settings().MAX_ACTIVE_INGESTS
@@ -192,7 +212,7 @@ async def create_repo(
             )
         if not created:
             await queries.start_ingest(conn, repo_id, status="queued")
-            row = await _require_repo(conn, repo_id)
+            row = await _require_owned_repo(conn, user["id"], repo_id)
         await arq.enqueue_job("ingest_repo", str(repo_id))
         logger.info("enqueued ingest for %s (%s)", name, repo_id)
 
@@ -201,14 +221,15 @@ async def create_repo(
 
 
 @router.get("/repos", response_model=RepoList)
-async def list_repos(conn: Conn) -> RepoList:
-    rows = await queries.list_repos(conn)
+async def list_repos(conn: Conn, user: CurrentUser) -> RepoList:
+    """The caller's library only (§13.6) — never every repo in the database."""
+    rows = await queries.list_repos(conn, user["id"])
     return RepoList(repos=[RepoOut.from_row(r) for r in rows])
 
 
 @router.get("/repos/{repo_id}", response_model=RepoOut)
-async def get_repo(repo_id: UUID, conn: Conn) -> RepoOut:
-    return RepoOut.from_row(await _require_repo(conn, repo_id))
+async def get_repo(repo_id: UUID, conn: Conn, user: CurrentUser) -> RepoOut:
+    return RepoOut.from_row(await _require_owned_repo(conn, user["id"], repo_id))
 
 
 def _file_etag(
@@ -276,6 +297,7 @@ async def get_repo_file(
     request: Request,
     response: Response,
     conn: Conn,
+    user: CurrentUser,
     start_line: int | None = Query(None, ge=1),
     end_line: int | None = Query(None, ge=1),
 ) -> FileOut | Response:
@@ -290,7 +312,7 @@ async def get_repo_file(
     and over. ``start_line``/``end_line`` bound the response for the common case
     where the viewer only renders a window.
     """
-    row = await _require_repo(conn, repo_id)
+    row = await _require_owned_repo(conn, user["id"], repo_id)
 
     etag = _file_etag(row["head_sha"], path, start_line, end_line)
     if etag and _matches_etag(request.headers.get("if-none-match"), etag):
@@ -324,7 +346,11 @@ async def get_repo_file(
 
 @router.post("/repos/{repo_id}/chat")
 async def chat(
-    repo_id: UUID, body: ChatRequest, pool: Pool, model: ChatModel
+    repo_id: UUID,
+    body: ChatRequest,
+    pool: Pool,
+    model: ChatModel,
+    user: CurrentUser,
 ) -> EventSourceResponse:
     """Stream an agent answer as §9 SSE events (SSE only — hard rule 7).
 
@@ -338,7 +364,7 @@ async def chat(
     is returned, the only thing left to say is an ``error`` event.
     """
     async with acquire(pool) as conn:
-        row = await _require_repo(conn, repo_id)
+        row = await _require_owned_repo(conn, user["id"], repo_id)
     if row["status"] != "ready":
         raise RepoNotReadyError(str(row["status"]))
 

@@ -86,6 +86,11 @@ export async function* streamSse(
 ): AsyncGenerator<SseEvent> {
   const resp = await fetch(url, {
     method: "POST",
+    // Same reason as `lib/api.ts`: the session cookie is only sent when a
+    // cross-origin request asks for it. This is also the payoff for parsing
+    // SSE over `fetch` instead of using `EventSource`, which cannot send
+    // credentials to another origin or set a header (DECISIONS 2026-07-27).
+    credentials: "include",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
     signal,
