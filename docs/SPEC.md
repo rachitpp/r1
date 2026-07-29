@@ -888,3 +888,151 @@ sees on the consent screen — a v3 decision, not a quiet default.
 New env (`app/config.py`, §Environment): `GITHUB_CLIENT_ID`,
 `GITHUB_CLIENT_SECRET`, `SESSION_SECRET`, optional `BOOTSTRAP_GITHUB_ID`.
 Callback URL registered with GitHub is `<API origin>/auth/github/callback`.
+
+---
+
+## §14 Corpus snapshots (v2 phase V2)
+
+Splits *what was ingested* from *who can see it*. A repo at a commit becomes a
+shared, immutable artifact; users hold references to it rather than copies.
+
+### 14.1 The bug this closes
+
+`pipeline.py` calls `clear_repo_graph()` and `clear_repo_content()` at the
+**start** of every ingest, and `repos.url` is globally UNIQUE. So one user
+re-ingesting `encode/httpx` deletes the corpus another user is mid-chat on —
+their `search_code` returns rows from a half-deleted table, silently. V1 made
+this reachable by any signed-in user rather than only the operator.
+
+The fix is not a lock. It is to stop mutating a corpus anyone might be reading:
+**a ready snapshot is never written to again.** A new commit is a new snapshot.
+
+### 14.2 Schema
+
+```sql
+-- 007
+CREATE TABLE repo_sources (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  url        TEXT NOT NULL UNIQUE,   -- canonical; no `#naive` fragment
+  name       TEXT NOT NULL,          -- "owner/repo"
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE repo_snapshots (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_id       UUID NOT NULL REFERENCES repo_sources(id) ON DELETE CASCADE,
+  commit_sha      TEXT,               -- NULL until the clone reports it
+  strategy        TEXT NOT NULL DEFAULT 'ast',   -- ast | naive (§2.7)
+  default_branch  TEXT,
+  status          TEXT NOT NULL DEFAULT 'queued',
+  error           TEXT,
+  files_total     INT NOT NULL DEFAULT 0,
+  files_parsed    INT NOT NULL DEFAULT 0,
+  chunks_total    INT NOT NULL DEFAULT 0,
+  chunks_embedded INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (source_id, commit_sha, strategy)
+);
+```
+
+**`strategy` is in the unique key, and this is not optional.** The plan in V2.md
+said `UNIQUE (source_id, commit_sha)`; the live data disproves it. The AST and
+naive corpora of httpx sit at the *same* commit `b5addb64` and are currently
+kept apart only by the `#naive` URL fragment. Once that hack retires (§14.6)
+they are one source at one commit with two corpora, and a two-column key would
+reject the second.
+
+`commit_sha` is NULL until the clone reports it. Postgres treats NULLs as
+distinct in a unique index, so several queued snapshots for one source can
+coexist — which is correct: they are separate attempts, and the real in-flight
+dedup constraint is V3's job (§15).
+
+`files`, `chunks`, `symbols`, `edges` gain `snapshot_id`; `user_repos.repo_id`
+becomes `user_repos.snapshot_id`.
+
+### 14.3 Immutability
+
+| Status | May be written |
+|---|---|
+| `queued` → `embedding` | yes, by the one worker that owns it |
+| `ready` | **never** |
+| `failed` | never; a retry creates a new snapshot |
+
+`clear_repo_graph` / `clear_repo_content` leave the normal path entirely. They
+survive only to clean up a *failed* attempt's partial rows, which no reader can
+reach because a non-`ready` snapshot is not servable.
+
+### 14.4 Deduplication
+
+The commit SHA is not known until after the clone, so dedup happens in two
+places:
+
+1. **At submit (`POST /repos`).** Get-or-create the source; link the caller. If
+   a `ready` snapshot already exists for `(source, strategy='ast')`, return it —
+   200, no ingest, no clone. This is the common case for a popular repo.
+2. **In the worker, after the clone.** With the SHA in hand, look for another
+   `ready` snapshot at `(source_id, commit_sha, strategy)`. If one exists, this
+   attempt is redundant: re-point its `user_repos` rows at the existing
+   snapshot, delete the redundant row, and stop. Otherwise ingest.
+
+Checking before the clone would dedup on URL, which is wrong — two users can
+submit the same URL at different commits. Checking after ingesting would dedup
+nothing.
+
+### 14.5 `POST /repos` semantics change
+
+| Newest snapshot for the source | v1 behaviour | §14 behaviour |
+|---|---|---|
+| none | create + enqueue, 201 | same |
+| `failed` | re-enqueue **in place** | **new snapshot** + enqueue, 201 |
+| `ready` | re-enqueue in place (destructive) | **return it**, 200, no work |
+| in flight | return it, 200 | same |
+
+The `ready` row is the important change: re-submitting a URL is no longer a
+destructive re-ingest. The frontend's Retry button still works, because Retry
+acts on a `failed` snapshot. An explicit "re-index at the latest commit" is a
+new snapshot and deferred until something asks for it.
+
+### 14.6 The `#naive` hack retires
+
+`NAIVE_URL_FRAGMENT` mangles a URL to `<url>#naive` purely to dodge
+`repos.url`'s UNIQUE constraint, then strips it again before cloning. Under
+§14.2 a baseline corpus is a snapshot with `strategy='naive'`, and both the
+fragment and the `@naive` name suffix are deleted rather than relocated.
+
+### 14.7 §8 stays the same shape
+
+A "repo" in the HTTP API is a **snapshot**. `RepoOut.id` is a `snapshot_id`,
+`url` and `name` come from the joined source. No field is added, removed, or
+renamed, so the frontend needs no change — the point of the phase is a schema
+that can support many users, not a new API to learn.
+
+### 14.8 Migration is data-preserving
+
+`007` rewrites rows; it **re-embeds nothing**. Every vector keeps its value,
+which is what makes §14.9's check meaningful.
+
+- One `repo_sources` row per distinct URL, with `#naive` stripped, so the two
+  httpx rows collapse onto one source.
+- One `repo_snapshots` row per existing `repos` row, **keeping the same UUID**.
+  The `user_repos` FK rewrite is then a rename, not a remap, and every repo id
+  already handed to a browser still resolves.
+- `strategy` is derived from the `#naive` fragment; `commit_sha` from
+  `repos.head_sha`.
+- `repo_id` columns are **kept for one release** on every table. Dropping them
+  in the same migration that adds `snapshot_id` would make the rollback a
+  restore-from-backup rather than a revert.
+
+### 14.9 Verification
+
+**The phase lives or dies on one check: `scripts/eval.py` must reproduce the
+recorded baseline question for question.** Retrieval is a pure function of the
+corpus, so a moved number means data was corrupted — there is no benign
+explanation. The current baseline (2026-07-29, post-tiebreaker, three identical
+runs) is vector `0.75 / 0.85 / 0.90` MRR `0.722`, fts `0.55 / 0.70 / 0.80` MRR
+`0.463`, hybrid `0.80 / 0.90 / 0.95` MRR `0.753`.
+
+Supporting checks: httpx still reports `825 | 697`; a spot-checked embedding is
+byte-identical to its pre-migration value; and a chat streaming against one
+snapshot is provably unaffected by another ingest of the same source.

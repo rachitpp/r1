@@ -1983,3 +1983,55 @@ Verified: 286 backend tests (24 tenancy, 14 token), `ruff` and `mypy` clean
 across 46 files; frontend `pnpm build`, `pnpm lint`, `tsc --noEmit` and 30
 vitest tests clean. **One V1 done-when box stays open**: the live browser
 sign-in, which needs a registered OAuth app's credentials.
+
+## 2026-07-29 — V2 schema landed: `strategy` belongs in the snapshot key, and a ready snapshot is frozen
+
+SPEC §14 written first, then `007_snapshots.sql`. Schema only — no code reads
+`snapshot_id` yet, and `repo_id` is still populated beside it, so the app runs
+unchanged and the migration is revertible without a restore (§14.8).
+
+**The plan's unique key was wrong, and the data said so.** V2.md specified
+`UNIQUE (source_id, commit_sha)`. httpx's AST and naive corpora sit at the
+**same commit** `b5addb64` and are kept apart today only by the `#naive` URL
+fragment this phase exists to retire — so a two-column key rejects the second
+corpus outright. It is `UNIQUE (source_id, commit_sha, strategy)`. Worth
+recording as a plan error rather than quietly fixing it: the fragment hack was
+load-bearing in a way the plan had assumed it was not.
+
+`commit_sha` stays nullable. It is unknown until the clone reports it, and
+Postgres treats NULLs as distinct in a unique index, so several queued attempts
+on one source coexist. That is correct — they are separate attempts — and real
+in-flight dedup is V3's lease work, not a constraint here.
+
+**Verification is stronger than the criterion asked for.** The done-when wanted
+a spot-checked embedding; instead, sha256 over `id:embedding::text` for *all
+1522* httpx chunks, ordered by id, is byte-identical across the migration —
+`17fb8fc8ad9f6213ccec7b507ec5fa7c734403b104457a9a0f58bdad6b4a7551` — and 0 rows
+across `files`, `chunks`, `symbols`, `edges` and `user_repos` have `snapshot_id`
+differing from `repo_id`. 12 repos became 11 sources and 12 snapshots, the two
+httpx rows collapsing onto one source exactly as §14.2 intends.
+
+Snapshot ids **are** the old repo ids, deliberately: the `user_repos` rewrite is
+then a rename rather than a remap, and every repo id already handed to a browser
+still resolves.
+
+All six access paths that existed on `repo_id` are mirrored onto `snapshot_id`.
+Adding the column without them would make the first query through it a
+sequential scan of the whole corpus — the kind of regression that shows up as
+"the app got slow after the migration" rather than as a failure.
+
+**Flagged before it is built, not after: §14.5 changes observable behaviour.**
+Re-submitting a URL whose snapshot is `ready` will return that snapshot instead
+of re-ingesting it. That is the destructive path this phase removes, so it is
+the intended fix — but it is a real change to what `POST /repos` does, and the
+frontend's Retry button survives only because Retry acts on a **failed**
+snapshot, which still creates a new one.
+
+Nothing else in the code layer has moved yet: `queries.py` still takes
+`repo_id`, `pipeline.py` still calls `clear_repo_*` at ingest start, the worker
+has no post-clone SHA dedup, and `NAIVE_URL_FRAGMENT` is still there. The
+eval-equality check that the phase lives or dies on only becomes meaningful once
+retrieval actually reads `snapshot_id`.
+
+Verified: 289 tests green, unchanged, because the old column still answers.
+
