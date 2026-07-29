@@ -76,3 +76,49 @@ def test_oversize_first_part_keeps_def_line() -> None:
     # No statement is split mid-line: every body line is a complete assignment.
     for line in parts[1].code.splitlines():
         assert line.strip().startswith("v") or line.strip() == "return v0"
+
+
+def _oversized_class() -> str:
+    """A class with enough methods that its skeleton exceeds the token budget."""
+    methods = "\n".join(
+        f"    def method_{i}(self, alpha, beta, gamma, delta, epsilon) -> None:\n"
+        f"        self.value_{i} = transform(alpha, beta, gamma, delta, epsilon)\n"
+        for i in range(40)
+    )
+    return f"import mod\n\nclass Big:\n{methods}"
+
+
+def test_split_class_parts_report_the_whole_class_span() -> None:
+    """A class chunk is a skeleton, so an offset into it is not a file offset.
+
+    Splitting one used to number the parts by their position in the *rendering*
+    — on `httpx._client.AsyncClient`, one line per elided method, for a class
+    that really ends 600 lines later. Every part reports the whole class span
+    instead: imprecise, never wrong (DECISIONS 2026-07-29).
+    """
+    src = _oversized_class()
+    parts = [c for c in _chunks("big.py", src) if c.kind == "class"]
+    assert len(parts) > 1, "fixture did not produce a split class skeleton"
+
+    class_start = 3  # `class Big:` — line 1 is the import, line 2 blank
+    class_end = len(src.splitlines())
+    for part in parts:
+        assert (part.start_line, part.end_line) == (class_start, class_end)
+
+    # The declared span really does contain the class, which is the property the
+    # old arithmetic broke: a citation must land on the code it names.
+    lines = src.splitlines()
+    assert lines[class_start - 1].startswith("class Big:")
+    assert "method_39" in "\n".join(lines[class_start - 1 : class_end])
+
+
+def test_split_function_parts_keep_true_source_offsets() -> None:
+    """The fix must not touch kinds whose code *is* a contiguous source slice."""
+    src = _oversized_function()
+    lines = src.splitlines()
+    parts = [c for c in _chunks("big.py", src) if c.kind == "function"]
+    assert len(parts) > 1
+    for part in parts:
+        first = part.code.splitlines()[0].strip()
+        window = [ln.strip() for ln in lines[part.start_line - 1 : part.end_line]]
+        assert first in window

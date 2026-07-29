@@ -1484,3 +1484,367 @@ than as phase work; Phase 6's remaining items are unchanged.
 
 Verified: `ruff check` and `mypy app` clean; 249 backend tests green (including
 the live-Postgres/Redis integration suite); frontend `tsc --noEmit` clean.
+
+## 2026-07-29 — v2 opens as a phase sequence, not a feature flag
+
+A review of the running system asked what it would take to serve thousands of
+users. The answer is not "add a login screen". The single-user assumption is
+**load-bearing in four places**, and each one fails differently:
+
+- **Schema.** `repos.url` is globally UNIQUE (`001_init.sql:5`), so a repo is a
+  singleton keyed by URL. There is no user table and no ownership edge.
+- **Pipeline.** `pipeline.py:238-239` deletes and replaces a repo's content at
+  the start of every ingest. Correct for one user re-ingesting their own repo;
+  destructive the moment two users share a URL.
+- **Worker.** `max_jobs = 1` (`worker.py:142`) with a *global*
+  `count_active_ingests`, so one user's queue blocks everyone's.
+- **API.** `_require_repo` (`routes.py:157`) checks that a repo **exists**,
+  never who owns it, and `GET /repos` returns every row to every caller. Any
+  caller holding a repo UUID can list it, chat over it, and read its files.
+  That last one is a live IDOR, recorded here plainly rather than softened.
+
+The plan is `docs/V2.md`: phases **V1–V5**, numbered to avoid collision with
+v1's Phases 0–6, each with done-when criteria in the ROADMAP format. Ordering
+principle: **isolate before you scale.** V1 and V2 change what the system is;
+V3–V5 change how much of it there can be.
+
+**Phase 6 closes first.** Two reasons, both load-bearing. V2's migration is
+verified by running `eval.py` before and after and demanding identical numbers,
+which needs a *published, frozen* baseline to compare against — closing Phase 6
+is what produces one. And v1 is one human task (`demo.gif`) from being a
+finished system; a half-migrated multi-tenant system demos worse than a
+finished single-user one.
+
+These six entries are written **before** any of the code exists, which is the
+same discipline EVAL.md was written under in Phase 1: commit the plan while it
+can still be falsified by what you find, rather than narrating it afterwards.
+
+## 2026-07-29 — Identity is GitHub OAuth; no password authentication
+
+v2 needs identity. It does not need a signup form. Sign-in is **GitHub OAuth,
+single provider**, and the `users` table stores no credential material.
+
+Why not email/password:
+
+1. **Nothing to leak.** No hashes, no reset tokens, no delivery pipeline, no
+   enumeration or timing surface. The parts of auth that are easy to get subtly
+   wrong are absent rather than defended.
+2. **It is the private-repo unlock.** ROADMAP's v2 backlog already lists
+   "Private repos (GitHub tokens)". The OAuth token *is* the clone credential.
+   Password auth contributes nothing toward it; this contributes all of it.
+3. **The product is a GitHub tool.** "Sign in with GitHub" is the obvious
+   affordance for something whose only input is a GitHub URL.
+4. **Quota identity comes free** — per-IP rate limiting (2026-07-28) becomes
+   per-user, which is what it should always have been.
+
+Rejected: email/password (all of the above, and it is the least differentiated
+code in the project); Clerk/Auth0 (a vendor and a bill for one provider's worth
+of work); multi-provider from the start (each provider is scope, and one is
+enough to prove the model).
+
+**Dependency note — rule 11.** This needs `authlib` (or equivalent) on the
+backend and Auth.js on the frontend. Both require explicit sign-off before
+being added to `pyproject.toml` / `package.json`; this entry records the design
+choice, not permission to install.
+
+One thing that does **not** need to change: the chat stream can carry an
+`Authorization` header because `lib/sse.ts` is a hand-rolled parser over
+`fetch`, not `EventSource` (2026-07-24, 2026-07-27). A native `EventSource`
+cannot set headers, and this is the step where that would have forced a
+transport rewrite.
+
+## 2026-07-29 — Corpus identity splits from the user's library: immutable snapshots
+
+Supersedes the implicit model in `001_init.sql`, where a repo is one globally
+unique row keyed by URL and a user is nobody.
+
+```
+repo_sources   (id, url UNIQUE, name)
+repo_snapshots (id, source_id, commit_sha, strategy, status, …)
+                UNIQUE (source_id, commit_sha)   -- immutable once ready
+user_repos     (user_id, snapshot_id, added_at)  -- the per-user library
+files / chunks / symbols / edges  →  snapshot_id
+```
+
+The URL-uniqueness that makes the current schema dangerous is the same property
+that makes this cheap: a repo already *is* a shared object, it just has no
+membership model and no immutability. Four things fall out of the split at once:
+
+- **The delete race disappears.** Snapshots are frozen once ready; a new commit
+  is a new snapshot. `clear_repo_graph` / `clear_repo_content` leave the normal
+  path entirely and survive only as failed-attempt cleanup.
+- **Ingest dedups.** Popular repos cluster hard. One ingest per
+  `(source, commit_sha)` regardless of how many users ask for it.
+- **The answer cache becomes correct**, because its key can no longer change
+  underneath it. That is what makes V5 cheap.
+- **Authorization is one indexed lookup**, which is the next entry.
+
+**Ordering detail that decides whether dedup works.** The SHA is not known until
+after the clone. So: shallow-clone → read HEAD → *then* look for a ready
+snapshot at that SHA → short-circuit and link the user if one exists. Checking
+before cloning would dedup on URL, which is wrong (two users, two commits), and
+checking after ingesting would dedup nothing.
+
+**Migration is data-preserving, and this is not optional.** It is SQL row
+rewriting; **no chunk is re-embedded**. Two consequences worth writing down:
+give each backfilled `repo_snapshots.id` the same UUID as its `repos.id`, so
+the membership FK rewrite is a rename rather than a remap; and keep the
+`repo_id` columns for one release so the whole thing is reversible.
+
+**Verification is `eval.py`, before and after, demanding identical numbers.**
+Retrieval is a pure function of the corpus. If hit@k moves, data was corrupted —
+there is no benign explanation. This is the strongest regression test the
+project owns and it already exists.
+
+**One workaround retires.** `NAIVE_URL_FRAGMENT` (`pipeline.py:73-78`) mangles
+a URL with `#naive` purely to dodge `repos.url` being UNIQUE, and strips it
+again before cloning. Under snapshots it becomes `strategy='naive'`. A refactor
+that *deletes* a workaround rather than relocating it is evidence the new model
+fits; noted because the opposite outcome would have been evidence against.
+
+Rejected: per-user copies of the corpus (multiplies 15M chunks by the user
+count for zero benefit — the source is public); soft-delete on the existing
+tables (keeps the race, adds a filter to every query); a `public`/`private`
+flag on `repos` (does not address the race, and encodes tenancy as a boolean).
+
+## 2026-07-29 — Authorization at the route boundary, never in the agent tools
+
+All six tools (§7.1) take `repo_id` and scope every query by it. So a route that
+has already resolved an **owned** snapshot makes everything downstream safe by
+construction. Ownership is therefore checked in exactly one place —
+`_require_owned_repo`, replacing `_require_repo` — and nowhere else.
+
+Rejected: defence-in-depth checks inside each tool. It sounds strictly safer and
+is not: it is six more places to get wrong, six more tests, and it would force a
+user identity into the tool layer, which currently has no idea users exist. The
+cost of the single check being wrong is bounded by its being *one function with
+one test module pointed at it*.
+
+**404, not 403, for someone else's repo.** A 403 confirms the UUID names a real
+repo, which is precisely the fact being protected. The existing
+`RepoNotFoundError` already maps to 404, so this costs nothing.
+
+## 2026-07-29 — An ingest fleet retires the startup zombie sweep
+
+`worker.py:117-119` justifies sweeping every in-flight row at startup: *"Startup
+is the moment we know for certain no such job is running."* That is true for one
+worker and **false for two** — worker 2 booting will sweep worker 1's live job
+out from under it, and the symptom (a repo wedged mid-ingest) looks exactly like
+the bug the sweep was written to fix.
+
+So the fleet needs leases before it needs anything else: `claimed_by` /
+`claimed_at` on the snapshot row, refreshed by a heartbeat, with the sweep
+reaping **expired leases only**. This is recorded as a bug the change
+*introduces*, not one that exists today — today's sweep is correct, and its
+correctness is exactly what `max_jobs = 1` buys.
+
+Two smaller choices in the same phase. Job dedup goes through a **DB unique
+constraint** on in-flight snapshots per `(source_id, commit_sha)` rather than a
+Redis lock: Postgres is already the source of truth for job state, and a lock in
+the other datastore can drift from it. And the global `count_active_ingests`
+becomes a per-user quota — as a global counter it lets one user's three queued
+repos refuse everyone else's first.
+
+`max_jobs = 1` per worker **stays**. Ingest is CPU-bound (tree-sitter, Jedi,
+embedding); the fix for throughput is more processes, not more jobs per process.
+
+## 2026-07-29 — Vector scaling stays in Postgres (reaffirms 2026-07-24)
+
+The obvious pressure at 15M chunks is to add a dedicated vector store. Rejecting
+that again, for the original reason plus a new one: hard rule 8, and the fact
+that the actual problem is **index layout, not the engine**.
+
+`chunks_hnsw` (`002_files_chunks.sql:30`) indexes `embedding` with no `repo_id`
+in it, so the repo filter is applied *post-scan*. `hybrid.py:246-249` already
+documents this and works around it with `SET LOCAL hnsw.ef_search = 100`. At
+1,522 chunks it is invisible; across thousands of repos HNSW walks a global
+graph and discards nearly everything it finds — recall collapses, or ef_search
+rises and latency does. Neither is fixed by moving the same layout to Qdrant.
+
+Two in-Postgres answers, cheapest first: `hnsw.iterative_scan = relaxed_order`
+(the instance runs **pgvector 0.8.1**, where it exists and is built for this
+case), then hash-partitioning `chunks` on `snapshot_id` so pruning lands a
+search on one much smaller index.
+
+*Verification caveat, recorded because it will confuse the next person:* `SHOW
+hnsw.iterative_scan` errors on a freshly opened connection. That is expected —
+pgvector registers its GUCs when the shared library loads, which happens on
+first use of a vector operation in the session, not at connect. The extension
+version (`0.8.1`, from `pg_extension`) is the reliable check.
+
+**Sizing, measured small and extrapolated honestly.** The live instance holds
+2,737 chunks in a 21 MB `chunks` table with a 5.5 MB HNSW index — ~7.7 KB and
+~2 KB per chunk. At 15M chunks that is ~115 GB of table and ~30 GB of index,
+and an HNSW index must be effectively resident to perform. This is arithmetic,
+not a benchmark, which is why V4 sits behind a checkpoint that requires a
+*measured* trigger before any of it is built.
+
+Also deferred to that phase and gated the same way: PgBouncer (transaction mode,
+`statement_cache_size=0` for asyncpg — the existing `SET LOCAL` is already
+transaction-pooling-safe), and moving file blobs out of Postgres to object
+storage, which the commit-keyed immutable ETag path (`routes.py:214-230`) maps
+onto with no logic change.
+
+## 2026-07-29 — Phase 1 chunk spot-check, run at last: split class chunks carry synthetic line numbers
+
+ROADMAP's Phase 1 done-when box — *"30 randomly sampled chunks manually
+spot-checked: boundaries clean, headers accurate"* — has been unticked since
+Phase 1, marked "left unticked for the human review pass". It was run today,
+mechanically rather than by eye: `docs/samples/phase1-sample.txt` was parsed and
+every sample re-checked against the real file text in the `files` table at the
+pinned `b5addb64`.
+
+**Result: 27/30 bodies match the source exactly** (after normalising the
+chunker's dedent, which is intended behaviour and not a finding). 0/30 header
+`# File:` mismatches. The remaining 3 are all one root cause.
+
+**The finding.** `chunker.py:143-144` computes a split part's line range as
+`rc.start_line + s_idx` / `rc.start_line + e_idx`, where the indices are offsets
+into `rc.code`. For function, method, and module chunks `rc.code` *is* the source
+slice, so those offsets are real source lines and the ranges are correct.
+
+A **class skeleton chunk is a rendering, not a slice** (SPEC §2.2: class line,
+docstring, class attributes, and method *signatures* with bodies elided). Its
+text has no positional relationship to the file. When §2.5 oversize splitting is
+then applied to that rendering, every part after the first gets a line number
+that counts rendered lines, not source lines.
+
+Measured on `httpx._client.AsyncClient`, which splits into 18 parts:
+
+```
+part  1/18  L1307-1351   class line + docstring      — real lines, correct
+part  2/18  L1352-1352   def __init__( … ) -> None: ...
+part  3/18  L1353-1353   def _init_transport( … ): ...
+part  4/18  L1354-1354   def _init_proxy_transport( … ): ...
+…            +1 each
+part 18/18  L1370-1372
+```
+
+Each elided method occupies one line in the rendering and therefore one line in
+the range. The real `__init__` spans roughly 90 source lines; the real class
+does not end at 1372. Source line 1359 — which part 8 claims — is
+`cookies: CookieTypes | None = None,`, a parameter inside `__init__`'s signature.
+
+**Blast radius: 69 of 1522 chunks (4.5%)** — class chunks with `part > 1`.
+Everything else is correct, including part 1 of a split class (its prefix is
+real source) and *unsplit* class chunks, whose range names the whole class node
+and is right.
+
+**Why it matters:** hard rule 5 — citations are not optional, and a citation is
+a line range the viewer washes. A citation landing on one of these 69 chunks
+highlights code the model never read. Mitigating, and the reason this has not
+been visible: `get_definition` filters `c.part = 1` (`tools.py:150`), and NL
+retrieval favours function/method chunks, so the defective population is rarely
+the one that gets cited.
+
+**Measured exposure, because 4.5% of the corpus is not the same as 4.5% of what
+a user sees.** The 20 frozen EVAL questions were run through the production
+retrieval configuration (`mode="hybrid"`, `k=SEARCH_K` — what `search_code`
+uses). **12 of 200 returned chunks (6.0%) are from the defective population, and
+5 of 20 questions touch at least one.** None at rank 1. Checking where each
+chunk's first line of code *actually* lives in the source: 7 of 12 are rendered
+stubs that appear nowhere in the file in that form, 3 are off by **+27, +48, and
++51 lines**, and 1 is off by −3. So 11 of 12 point somewhere genuinely wrong.
+This is not a nominal defect.
+
+**The fix is cheap, and an earlier draft of this entry said otherwise.** That
+draft claimed the fix forces a re-ingest that moves every published number.
+Wrong, and worth stating plainly because it would have driven the wrong
+decision. CLAUDE.md's rule — re-ingest when the chunker changes — is right in
+general and does not bind here: **both eval metrics are blind to line numbers.**
+hit@k scores `file_path ∈ truth.files` OR `symbol ∈ truth.symbols`
+(`eval.py:80-81`); answer-hit scores the citation's *file* (SPEC §11.2). A fix
+that touches only `start_line`/`end_line` leaves chunk text, embeddings, chunk
+counts, `file_path`, and `symbol` all identical — so retrieval order cannot
+change and neither metric can move. That is verifiable rather than argued: run
+`eval.py` after and the numbers must be identical.
+
+The backfill needs no re-clone and no re-embed either. `files` holds the source
+text, so a migration can re-derive each class node's true span with tree-sitter
+from the stored content.
+
+**Three candidate fixes.** (a) Every part of a split class reports the **whole
+class span** — a few lines, provably cannot move a number, converts a silent
+wrong answer into an imprecise but honest one. Loses precision: a citation to
+part 8 washes the entire class. (b) Stop splitting class skeletons and emit one
+over-budget chunk, the path `chunker.py:111-126` already takes for unsplittable
+bodies. Simplest conceptually — splitting a summary is arguably wrong anyway —
+but it **changes chunk counts and embeddings**, so it does move the corpus and
+must not be done casually. (c) Track provenance in the skeleton renderer so each
+part carries the true span of the methods it contains. Most correct, most work.
+
+**Recommended: (a) now, (c) later if precision proves to matter.** Explicitly
+not (b) while Phase 6's numbers are the published evidence.
+
+## 2026-07-29 — Option (a) implemented; and the FTS leg has no deterministic tiebreaker
+
+Option (a) is in. `chunker.py` defines `RENDERED_KINDS = {"class", "module"}` —
+kinds whose text is assembled rather than sliced — and every part of such a
+chunk now reports the whole node span instead of an offset into its own
+rendering. Module chunks are included because they gather docstring, imports,
+and top-level assignments while stepping over every def and class between them;
+measurement found 6 of 19 split module chunks were also wrong, which the
+original entry had not caught.
+
+`005_rendered_chunk_spans.sql` backfills existing rows from the `symbols` table,
+which already stores the true tree-sitter span. No re-clone, no re-embed. Join
+coverage was verified first: **85/85 class and 19/19 module** split chunks
+resolve to a symbol. After migration, **104/104 carry a span identical to their
+symbol's**, and `httpx._client.AsyncClient` reports 1307-2019 on all 18 parts
+instead of 1307-1351, 1352, 1353, 1354…
+
+**Verification: every hit@k held; one MRR moved; and the prediction was too
+strong.** The previous entry claimed "neither metric can move". Nine hit@k
+values across three modes are byte-identical to the 2026-07-27 baseline, and the
+per-question hit@10 grid matches question for question. But **fts MRR moved
+0.503 → 0.494**, so the claim as written was wrong and is corrected here.
+
+The cause is not the fix, which cannot touch ranking — it changes no chunk text,
+no embedding, no `symbol`, no `file_path`. It is that `_fts_leg` orders by
+`ts_rank(tsv, q) DESC` with **no tiebreaker** (`hybrid.py:226`), and measurement
+shows **19 of 20 questions have tied ts_rank scores inside the FTS top-10, 64
+tied slots in total**. Tied rows come back in physical heap order. A Postgres
+`UPDATE` writes new row versions at new locations, so rewriting 104 rows
+reshuffled ties, which moves a rank-sensitive metric while leaving every
+threshold metric untouched. That is exactly the observed signature: fts hit@3,
+hit@5 and hit@10 all identical, fts MRR moved, hybrid MRR unchanged at 0.752
+because RRF is dominated by the vector leg. Repeated identical queries return
+identical order, so this is not run-to-run nondeterminism — it is a persistent
+function of physical row layout.
+
+**The real finding is the latent one: published FTS MRR figures are not
+reproducible across physical row reorganisation.** Any UPDATE, VACUUM FULL,
+re-ingest, or restore would move them by a comparable amount, and always has —
+this change merely triggered it visibly for the first time. hit@k is immune,
+which is why the headline numbers have been stable all along.
+
+The one-line fix is `ORDER BY ts_rank(tsv, q) DESC, id` in both `_fts_leg` and
+the fusion CTE. Deliberately **not** applied here: it would itself shift FTS MRR
+once more, to a new and finally stable value, and that is a change to published
+evidence that should be made on purpose and re-measured, not smuggled in
+alongside a citation fix. Logged as the next candidate.
+
+Verified: 248 backend tests green (2 new chunker tests — split class parts report
+the whole class span; split *function* parts keep true source offsets, so the fix
+cannot silently widen to contiguous kinds), `ruff check` clean, `mypy app` clean
+across 42 files, corpus still 825 impl / 697 test.
+
+**Environment note.** `scripts/eval.py` dies with `UnicodeEncodeError` on a
+default Windows console: it prints `✓` in the per-question grid and cp1252 cannot
+encode it. It crashes *before* the EVAL.md append, so no partial block is
+written. `PYTHONIOENCODING=utf-8` is the workaround. Worth a README line, since
+"a stranger can run it locally" is a Phase 6 criterion and this is a stranger on
+Windows hitting it at the last step.
+
+**The box stays unticked, and that is the honest outcome** — the criterion says
+"boundaries clean", and for 4.5% of chunks they are not. Its note has been
+updated from "pending a human" to what the run actually found. A criterion that
+sat unchecked for five phases and then caught a real defect on first execution
+is an argument for the criterion, not against it.
+
+**Two minor observations, neither a defect.** `phase1-sample.txt` is written in
+the Windows default codepage, not UTF-8 (`clé` in an httpx test string), so it
+raises `UnicodeDecodeError` on a UTF-8 host — it is a docs artifact, and the
+database copy is correct. And the skeleton renderer double-spaces class
+docstrings (a blank line after every line), which costs tokens and looks odd in
+agent context but changes nothing about correctness.

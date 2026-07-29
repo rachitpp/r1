@@ -17,6 +17,20 @@ from app.ingest.tokens import TokenCounter
 
 SEPARATOR = "\n---\n"
 
+# Kinds whose `code` is *assembled* rather than sliced out of the file. A class
+# chunk is a skeleton — method bodies elided (SPEC §2.2) — and a module chunk
+# gathers the docstring, the import block, and top-level assignments, stepping
+# over every def and class between them. For both, an offset into the chunk's
+# own text is not an offset into the file, so the per-part arithmetic below
+# would invent line numbers: on `httpx._client.AsyncClient` it numbered the 18
+# parts 1307-1351 then 1352, 1353, 1354… one line per elided method, for a class
+# that really ends at line 2019.
+#
+# Every part of such a chunk reports the whole node span instead. Less precise
+# than a true sub-range, and never wrong — which is the right trade when the
+# number is a citation the viewer highlights (hard rule 5).
+RENDERED_KINDS = frozenset({"class", "module"})
+
 
 @dataclass(frozen=True)
 class Chunk:
@@ -131,6 +145,7 @@ def _emit(rc: RawChunk, imports_line: str, counter: TokenCounter) -> list[Chunk]
     packed = _pack(prefix, blocks, budget, counter)
     n = len(packed)
 
+    rendered = rc.kind in RENDERED_KINDS
     chunks: list[Chunk] = []
     for i, (code_i, s_idx, e_idx) in enumerate(packed, start=1):
         chunks.append(
@@ -140,8 +155,8 @@ def _emit(rc: RawChunk, imports_line: str, counter: TokenCounter) -> list[Chunk]
                 kind=rc.kind,
                 part=i,
                 n_parts=n,
-                start_line=rc.start_line + s_idx,
-                end_line=rc.start_line + e_idx,
+                start_line=rc.start_line if rendered else rc.start_line + s_idx,
+                end_line=rc.end_line if rendered else rc.start_line + e_idx,
                 header=_header(rc, imports_line, i, n),
                 code=code_i,
             )

@@ -16,6 +16,7 @@ Deferred to v2: TypeScript grammar, commit-history indexing, private repos.
 |---|---|---|
 | `docs/SPEC.md` | Schema, chunk format, tool signatures, API contracts, retrieval algorithm | Read the relevant section before implementing it |
 | `docs/ROADMAP.md` | Phases with "done when" criteria | Check current phase before starting; update status on completion |
+| `docs/V2.md` | Multi-tenant roadmap (phases V1–V5), same format | v2 only — do not start any of it while a v1 phase is open |
 | `docs/DECISIONS.md` | Append-only decision log | Read before proposing stack/architecture changes; append a dated entry when we make one |
 | `docs/EVAL.md` | 20 frozen benchmark questions | Never tune retrieval against these by hand; run `scripts/eval.py` |
 | `docs/prompts/` | Phase prompts, written just-in-time | Reference only |

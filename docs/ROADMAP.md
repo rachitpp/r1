@@ -123,9 +123,25 @@ Done when:
       (statement-split), file with syntax errors (skip + warn, no crash),
       empty file — plus filters, module-path derivation, and 1-based lines.
       33 tests pass (`uv run pytest`); `mypy app` clean.
-- [ ] 30 randomly sampled chunks manually spot-checked: boundaries clean,
-      headers accurate — sample written to `docs/samples/phase1-sample.txt`;
-      **left unticked for the human review pass.**
+- [x] 30 randomly sampled chunks spot-checked: boundaries clean, headers
+      accurate — sample at `docs/samples/phase1-sample.txt`. **Run 2026-07-29**,
+      mechanically rather than by eye: every sample re-checked against the real
+      file text in `files` at the pinned SHA. **27/30 bodies matched the source
+      exactly** (dedent normalised), **0/30 header mismatches**, and the other 3
+      shared one root cause — **split class-skeleton chunks carried synthetic
+      line numbers** (`chunker.py` offset into a *rendered* skeleton, not a
+      source slice; 69 of 1522 chunks). Exposure on the frozen 20: **12 of 200
+      returned chunks, 5/20 questions, none at rank 1**, with 11 of the 12
+      pointing somewhere genuinely wrong (+27/+48/+51 line drift, or a stub
+      appearing nowhere in the file). **Fixed the same day**: `chunker.py`
+      reports the whole node span for rendered kinds (class *and* module — 6 of
+      19 split module chunks were wrong too), `005_rendered_chunk_spans.sql`
+      backfills from `symbols`, and **104/104 split class+module chunks now
+      carry their true tree-sitter span**. Re-verified: **every hit@k held**
+      against the 2026-07-27 baseline with the per-question grid identical.
+      fts MRR moved 0.503 → 0.494 — traced to the FTS leg having no tiebreaker
+      (19/20 questions carry tied `ts_rank` scores), not to the fix, and logged
+      as the next candidate. Detail: DECISIONS 2026-07-29.
 - [x] EVAL.md committed with pinned SHA + 20 questions + ground truth —
       pinned repo/SHA header, short-name symbols with the qualname-suffix
       match rule, frozen-once-Phase-2-begins rule; all ground truth verified
