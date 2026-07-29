@@ -194,3 +194,64 @@ async def test_per_user_quota_counts_only_that_user(source) -> None:
             await conn.execute(
                 "DELETE FROM users WHERE github_id IN (-101, -102)"
             )
+
+
+async def test_a_failed_snapshot_does_not_block_a_retry_at_the_same_commit(
+    source,
+) -> None:
+    """A corpse must not brick a commit (migration 010).
+
+    007 made (source, commit_sha, strategy) unconditionally unique, and the V3
+    three-worker run found what that costs: a worker killed mid-ingest leaves a
+    `failed` snapshot that KEEPS its commit_sha, so every retry cloned the same
+    commit and died on the unique key. One worker death made that commit
+    permanently un-ingestable, and the error text pointed nowhere near the cause.
+
+    The constraint means "one stored corpus per repo/commit/strategy". A failed
+    snapshot is not a corpus — it is a partial write nobody can read — so the
+    index is partial on `status = 'ready'`.
+    """
+    pool, source_id = source
+    sha = "deadbeef" * 5
+    async with pool.acquire() as conn:
+        dead = await queries.create_snapshot(conn, source_id)
+        await queries.set_repo_clone_info(
+            conn, dead, name="test/leases", head_sha=sha, default_branch="main"
+        )
+        await queries.fail_repo(conn, dead, "worker lease expired")
+
+        # The retry: same source, same commit, same strategy.
+        retry = await queries.create_snapshot(conn, source_id)
+        await queries.set_repo_clone_info(
+            conn, retry, name="test/leases", head_sha=sha, default_branch="main"
+        )
+        await queries.set_repo_status(conn, retry, "ready")
+
+        row = await queries.get_repo(conn, retry)
+        assert row is not None
+        assert row["status"] == "ready"
+        assert row["head_sha"] == sha
+
+
+async def test_two_ready_snapshots_of_one_commit_are_still_refused(source) -> None:
+    """The narrowed index must still do its actual job (§14.2).
+
+    Making it partial on `ready` is only safe if `ready` remains exclusive —
+    otherwise one source could hold two stored corpora of the same commit and
+    every dedup lookup would pick arbitrarily between them.
+    """
+    pool, source_id = source
+    sha = "cafebabe" * 5
+    async with pool.acquire() as conn:
+        first = await queries.create_snapshot(conn, source_id)
+        await queries.set_repo_clone_info(
+            conn, first, name="test/leases", head_sha=sha, default_branch="main"
+        )
+        await queries.set_repo_status(conn, first, "ready")
+
+        second = await queries.create_snapshot(conn, source_id)
+        await queries.set_repo_clone_info(
+            conn, second, name="test/leases", head_sha=sha, default_branch="main"
+        )
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await queries.set_repo_status(conn, second, "ready")

@@ -2224,3 +2224,61 @@ Verified: 304 unit tests, `ruff` and `mypy` clean across 48 files, and
 client is stubbed and the local path is unchanged, but the end-to-end equality
 §16.5 asks for needs the service actually stood up.
 
+## 2026-07-30 — The three-worker run found a bug that bricks a commit forever
+
+V3's two multi-worker criteria say "verified by running it, not by reading the
+code". Ran both. The first passed cleanly; the second failed, and what it found
+justifies the whole insistence on execution over inspection.
+
+**Three workers, three repos, concurrent.** Three real ARQ processes against
+three distinct sources: all three `ready`, 24 chunks each, three *distinct*
+`claimed_by` values. Jobs are enqueued **before** the fleet starts so all three
+are waiting when it comes up — enqueue afterwards and one warm worker finishes a
+small repo before the others poll, which proves nothing about concurrency.
+
+**Kill one worker: three of four properties held immediately.** `taskkill /F` on
+the worker holding a mid-`parsing` snapshot. Survivors reached `ready` 2/2 — the
+fleet is not coupled. An immediate sweep spared the orphan because its lease was
+still fresh (`swept=0`), and a sweep after `LEASE_EXPIRY_S` reclaimed exactly it.
+
+**The fourth failed: a retry was impossible.** Every attempt died with
+
+    UniqueViolationError: duplicate key value violates unique constraint
+    "repo_snapshots_source_id_commit_sha_strategy_key"
+    Key (source_id, commit_sha, strategy)=(…, 87072f6d…, ast) already exists.
+
+007 made `(source_id, commit_sha, strategy)` **unconditionally** unique. A
+snapshot that dies after cloning keeps its `commit_sha`, and the lease sweep
+marks it `failed` without clearing it — so the corpse owns that commit. The
+retry clones the same repo, gets the same sha, and collides. **One worker death
+made that commit permanently un-ingestable**, for that repo, forever, and the
+error surfaced as a raw Postgres message that named a constraint rather than a
+cause.
+
+Nothing about this is visible by reading either piece. The constraint looks
+correct in 007. The sweep looks correct in 009. The interaction is only reachable
+by killing a process mid-ingest and then trying again.
+
+**`010` narrows the index to `status = 'ready'`.** The constraint's purpose is
+"one stored corpus per repo, commit and strategy" (§14.2); a failed snapshot is
+not a corpus — it is a partial write nobody can read, because a non-`ready`
+snapshot is not servable. Safe against two attempts racing to `ready`, because
+009's one-in-flight index already permits a single in-flight snapshot per
+`(source_id, strategy)` and §14.4 short-circuits a second attempt at a stored
+commit before it ingests anything.
+
+Two regression tests pin both halves: a `failed` snapshot no longer blocks a
+retry at its commit, **and** two `ready` snapshots of one commit are still
+refused — narrowing an index is only safe if the narrowed population stays
+exclusive.
+
+**A pattern worth naming, because it is now three for three.** Every bug this
+session came from an interaction that read correctly in isolation: the span
+migration exposed the missing tie ordering; the `NOT NULL` on legacy columns
+passed every read and broke every write; this one needed a process kill plus a
+retry. All three were found by execution — a mechanical spot-check, an eval
+re-run, a real kill — and none by inspecting the diff.
+
+Verified: 304 unit tests, 14 integration (9 lease tests), `ruff` and `mypy`
+clean, `eval.py` hybrid unchanged at 0.80 / 0.90 / 0.95 MRR 0.753.
+
