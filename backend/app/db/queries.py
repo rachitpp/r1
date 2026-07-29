@@ -13,6 +13,8 @@ from uuid import UUID
 
 import asyncpg
 
+from app.config import get_settings
+
 # Column order for chunk inserts — the embedding is last. ``id`` (identity),
 # ``tsv`` (generated), ``part``/``n_parts`` defaults are handled by the table.
 ChunkRow = tuple[
@@ -197,6 +199,33 @@ async def adopt_bootstrap_user(conn: asyncpg.Connection, github_id: int) -> None
               AND NOT EXISTS (SELECT 1 FROM users WHERE github_id = $1)""",
         github_id,
     )
+
+
+async def resolve_owner_id(
+    conn: asyncpg.Connection, login: str | None = None
+) -> UUID | None:
+    """Which user a CLI ingest should hand its repo to (§13.5).
+
+    ``login`` names a user explicitly. Without one, fall back to the operator
+    identified by ``BOOTSTRAP_GITHUB_ID`` — the same account §13.7 hands the
+    pre-auth repos to, so a CLI ingest lands in the same library as everything
+    else the operator owns.
+
+    ``None`` means there is nobody to give it to, and the caller must say so
+    rather than write an unreachable row: a repo with no `user_repos` entry is
+    invisible to `GET /repos` and 404s on every route, for everyone.
+    """
+    if login is not None:
+        row = await conn.fetchrow("SELECT id FROM users WHERE login = $1", login)
+        return UUID(str(row["id"])) if row else None
+
+    github_id = get_settings().BOOTSTRAP_GITHUB_ID
+    if github_id is None:
+        return None
+    row = await conn.fetchrow(
+        "SELECT id FROM users WHERE github_id = $1", github_id
+    )
+    return UUID(str(row["id"])) if row else None
 
 
 async def link_user_repo(

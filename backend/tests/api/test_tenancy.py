@@ -247,3 +247,53 @@ async def test_a_second_user_submitting_a_known_url_joins_it(
 
     assert (await other_client.get(f"/repos/{REPO_ID}")).status_code == 200
     assert (await client.get(f"/repos/{REPO_ID}")).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# CLI ingests need an owner too (SPEC §13.5)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_owner_id_prefers_an_explicit_login() -> None:
+    """`--owner <login>` names the library the repo lands in."""
+    import asyncio
+
+    from app.db import queries
+
+    from .conftest import FakeConn
+
+    conn = FakeConn()
+    assert asyncio.run(queries.resolve_owner_id(conn, "owner")) == USER_ID
+    assert asyncio.run(queries.resolve_owner_id(conn, "stranger")) == OTHER_USER_ID
+
+
+def test_resolve_owner_id_falls_back_to_the_bootstrap_operator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No `--owner`: the repo joins the same library §13.7 hands the old ones to."""
+    import asyncio
+
+    from app.db import queries
+
+    from .conftest import FakeConn
+
+    conn = FakeConn()
+    monkeypatch.setattr(get_settings(), "BOOTSTRAP_GITHUB_ID", 1)
+    assert asyncio.run(queries.resolve_owner_id(conn)) == USER_ID
+
+
+def test_resolve_owner_id_is_none_when_there_is_nobody_to_own_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`None` is the signal the CLI warns on, rather than writing a repo that is
+    invisible to `GET /repos` and 404s on every route, for everyone."""
+    import asyncio
+
+    from app.db import queries
+
+    from .conftest import FakeConn
+
+    conn = FakeConn()
+    monkeypatch.setattr(get_settings(), "BOOTSTRAP_GITHUB_ID", None)
+    assert asyncio.run(queries.resolve_owner_id(conn)) is None
+    assert asyncio.run(queries.resolve_owner_id(conn, "nobody")) is None

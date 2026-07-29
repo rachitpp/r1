@@ -87,7 +87,11 @@ def ingest(url: str, *, strategy: str = "ast") -> IngestResult:
 
 
 async def ingest_to_db(
-    url: str, *, build_graph: bool = True, strategy: str = "ast"
+    url: str,
+    *,
+    build_graph: bool = True,
+    strategy: str = "ast",
+    owner: str | None = None,
 ) -> IngestStats:
     """Create (or reuse) the repo row for ``url`` and run the pipeline inline.
 
@@ -111,6 +115,24 @@ async def ingest_to_db(
             repo_id, _created = await queries.create_repo(
                 conn, url=row_url, name=row_name
             )
+            # Since V1 a repo is only reachable through a `user_repos` row
+            # (SPEC §13.5): one written without an owner is invisible to
+            # `GET /repos` and 404s on every route, for everyone. `POST /repos`
+            # links the submitter; there is no submitter here, so resolve one.
+            owner_id = await queries.resolve_owner_id(conn, owner)
+            if owner_id is not None:
+                await queries.link_user_repo(conn, owner_id, repo_id)
+            else:
+                # Loudly, not silently: the ingest still runs and the corpus is
+                # still measurable from the CLI and the eval scripts, but the
+                # repo will not appear in anyone's library until it is linked.
+                print(
+                    "  warning: no owner for this repo — it will not appear in "
+                    "the web app.\n"
+                    "           pass --owner <github-login>, or set "
+                    "BOOTSTRAP_GITHUB_ID in backend/.env.",
+                    file=sys.stderr,
+                )
         return await run_ingest(
             repo_id,
             pool=pool,
@@ -282,6 +304,13 @@ def build_parser() -> argparse.ArgumentParser:
         "symbol graph). Baseline only; never the product path.",
     )
     parser.add_argument(
+        "--owner",
+        metavar="LOGIN",
+        help="GitHub login to put this repo in the library of (SPEC §13.5). "
+        "Defaults to the BOOTSTRAP_GITHUB_ID user. Without either, the repo is "
+        "ingested but belongs to nobody and stays invisible to the web app.",
+    )
+    parser.add_argument(
         "--dump", metavar="PATH", help="write all chunks as JSONL to PATH"
     )
     parser.add_argument(
@@ -304,6 +333,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.github_url,
                     build_graph=not args.no_graph,
                     strategy=args.strategy,
+                    owner=args.owner,
                 )
             )
         except IngestError as exc:

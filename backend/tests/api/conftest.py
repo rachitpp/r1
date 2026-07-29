@@ -141,6 +141,20 @@ class FakeConn:
             return self.repos.get(repo_id)
         if "FROM users WHERE id" in sql:
             return self.users.get(args[0])
+        if "FROM users WHERE login" in sql:
+            return next(
+                ({"id": u["id"]} for u in self.users.values() if u["login"] == args[0]),
+                None,
+            )
+        if "FROM users WHERE github_id" in sql:
+            return next(
+                (
+                    {"id": u["id"]}
+                    for u in self.users.values()
+                    if u["github_id"] == args[0]
+                ),
+                None,
+            )
         if "INSERT INTO users" in sql:
             github_id, login = args[0], args[1]
             existing = next(
