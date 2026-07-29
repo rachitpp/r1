@@ -19,14 +19,18 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from functools import lru_cache
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import asyncpg
 from arq.connections import ArqRedis
 from fastapi import Depends, Request
-from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.agent.model import build_chat_model
+
+if TYPE_CHECKING:
+    # Typing only: importing this at runtime pulls `transformers` and therefore
+    # torch — 185 MB measured, more than the embedding model (SPEC §16.1).
+    from langchain_core.language_models.chat_models import BaseChatModel
 from app.auth import tokens
 from app.config import SESSION_COOKIE, get_settings
 from app.db import queries
@@ -91,7 +95,14 @@ def get_chat_model() -> BaseChatModel:
 Conn = Annotated[asyncpg.Connection, Depends(get_conn)]
 Pool = Annotated[asyncpg.Pool, Depends(get_pool)]
 Arq = Annotated[ArqRedis, Depends(get_arq)]
-ChatModel = Annotated[BaseChatModel, Depends(get_chat_model)]
+# `Any`, not `BaseChatModel`, and this is the one place it costs something.
+# FastAPI evaluates this alias at import time, so a real class here would drag
+# torch into every API replica; a string forward reference does not work either,
+# because FastAPI resolves it with `get_type_hints` against module globals where
+# a TYPE_CHECKING import is absent. The dependency is still fully typed — see
+# `get_chat_model` above — so what is lost is the annotation on route
+# parameters, not the return type anything reasons about.
+ChatModel = Annotated[Any, Depends(get_chat_model)]
 
 
 # ---------------------------------------------------------------------------

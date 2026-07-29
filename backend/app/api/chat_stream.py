@@ -37,6 +37,15 @@ request id. All four outcomes release the concurrency slot and land in
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Imported for typing only: this module pulls in `transformers` and
+    # therefore torch — 185 MB measured, more than the embedding model it
+    # would sit beside. Deferring it is what keeps an API replica off torch
+    # entirely (SPEC §16.1).
+    from langchain_core.language_models.chat_models import BaseChatModel
+
 import asyncio
 import json
 import logging
@@ -45,7 +54,6 @@ from collections.abc import AsyncIterator, Callable
 from typing import Any
 from uuid import UUID
 
-from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app import metrics

@@ -93,6 +93,80 @@ class SentenceTransformerEmbedder:
         return len(ids["input_ids"])
 
 
+# The service caps a request at 512 texts (§16.2); stay comfortably under it.
+MAX_REMOTE_BATCH = 256
+
+
+class HttpEmbedder:
+    """``Embedder`` backed by the §16 inference service instead of a local model.
+
+    Satisfies the same Protocol as :class:`SentenceTransformerEmbedder`, which is
+    the entire reason this is a small change: CLAUDE.md rule 3 already confined
+    sentence-transformers to this module, so the seam existed before the service
+    did. Selected by setting ``INFERENCE_URL``; unset keeps the local model, so
+    development and the CLIs work with nothing extra running.
+
+    **Synchronous on purpose.** The Protocol is sync and
+    :func:`encode_async` already runs it off the event loop, so this shares one
+    code path with the local model rather than adding an async twin of every
+    call site. The extra thread hop costs nothing next to a network round trip.
+
+    ``dim`` is read from the service at construction. Trusting a configured
+    value would let a service running a different ``EMBEDDING_MODEL`` write
+    vectors from another space into the corpus — undetectable by any dimension
+    check, and inexplicable in every retrieval metric afterwards.
+    """
+
+    def __init__(self, base_url: str, timeout_s: float) -> None:
+        import httpx
+
+        self._client = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout_s)
+        health = self._client.get("/health")
+        health.raise_for_status()
+        body = health.json()
+        self.dim: int = int(body["dim"])
+        logger.info(
+            "using inference service at %s | model=%s | dim=%d",
+            base_url,
+            body.get("model"),
+            self.dim,
+        )
+
+    def encode(self, texts: list[str], batch_size: int = 64) -> list[list[float]]:
+        if not texts:
+            return []
+        vectors: list[list[float]] = []
+        # Chunked to the service's own ceiling (§16.2 MAX_TEXTS). An ingest
+        # embeds thousands of chunks; sending them as one request would be
+        # refused, and holding the shared model for that long would stall every
+        # other caller.
+        for start in range(0, len(texts), MAX_REMOTE_BATCH):
+            window = texts[start : start + MAX_REMOTE_BATCH]
+            response = self._client.post(
+                "/embed", json={"texts": window, "batch_size": batch_size}
+            )
+            response.raise_for_status()
+            vectors.extend(response.json()["vectors"])
+        return vectors
+
+    def token_len(self, text: str) -> int:
+        """Token count from the service (§16.3).
+
+        One round trip per call, and the chunker calls this once per oversize
+        check — ~1400 times on httpx. Correct but not fast: an ingest worker
+        should run the **local** model (leave ``INFERENCE_URL`` unset there) and
+        let the API be the remote client. Kept rather than raising, because a
+        wrong-but-fast heuristic here would silently move chunk boundaries, and
+        chunk boundaries are the corpus.
+        """
+        response = self._client.post("/tokenize", json={"texts": [text]})
+        response.raise_for_status()
+        return int(response.json()["lengths"][0])
+
+    def close(self) -> None:
+        self._client.close()
+
+
 class Reranker:
     """Cross-encoder reranker wrapper (SPEC §5.3).
 
@@ -139,7 +213,7 @@ def _pin_torch_threads() -> None:
         logger.debug("could not pin torch threads: %s", exc)
 
 
-_embedder: SentenceTransformerEmbedder | None = None
+_embedder: SentenceTransformerEmbedder | HttpEmbedder | None = None
 _reranker: Reranker | None = None
 
 # Guards construction, not use. The models themselves are read-only once built
@@ -152,15 +226,31 @@ _executor: ThreadPoolExecutor | None = None
 _executor_lock = threading.Lock()
 
 
-def get_embedder() -> SentenceTransformerEmbedder:
-    """Return the process-wide embedder singleton, loading it on first use."""
+def get_embedder() -> SentenceTransformerEmbedder | HttpEmbedder:
+    """Return the process-wide embedder singleton, built on first use.
+
+    ``INFERENCE_URL`` selects the implementation (§16.3). Unset means the local
+    model, so nothing about development, the CLIs, or a single-box deployment
+    changes — the remote path is opt-in, not a new requirement.
+
+    Note the inference service itself calls this and must never be configured
+    with ``INFERENCE_URL`` pointing at itself, which would be an infinite
+    delegation. Nothing enforces that; it is a deployment mistake, and the
+    /health round trip in the constructor makes it fail loudly at startup rather
+    than mysteriously under load.
+    """
     global _embedder
     with _load_lock:
         if _embedder is None:
             settings = get_settings()
-            _embedder = SentenceTransformerEmbedder(
-                settings.EMBEDDING_MODEL, token=settings.HF_TOKEN
-            )
+            if settings.INFERENCE_URL:
+                _embedder = HttpEmbedder(
+                    settings.INFERENCE_URL, settings.INFERENCE_TIMEOUT_S
+                )
+            else:
+                _embedder = SentenceTransformerEmbedder(
+                    settings.EMBEDDING_MODEL, token=settings.HF_TOKEN
+                )
         return _embedder
 
 

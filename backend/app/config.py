@@ -139,6 +139,18 @@ class Settings(BaseSettings):
     # Adopts the pre-auth repo rows on first sign-in (§13.7).
     BOOTSTRAP_GITHUB_ID: int | None = None
 
+    # Inference service (SPEC §16.3). Unset means load the model in-process,
+    # which is what keeps local development and the CLIs working with nothing
+    # extra to run — the remote path is opt-in, not a new requirement.
+    #
+    # Set this on API replicas so they stop carrying torch; leave it unset on
+    # ingest workers, whose `token_len` calls are per-chunk and would become a
+    # network round trip each (§16.3).
+    INFERENCE_URL: str | None = None
+    # Generous, because a cold service loads a model before answering and an
+    # ingest batch of 256 texts is a real forward pass, not a lookup.
+    INFERENCE_TIMEOUT_S: float = 120.0
+
     @property
     def auth_configured(self) -> bool:
         """Whether the OAuth flow can actually run."""

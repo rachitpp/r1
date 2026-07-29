@@ -2158,3 +2158,69 @@ Verified: 294 unit tests, 12 integration (7 new lease tests against the live
 database), `ruff` and `mypy` clean. **The inference service half of V3 (§16) is
 not built** — the API still imports torch.
 
+## 2026-07-30 — V3 inference service: the API is off torch, and the saving was not where §16 said
+
+`app/inference/` is the §16 service; `HttpEmbedder` is the client behind the
+existing `Embedder` Protocol, selected by `INFERENCE_URL`. Unset keeps the local
+model, so development, the CLIs and a single-box deployment are unchanged — the
+remote path is opt-in.
+
+**The measurement moved the work.** §16.1 justified this by the embedding model:
+130 MB per replica, 2.4 GB with the reranker. Measured working set on this host:
+
+| | RSS | modules |
+|---|---|---|
+| bare python | 11 MB | 64 |
+| `import torch` | 185 MB | 1124 |
+| `import app.main` (before) | 264 MB | 2641 |
+| + embedding model loaded | 444 MB | 4584 |
+
+So the model costs **180 MB** — and **torch itself costs 185 MB**, slightly
+*more* than the model it was supposed to be dwarfed by. Removing only the model
+would have left the larger half in place.
+
+**Where torch came from, and it was not the embedder.** Bisecting the import
+graph: `app.ingest.embedder` and `app.retrieval.hybrid` are both clean — rule 3's
+deferral into the constructors works exactly as documented. The culprit was
+`langchain_core.language_models.chat_models`, imported in four modules **purely
+for the `BaseChatModel` type**, which pulls `transformers` and therefore torch.
+
+Three of the four moved under `TYPE_CHECKING` with no cost at all. The fourth,
+`deps.py`, is the interesting one: `ChatModel = Annotated[BaseChatModel,
+Depends(...)]` is evaluated at import time, so a real class there drags torch in,
+and a string forward reference does not work either — FastAPI resolves it with
+`get_type_hints` against module globals, where a `TYPE_CHECKING` import is
+absent. It is `Annotated[Any, Depends(get_chat_model)]` now, with the reasoning
+in a comment. What is lost is the annotation on route parameters; `get_chat_model`
+itself stays fully typed, so nothing downstream reasons about a weaker type.
+
+**Result: `import app.main` is 264 MB → 83 MB, 2641 → 1319 modules.** With
+`INFERENCE_URL` set the model never loads either, so an API replica goes
+**444 MB → 83 MB** — a 5.3× reduction, and more than half of it from a type
+annotation nobody would have suspected.
+
+**The test runs in a subprocess, and has to.** By the time pytest reaches it,
+earlier tests have loaded torch into `sys.modules`; an in-process assertion would
+pass no matter what the API imported. It probes `app.main`, `app.retrieval.hybrid`
+and `app.ingest.embedder` separately, so a regression names the layer.
+
+**Client contract, unit-tested against a stub rather than a model.** Order
+(`vectors[i]` ↔ `texts[i]`), splitting a 600-text batch across the service's
+512-text ceiling and reassembling *in order*, and reading `dim` over the wire at
+construction — trusting configured `dim` would let a service on a different
+`EMBEDDING_MODEL` write vectors from another space into the corpus, which no
+dimension check catches and no retrieval metric explains.
+
+`token_len` is one round trip per call and the chunker calls it per oversize
+check (~1400 times on httpx). Kept rather than approximated — a heuristic would
+silently move chunk boundaries, and chunk boundaries are the corpus — but ingest
+workers should leave `INFERENCE_URL` unset and run the local model. Recorded in
+§16.3 rather than left to be discovered as a slow ingest.
+
+Verified: 304 unit tests, `ruff` and `mypy` clean across 48 files, and
+`scripts/eval.py` unchanged (0.75/0.85/0.90 · 0.55/0.70/0.80 · 0.80/0.90/0.95).
+
+**Not done:** eval has not been re-measured *through* a running service. The
+client is stubbed and the local path is unchanged, but the end-to-end equality
+§16.5 asks for needs the service actually stood up.
+
