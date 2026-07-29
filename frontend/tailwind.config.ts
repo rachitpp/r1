@@ -15,6 +15,7 @@ const config: Config = {
         // stack is the system fallback for when a webfont fails to load.
         sans: ["var(--font-sans)", ...defaultTheme.fontFamily.sans],
         mono: ["var(--font-mono)", ...defaultTheme.fontFamily.mono],
+        display: ["var(--font-display)", ...defaultTheme.fontFamily.serif],
       },
       colors: {
         border: "hsl(var(--border))",
@@ -50,6 +51,12 @@ const config: Config = {
           DEFAULT: "hsl(var(--accent))",
           foreground: "hsl(var(--accent-foreground))",
         },
+        // Supporting state hues. Not part of the shadcn token set — they exist
+        // so "ready" and "in flight" have their own colour without reaching for
+        // Tailwind's stock emerald/violet, which is what made the status badges
+        // look like a colour-picker sampler.
+        sage: "hsl(var(--sage))",
+        ochre: "hsl(var(--ochre))",
       },
       borderRadius: {
         xl: "calc(var(--radius) + 4px)",

@@ -11,16 +11,23 @@
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
 import { createJavaScriptRegexEngine } from "shiki/engine/javascript";
 
-export const LIGHT_THEME = "github-light";
-export const DARK_THEME = "github-dark";
+/**
+ * `vitesse-light`, not `github-light`. GitHub's light theme is a cool palette
+ * (blue / purple / crimson) on a pure-white ground; the viewer's card is warm
+ * paper, and cool syntax on a warm card reads as a foreign object pasted into
+ * the page — across 44% of the screen. Vitesse is warm-neutral and sits on the
+ * palette without being tinted by hand.
+ */
+export const LIGHT_THEME = "vitesse-light";
+export const DARK_THEME = "vitesse-dark";
 
 let instance: Promise<HighlighterCore> | null = null;
 
 export function getHighlighter(): Promise<HighlighterCore> {
   instance ??= createHighlighterCore({
     themes: [
-      import("shiki/dist/themes/github-light.mjs"),
-      import("shiki/dist/themes/github-dark.mjs"),
+      import("shiki/dist/themes/vitesse-light.mjs"),
+      import("shiki/dist/themes/vitesse-dark.mjs"),
     ],
     langs: [import("shiki/dist/langs/python.mjs")],
     engine: createJavaScriptRegexEngine({ forgiving: true }),

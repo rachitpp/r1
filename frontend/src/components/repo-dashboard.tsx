@@ -1,8 +1,10 @@
 "use client";
 
 /**
- * `/` — submit form + repo list. One client component: both halves share the
- * repos query (a successful submit updates the list without a refetch).
+ * `/` — submit form and repo list. Exported as two components rather than one
+ * so the landing page can set the measured-numbers strip between them; both
+ * halves still share the repos query (a successful submit updates the list
+ * without a refetch).
  */
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -42,13 +44,13 @@ const EXAMPLES = [
   "encode/starlette",
 ] as const;
 
+/** Fallback monogram tints, drawn only from the palette's own three inks. Six
+ * unrelated Tailwind pastels made the list look like a colour sampler; three
+ * washes of colours already on the page read as one family. */
 const MONOGRAM_TINTS = [
-  "bg-indigo-100 text-indigo-700",
-  "bg-emerald-100 text-emerald-700",
-  "bg-amber-100 text-amber-700",
-  "bg-sky-100 text-sky-700",
-  "bg-rose-100 text-rose-700",
-  "bg-violet-100 text-violet-700",
+  "bg-[hsl(var(--primary)/0.12)] text-primary",
+  "bg-[hsl(var(--sage)/0.14)] text-[hsl(var(--sage))]",
+  "bg-[hsl(var(--ochre)/0.14)] text-[hsl(var(--ochre))]",
 ];
 
 function tintFor(seed: string): string {
@@ -69,7 +71,7 @@ function RepoAvatar({ owner, name }: { owner: string | null; name: string }) {
         alt=""
         loading="lazy"
         onError={() => setFailed(true)}
-        className="size-10 shrink-0 rounded-lg border bg-muted object-cover"
+        className="size-9 shrink-0 rounded-md border bg-muted object-cover"
       />
     );
   }
@@ -77,7 +79,7 @@ function RepoAvatar({ owner, name }: { owner: string | null; name: string }) {
     <span
       aria-hidden
       className={cn(
-        "flex size-10 shrink-0 items-center justify-center rounded-lg text-sm font-semibold",
+        "flex size-9 shrink-0 items-center justify-center rounded-md font-mono text-sm font-semibold",
         tintFor(owner ?? name),
       )}
     >
@@ -142,11 +144,20 @@ function RepoRow({ repo }: { repo: RepoOut }) {
   const tag = strategyTag(repo.url);
 
   return (
+    // A ledger row, not a floating card: the list is one sheet ruled by
+    // hairlines, and hovering warms the row rather than levitating it. A stack
+    // of identical drop-shadowed tiles is the most recognisable generated-UI
+    // shape there is.
     <Link
       href={`/repos/${repo.id}`}
-      className="group block rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="group relative block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
     >
-      <div className="flex items-center gap-3.5 rounded-xl border bg-card p-3.5 shadow-sm transition-all duration-150 group-hover:-translate-y-px group-hover:border-primary/30 group-hover:shadow-md">
+      {/* Clay marker on the left edge, drawn on hover. */}
+      <span
+        aria-hidden
+        className="absolute inset-y-0 left-0 w-0.5 origin-top scale-y-0 bg-primary transition-transform duration-200 group-hover:scale-y-100"
+      />
+      <div className="flex items-center gap-3.5 px-3.5 py-3 transition-colors duration-150 group-hover:bg-secondary/60">
         <RepoAvatar owner={owner} name={name} />
 
         <div className="min-w-0 flex-1">
@@ -156,7 +167,7 @@ function RepoRow({ repo }: { repo: RepoOut }) {
               {name}
             </span>
             {tag && (
-              <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-amber-700">
+              <span className="shrink-0 rounded-sm border border-[hsl(var(--ochre)/0.35)] bg-[hsl(var(--ochre)/0.1)] px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--ochre))]">
                 {tag}
                 {/* The badge is shrink-0, so on a narrow screen the long form
                     would eat the repo name's width instead of its own. */}
@@ -176,7 +187,7 @@ function RepoRow({ repo }: { repo: RepoOut }) {
   );
 }
 
-function SubmitForm() {
+export function SubmitForm() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -228,7 +239,7 @@ function SubmitForm() {
             aria-label="GitHub repository URL"
             aria-invalid={fieldError != null}
             className={cn(
-              "h-12 rounded-xl bg-card pl-10 font-mono text-sm shadow-sm",
+              "h-12 rounded-md border-input bg-card pl-10 font-mono text-sm shadow-none",
               fieldError && "border-destructive focus-visible:ring-destructive",
             )}
           />
@@ -236,7 +247,7 @@ function SubmitForm() {
         <Button
           type="submit"
           disabled={submit.isPending}
-          className="h-12 w-full rounded-xl px-6 text-sm sm:w-auto"
+          className="h-12 w-full rounded-md px-7 text-sm sm:w-auto"
         >
           {submit.isPending ? "Indexing…" : "Index repo"}
         </Button>
@@ -248,35 +259,45 @@ function SubmitForm() {
         </p>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <span className="text-xs text-muted-foreground">Try one:</span>
-        {EXAMPLES.map((example) => (
-          <button
-            key={example}
-            type="button"
-            onClick={() => {
-              setUrl(`https://github.com/${example}`);
-              setFieldError(null);
-              inputRef.current?.focus();
-            }}
-            className="rounded-full border bg-card px-2.5 py-1 font-mono text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/30 hover:text-foreground"
-          >
-            {example}
-          </button>
+      {/* Examples read as an aside in prose — "or try …" — rather than as a row
+          of pill buttons, which is the stock generated-hero furniture. */}
+      <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+        <span>or try</span>
+        {EXAMPLES.map((example, i) => (
+          <span key={example} className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setUrl(`https://github.com/${example}`);
+                setFieldError(null);
+                inputRef.current?.focus();
+              }}
+              className="rounded-sm font-mono underline decoration-border decoration-dotted underline-offset-4 transition-colors hover:text-primary hover:decoration-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {example}
+            </button>
+            {i < EXAMPLES.length - 1 && <span aria-hidden>·</span>}
+          </span>
         ))}
       </div>
     </form>
   );
 }
 
-function RepoList() {
+export function RepoList() {
   const repos = useQuery({ queryKey: ["repos"], queryFn: listRepos });
 
   if (repos.isPending) {
     return (
-      <div className="space-y-3">
+      <div className="divide-y rounded-md border bg-card">
         {[0, 1, 2].map((i) => (
-          <Skeleton key={i} className="h-[74px] w-full rounded-xl" />
+          <div key={i} className="flex items-center gap-3.5 px-3.5 py-3">
+            <Skeleton className="size-9 shrink-0 rounded-md" />
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-3.5 w-40" />
+              <Skeleton className="h-3 w-56" />
+            </div>
+          </div>
         ))}
       </div>
     );
@@ -295,24 +316,29 @@ function RepoList() {
   }
   if (repos.data.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed bg-card/50 p-10 text-center">
-        <p className="text-sm font-medium">No repositories indexed yet</p>
-        <p className="mx-auto mt-1 max-w-xs text-sm text-muted-foreground">
-          Submit a URL above, or pick one of the examples, to get started.
+      <div className="rounded-md border border-dashed bg-card/40 px-6 py-12 text-center">
+        <p className="display text-lg">Nothing indexed yet</p>
+        <p className="mx-auto mt-1.5 max-w-xs text-sm text-muted-foreground">
+          Paste a URL above, or pick one of the examples, and the first index
+          will appear here.
         </p>
       </div>
     );
   }
   return (
     <>
-      <div className="mb-3 flex items-baseline justify-between gap-4">
-        <h2 className="text-sm font-medium">Indexed repositories</h2>
-        <span className="text-xs tabular-nums text-muted-foreground">
-          {repos.data.length}{" "}
-          {repos.data.length === 1 ? "repository" : "repositories"}
+      <div className="mb-3 flex items-baseline gap-3">
+        <h2 className="display shrink-0 text-base font-semibold">
+          Indexed repositories
+        </h2>
+        {/* Rule fills the gap between the heading and the count — an editorial
+            contents-page device, and it costs nothing. */}
+        <span aria-hidden className="h-px flex-1 bg-border" />
+        <span className="shrink-0 font-mono text-xs tabular-nums text-muted-foreground">
+          {repos.data.length}
         </span>
       </div>
-      <div className="space-y-2.5">
+      <div className="divide-y overflow-hidden rounded-md border bg-card">
         {repos.data.map((repo) => (
           <RepoRow key={repo.id} repo={repo} />
         ))}
@@ -321,13 +347,3 @@ function RepoList() {
   );
 }
 
-export function RepoDashboard() {
-  return (
-    <>
-      <SubmitForm />
-      <div className="mt-9">
-        <RepoList />
-      </div>
-    </>
-  );
-}

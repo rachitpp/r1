@@ -7,14 +7,15 @@
  * over the conversation when a citation is chosen and dismisses, so the
  * conversation keeps the full screen the rest of the time.
  *
- * The pane also follows the agent. Unless the viewer has picked a citation
- * themselves, each tool result opens the file the agent just read, and the
- * finished answer opens its first citation — so the right half is never the
- * dead space it used to be before the first click.
+ * The viewer only ever shows what the reader asked for. It starts empty and
+ * changes on exactly one event: a click on a citation chip or a step location.
+ * It used to follow the agent — opening whatever file the last tool touched,
+ * then the answer's first citation — which meant code the reader never asked
+ * for appeared and then swapped itself out mid-read.
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { MessageSquarePlus, Square } from "lucide-react";
+import { ArrowRight, MessageSquarePlus, Square } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -55,22 +56,8 @@ export function ChatView({ repoId }: { repoId: string }) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  /** True once the viewer picks a citation: auto-follow yields to them. */
-  const pinnedRef = useRef(false);
   /** True while the transcript is scrolled near its tail. */
   const stickRef = useRef(true);
-
-  // Below `lg` the viewer is a full-screen sheet, not a side pane. Opening one
-  // of those unasked hijacks the whole page, so auto-follow is a wide-viewport
-  // behaviour only; on a narrow screen the citation chips still open it on tap.
-  const [isWide, setIsWide] = useState(false);
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const sync = () => setIsWide(mq.matches);
-    sync();
-    mq.addEventListener("change", sync);
-    return () => mq.removeEventListener("change", sync);
-  }, []);
 
   const streaming =
     chat.status === "thinking" ||
@@ -89,37 +76,6 @@ export function ChatView({ repoId }: { repoId: string }) {
     }
   }, [streaming, liveSize]);
 
-  // Auto-follow, part 1: while tools run, show the file the agent just read.
-  const liveTarget = (() => {
-    const ex = chat.current;
-    if (!ex) return null;
-    for (let i = ex.steps.length - 1; i >= 0; i--) {
-      const loc = ex.steps[i].locations?.[0];
-      if (loc) return loc;
-    }
-    return null;
-  })();
-  const liveTargetKey = liveTarget ? citationKey(liveTarget) : null;
-  const liveTargetRef = useRef<Citation | null>(null);
-  liveTargetRef.current = liveTarget;
-  useEffect(() => {
-    if (!isWide || pinnedRef.current) return;
-    const target = liveTargetRef.current;
-    if (target) setSelection(target);
-  }, [liveTargetKey, isWide]);
-
-  // Auto-follow, part 2: a finished answer opens its first validated citation.
-  const settled = chat.transcript[chat.transcript.length - 1] ?? null;
-  const settledCitation = settled?.citations[0] ?? null;
-  const settledKey = settledCitation ? citationKey(settledCitation) : null;
-  const settledRef = useRef<Citation | null>(null);
-  settledRef.current = settledCitation;
-  useEffect(() => {
-    if (!isWide || pinnedRef.current) return;
-    const target = settledRef.current;
-    if (target) setSelection(target);
-  }, [settledKey, isWide]);
-
   // Keep the composer sized to its content, up to a cap.
   useEffect(() => {
     const el = composerRef.current;
@@ -137,20 +93,16 @@ export function ChatView({ repoId }: { repoId: string }) {
   const send = (text: string) => {
     const q = text.trim();
     if (!q || streaming) return;
-    pinnedRef.current = false;
     stickRef.current = true;
     chat.ask(q);
     setQuestion("");
   };
 
-  const pick = (c: Citation) => {
-    pinnedRef.current = true;
-    setSelection(c);
-  };
+  /** The only thing that ever fills the viewer. */
+  const pick = (c: Citation) => setSelection(c);
 
   const newConversation = () => {
     chat.clear();
-    pinnedRef.current = false;
     setSelection(null);
     setQuestion("");
   };
@@ -214,34 +166,39 @@ export function ChatView({ repoId }: { repoId: string }) {
     // centred max-width leaves dead background either side of the panes, which
     // is the one thing a split view must not do.
     <div className="flex h-[calc(100vh-3rem-1px)] w-full flex-col lg:flex-row">
-      {/* Left — conversation */}
-      <section className="flex min-h-0 flex-1 flex-col lg:border-r">
+      {/* Left — conversation. `min-w-0` for the same reason as the viewer
+          below: a flex item defaults to `min-width: auto` and will not shrink
+          below its content. */}
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col lg:border-r">
+        {/* Three levels, not three same-weight links: the repo names the pane,
+            its counts are meta beneath, and only the one action that changes
+            state ("New chat") carries a border. */}
         <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
-          <div className="flex min-w-0 items-baseline gap-2">
-            <span className="truncate font-mono text-sm font-medium">
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate font-mono text-sm font-medium leading-tight">
               {repo.data.name}
             </span>
-            <span className="hidden shrink-0 text-xs text-muted-foreground sm:inline">
+            <span className="hidden truncate text-[11px] leading-tight text-muted-foreground sm:inline">
               {progress.files_total} files · {progress.chunks_total} chunks
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
+          <div className="flex shrink-0 items-center gap-2">
+            <Link
+              href={`/repos/${repoId}`}
+              className="rounded-sm text-xs text-muted-foreground underline decoration-border decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
+            >
+              status
+            </Link>
             {chat.transcript.length > 0 && (
               <button
                 type="button"
                 onClick={newConversation}
-                className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                className="inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
               >
                 <MessageSquarePlus className="size-3.5" />
                 New chat
               </button>
             )}
-            <Link
-              href={`/repos/${repoId}`}
-              className="rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              repo status
-            </Link>
           </div>
         </div>
 
@@ -255,25 +212,40 @@ export function ChatView({ repoId }: { repoId: string }) {
           }}
           className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-6"
         >
+          {/* Left-aligned and set in display type, with the suggestions as a
+              ruled list of real questions. The centred grey paragraph and row
+              of pills this replaced is the stock generated empty state, and it
+              was occupying the largest blank surface in the app. */}
           {empty && (
-            <div className="pt-10 text-center">
-              <p className="text-sm font-medium">Ask about this codebase</p>
-              <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-                The agent&apos;s tool calls stream here as it explores, and the
-                code it cites opens on the right.
+            <div className="max-w-xl pt-6">
+              <p className="eyebrow">Ready</p>
+              <h2 className="display mt-4 text-2xl font-semibold leading-tight">
+                Ask this codebase a question.
+              </h2>
+              <p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+                Every tool call the agent makes streams here as it happens —
+                search, then graph traversal into the definitions the search
+                missed. The code it cites opens on the right, at the line.
               </p>
-              <div className="mt-5 flex flex-wrap justify-center gap-2">
+
+              <ul className="mt-6 divide-y border-y">
                 {SUGGESTIONS.map((s) => (
-                  <button
-                    key={s}
-                    type="button"
-                    onClick={() => send(s)}
-                    className="rounded-full border bg-card px-3 py-1.5 text-xs text-muted-foreground shadow-sm transition-colors hover:border-primary/30 hover:text-foreground"
-                  >
-                    {s}
-                  </button>
+                  <li key={s}>
+                    <button
+                      type="button"
+                      onClick={() => send(s)}
+                      className="group flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:text-primary"
+                    >
+                      <span
+                        aria-hidden
+                        className="h-px w-4 shrink-0 bg-border transition-all group-hover:w-6 group-hover:bg-primary"
+                      />
+                      <span className="display text-[15px]">{s}</span>
+                      <ArrowRight className="ml-auto size-3.5 shrink-0 -translate-x-1 text-primary opacity-0 transition-all group-hover:translate-x-0 group-hover:opacity-100" />
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           )}
           {chat.transcript.map((exchange, i) => (
@@ -326,37 +298,44 @@ export function ChatView({ repoId }: { repoId: string }) {
                 streaming ? "Waiting for the answer…" : "Ask a question…"
               }
               aria-label="Question"
-              className="flex max-h-40 min-h-[42px] w-full resize-none rounded-xl border border-input bg-card px-3 py-2.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex max-h-40 min-h-[42px] w-full resize-none rounded-md border border-input bg-card px-3 py-2.5 text-sm shadow-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
             />
             {streaming ? (
               <Button
                 type="button"
                 variant="outline"
                 onClick={chat.stop}
-                className="h-[42px] shrink-0 rounded-xl"
+                className="h-[42px] shrink-0 rounded-md"
               >
                 <Square className="size-3.5 fill-current" />
                 Stop
               </Button>
             ) : (
-              <Button type="submit" className="h-[42px] shrink-0 rounded-xl px-5">
+              <Button type="submit" className="h-[42px] shrink-0 rounded-md px-5">
                 Ask
               </Button>
             )}
           </div>
+          {/* Keyboard chrome only. The 8-call cap used to be tacked on here,
+              where it read as a third shortcut; it now lives in the timeline
+              header, counting up against the budget as it is spent. */}
           <p className="mt-1.5 px-1 text-[11px] text-muted-foreground">
-            Enter to send · Shift+Enter for a new line · the agent stops after 8
-            tool calls
+            <kbd className="font-mono">Enter</kbd> to send ·{" "}
+            <kbd className="font-mono">Shift+Enter</kbd> for a new line
           </p>
         </form>
       </section>
 
-      {/* Right — code viewer. A sheet below lg, a pane at lg and up. */}
+      {/* Right — code viewer. A sheet below lg, a pane at lg and up.
+          `min-w-0` is load-bearing: the viewer renders its `pre` at `w-max` so
+          unwrapped lines can scroll, and without it this flex item grows to the
+          widest line in the file and scrolls the whole document sideways —
+          header and conversation included. */}
       <section
         className={cn(
           "fixed inset-x-0 bottom-0 top-12 z-50 border-t bg-card shadow-2xl transition-transform duration-200",
           selection ? "translate-y-0" : "translate-y-full",
-          "lg:static lg:z-auto lg:w-[44%] lg:translate-y-0 lg:border-t-0 lg:shadow-none",
+          "lg:static lg:z-auto lg:w-[44%] lg:min-w-0 lg:translate-y-0 lg:border-t-0 lg:shadow-none",
         )}
       >
         <CodeViewer
@@ -364,10 +343,7 @@ export function ChatView({ repoId }: { repoId: string }) {
           selection={selection}
           repoUrl={repo.data.url}
           headSha={repo.data.head_sha}
-          onClose={() => {
-            pinnedRef.current = true;
-            setSelection(null);
-          }}
+          onClose={() => setSelection(null)}
         />
       </section>
     </div>

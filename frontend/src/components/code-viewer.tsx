@@ -81,6 +81,80 @@ function Placeholder({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * The resting state, drawn as a ghost of the viewer itself: a stack of blank
+ * code lines with a cited range marked in clay exactly the way a real citation
+ * is marked. It shows what a click will do instead of describing it, and it
+ * fills a pane that is otherwise 44% of the screen holding one grey sentence.
+ *
+ * Indents and widths are hand-set to read as plausible Python — a uniform
+ * ladder of equal bars reads as a loading skeleton, which this is not.
+ */
+const GHOST_LINES: { indent: number; width: number; marked?: boolean }[] = [
+  { indent: 0, width: 62 },
+  { indent: 1, width: 44 },
+  { indent: 0, width: 0 },
+  { indent: 1, width: 78, marked: true },
+  { indent: 2, width: 55, marked: true },
+  { indent: 2, width: 68, marked: true },
+  { indent: 1, width: 30, marked: true },
+  { indent: 0, width: 0 },
+  { indent: 1, width: 50 },
+  { indent: 2, width: 36 },
+];
+
+function EmptyState() {
+  return (
+    <div className="flex h-full items-center justify-center overflow-hidden p-8">
+      <div className="w-full max-w-[19rem]">
+        <p className="eyebrow">Source</p>
+
+        <h2 className="display mt-4 text-xl font-semibold leading-snug">
+          Nothing open yet.
+        </h2>
+
+        <p className="mt-2.5 text-[13px] leading-relaxed text-muted-foreground">
+          Click any{" "}
+          <span className="rounded-sm border bg-muted/60 px-1 py-px font-mono text-[11px] text-foreground/80">
+            file:line
+          </span>{" "}
+          chip — in an answer or in the tool trace — and the source opens here,
+          scrolled to the cited lines.
+        </p>
+
+        <div aria-hidden className="mt-7 select-none">
+          {GHOST_LINES.map((line, i) => (
+            <div
+              key={i}
+              className={cn(
+                "flex items-center gap-3 py-[3px] pl-2",
+                line.marked && "border-l-2 border-primary bg-primary/[0.05]",
+                !line.marked && "border-l-2 border-transparent",
+              )}
+            >
+              <span className="w-5 shrink-0 text-right font-mono text-[10px] tabular-nums text-muted-foreground/35">
+                {241 + i}
+              </span>
+              {line.width > 0 && (
+                <span
+                  className={cn(
+                    "h-[5px] rounded-full",
+                    line.marked ? "bg-primary/25" : "bg-foreground/[0.09]",
+                  )}
+                  style={{
+                    width: `${line.width}%`,
+                    marginLeft: `${line.indent * 12}px`,
+                  }}
+                />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function CodeViewer({
   repoId,
   selection,
@@ -125,13 +199,7 @@ export function CodeViewer({
     target?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selection, tokens]);
 
-  if (!selection) {
-    return (
-      <Placeholder>
-        Click a citation or a step location to view the cited code here.
-      </Placeholder>
-    );
-  }
+  if (!selection) return <EmptyState />;
 
   if (file.isError) {
     const notFound = file.error instanceof ApiError && file.error.status === 404;
@@ -218,9 +286,12 @@ export function CodeViewer({
       </div>
 
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto">
+        {/* 11.5px, not 13px: this pane is a ~44% column, and at 13px a typical
+            88-column Python line does not fit — every line became a horizontal
+            scroll or a wrap. The smaller size buys roughly ten more columns. */}
         <pre
           className={cn(
-            "min-w-full py-3 text-[13px] leading-relaxed",
+            "min-w-full py-3 text-[11.5px] leading-[1.65]",
             wrap ? "w-full" : "w-max",
           )}
         >
@@ -241,7 +312,7 @@ export function CodeViewer({
                 <span
                   aria-hidden
                   className={cn(
-                    "sticky left-0 w-12 shrink-0 select-none border-r-2 bg-card pr-2.5 text-right tabular-nums",
+                    "sticky left-0 w-10 shrink-0 select-none border-r-2 bg-card pr-2 text-right tabular-nums",
                     marked
                       ? "border-primary text-primary"
                       : "border-transparent text-muted-foreground/50",
@@ -252,7 +323,7 @@ export function CodeViewer({
                 </span>
                 <code
                   className={cn(
-                    "pl-3 pr-4",
+                    "pl-2.5 pr-4",
                     // min-w-0 is what lets a flex child shrink below its
                     // content; without it wrapping cannot take effect at all.
                     wrap && "min-w-0 flex-1 whitespace-pre-wrap break-all",

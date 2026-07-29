@@ -4,8 +4,11 @@
  * One question + everything its stream produced: step timeline, answer prose
  * with inline citation chips, the validated `citations` chips, and errors.
  *
- * The assistant turn is one column under an avatar so it reads as a reply
- * rather than as loose text under the question bubble.
+ * Set as a notebook entry, not a chat thread: the question is a display-serif
+ * heading behind a clay rule, and everything the turn produced hangs from that
+ * rule's left edge. The right-aligned filled bubble and the assistant avatar
+ * this used to render are the shape every generated chat UI has — and this is a
+ * tool for reading code, not a messaging app.
  */
 
 import { Check, Copy, RotateCcw } from "lucide-react";
@@ -18,41 +21,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { type Citation, citationKey, dedupeCitations } from "@/lib/citations";
 import type { ChatExchange, ChatStatus } from "@/lib/chat-types";
 import { inlineCitationKeys, parseMarkdown } from "@/lib/markdown";
-
-function AssistantAvatar() {
-  return (
-    <span
-      aria-hidden
-      className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.25"
-        strokeLinecap="round"
-        className="size-4"
-      >
-        <path d="M7 7h4a4 4 0 0 1 4 4v2a4 4 0 0 0 4 4h1" />
-        <circle cx="5" cy="7" r="2" fill="currentColor" stroke="none" />
-        <circle cx="5" cy="17" r="2" fill="currentColor" stroke="none" />
-        <path d="M7 17h4" />
-      </svg>
-    </span>
-  );
-}
-
-function Working({ label }: { label: string }) {
-  return (
-    <p
-      aria-live="polite"
-      className="flex items-center gap-2 text-sm text-muted-foreground"
-    >
-      <span className="size-2 animate-pulse rounded-full bg-primary" />
-      {label}
-    </p>
-  );
-}
 
 function ActionButton({
   onClick,
@@ -114,30 +82,29 @@ export function ExchangeView({
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-end">
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-sm text-primary-foreground shadow-sm">
+    <article className="space-y-4">
+      {/* The clay rule runs the full height of the question and sets the left
+          edge everything below hangs from — rule (2px) + gap (12px) = pl-3.5. */}
+      <div className="flex gap-3">
+        <span aria-hidden className="w-0.5 shrink-0 self-stretch bg-primary" />
+        <h3 className="display min-w-0 text-lg font-semibold leading-snug">
           {exchange.question}
-        </div>
+        </h3>
       </div>
 
-      <div className="flex gap-3">
-        <AssistantAvatar />
-        <div className="min-w-0 flex-1 space-y-3">
-          {live && status === "thinking" && exchange.steps.length === 0 && (
-            <Working label="thinking…" />
-          )}
-
+      <div className="pl-3.5">
+        <div className="min-w-0 space-y-3">
+          {/* One status element, not three. "thinking…" and "writing answer…"
+              used to be separate lines stacked around the timeline, so a live
+              turn grew in three places at once; both phases are now labels on
+              the single row below. */}
           <StepTimeline
             steps={exchange.steps}
             live={live}
+            status={status}
             onCiteClick={onCiteClick}
             activeKey={activeKey}
           />
-
-          {live && status === "composing" && !exchange.answer && (
-            <Working label="writing answer…" />
-          )}
 
           {exchange.answer && (
             <AnswerBody
@@ -155,7 +122,7 @@ export function ExchangeView({
 
           {extraSources.length > 0 && (
             <div className="space-y-1.5 border-t pt-3">
-              <p className="text-[11px] font-medium text-muted-foreground">
+              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
                 Sources
               </p>
               <div className="flex flex-wrap gap-1">
@@ -213,6 +180,6 @@ export function ExchangeView({
           )}
         </div>
       </div>
-    </div>
+    </article>
   );
 }

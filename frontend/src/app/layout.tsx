@@ -1,19 +1,32 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Fraunces, IBM_Plex_Mono, Instrument_Sans } from "next/font/google";
 import Link from "next/link";
 import "./globals.css";
 
 import { Providers } from "./providers";
 
-// UI face and code face. `variable` exposes each as a CSS custom property that
-// tailwind.config.ts reads, so `font-sans` / `font-mono` resolve to these.
-const fontSans = Inter({
+// Three faces: a display serif for headings, a humanist grotesque for UI text,
+// and a warm mono for code and figures. `variable` exposes each as a CSS custom
+// property that tailwind.config.ts reads, so `font-sans` / `font-mono` /
+// `font-display` resolve to these.
+//
+// Fraunces is a variable font with optical-size, softness and "wonk" axes — it
+// is what gives headings a drawn, slightly idiosyncratic voice instead of the
+// flat geometric sans that every generated page ships with.
+const fontDisplay = Fraunces({
+  subsets: ["latin"],
+  variable: "--font-display",
+  display: "swap",
+  axes: ["SOFT", "WONK", "opsz"],
+});
+const fontSans = Instrument_Sans({
   subsets: ["latin"],
   variable: "--font-sans",
   display: "swap",
 });
-const fontMono = JetBrains_Mono({
+const fontMono = IBM_Plex_Mono({
   subsets: ["latin"],
+  weight: ["400", "500", "600"],
   variable: "--font-mono",
   display: "swap",
 });
@@ -25,25 +38,27 @@ export const metadata: Metadata = {
   description: "Ask questions about any public Python GitHub repo.",
 };
 
-/** Wordmark glyph: three nodes and two edges — the symbol graph, abbreviated. */
+/**
+ * Wordmark glyph: three nodes and two edges — the symbol graph, abbreviated.
+ * Drawn as bare ink rather than set inside a filled rounded tile; the tile is
+ * the house style of every generated dashboard and it reads as one.
+ */
 function LogoMark() {
   return (
-    <span className="flex size-6 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm">
-      <svg
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2.25"
-        strokeLinecap="round"
-        aria-hidden
-        className="size-3.5"
-      >
-        <path d="M7 7h4a4 4 0 0 1 4 4v2a4 4 0 0 0 4 4h1" />
-        <circle cx="5" cy="7" r="2" fill="currentColor" stroke="none" />
-        <circle cx="5" cy="17" r="2" fill="currentColor" stroke="none" />
-        <path d="M7 17h4" />
-      </svg>
-    </span>
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      aria-hidden
+      className="size-5 shrink-0 text-primary"
+    >
+      <path d="M7 7h4a4 4 0 0 1 4 4v2a4 4 0 0 0 4 4h1" />
+      <circle cx="5" cy="7" r="2" fill="currentColor" stroke="none" />
+      <circle cx="5" cy="17" r="2" fill="currentColor" stroke="none" />
+      <path d="M7 17h4" />
+    </svg>
   );
 }
 
@@ -59,19 +74,22 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`${fontSans.variable} ${fontMono.variable}`}>
+    <html
+      lang="en"
+      className={`${fontDisplay.variable} ${fontSans.variable} ${fontMono.variable}`}
+    >
       <body className="min-h-screen antialiased">
         <Providers>
-          <header className="sticky top-0 z-40 border-b border-border/70 bg-background/80 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+          <header className="sticky top-0 z-40 border-b border-border/70 bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/65">
             {/* Full-bleed on every route: the wordmark sits hard left and the
                 source link hard right, rather than inside a centred column. */}
             <div className="flex h-12 w-full items-center justify-between gap-4 px-4 sm:px-6">
               <Link
                 href="/"
-                className="flex items-center gap-2.5 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                className="flex items-center gap-2.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
               >
                 <LogoMark />
-                <span className="text-sm font-semibold tracking-tight">
+                <span className="display text-[15px] font-semibold">
                   Codebase Onboarding Assistant
                 </span>
               </Link>

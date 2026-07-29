@@ -3,49 +3,61 @@
 @tailwind utilities;
 
 @layer base {
+  /* Warm, ink-on-paper palette. Every neutral carries a little yellow in it
+     (hues in the 25–42 range) rather than the blue-grey slate default, so the
+     page reads as paper under a warm light instead of as a screenshot of an
+     admin panel. The one chromatic accent is clay — a muted burnt sienna. */
   :root {
-    /* The page surface is a hair off-white so that cards (--card, pure white)
-       read as elevated rather than as hairline outlines on the same plane. */
-    --background: 210 20% 98%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    /* One accent hue for every interactive affordance — CTA, focus ring, links,
-       active citation chips — instead of the near-black default. */
-    --primary: 243 75% 59%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 243 75% 59%;
-    --radius: 0.75rem;
+    --background: 40 33% 96%;
+    --foreground: 25 18% 14%;
+    /* Cards are warmer *and* lighter than the page, so they sit above it. */
+    --card: 42 50% 99%;
+    --card-foreground: 25 18% 14%;
+    --primary: 12 58% 45%;
+    --primary-foreground: 42 50% 99%;
+    --secondary: 38 22% 92%;
+    --secondary-foreground: 25 18% 20%;
+    --muted: 38 22% 92%;
+    --muted-foreground: 28 9% 42%;
+    --accent: 38 22% 92%;
+    --accent-foreground: 25 18% 20%;
+    --destructive: 4 58% 45%;
+    --destructive-foreground: 42 50% 99%;
+    --border: 34 20% 87%;
+    --input: 34 20% 83%;
+    --ring: 12 58% 45%;
+
+    /* Two supporting hues, used only to distinguish states — never as
+       decoration. Sage is "settled/done"; ochre is "in flight". */
+    --sage: 150 24% 32%;
+    --ochre: 34 62% 38%;
+
+    /* Small enough that shapes read as drawn rather than as pill-shaped
+       widgets. The blob-radius default was doing a lot of the "generic" work. */
+    --radius: 0.5rem;
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --background: 26 14% 9%;
+    --foreground: 40 24% 92%;
+    --card: 26 13% 12%;
+    --card-foreground: 40 24% 92%;
+    --primary: 14 68% 55%;
+    --primary-foreground: 26 14% 9%;
+    --secondary: 28 10% 18%;
+    --secondary-foreground: 40 24% 92%;
+    --muted: 28 10% 18%;
+    --muted-foreground: 36 10% 62%;
+    --accent: 28 10% 18%;
+    --accent-foreground: 40 24% 92%;
+    --destructive: 4 55% 48%;
+    --destructive-foreground: 40 24% 92%;
+    --border: 28 10% 20%;
+    --input: 28 10% 24%;
+    --ring: 14 68% 55%;
+
+    --sage: 150 26% 58%;
+    --ochre: 34 60% 60%;
   }
 }
 
@@ -54,7 +66,24 @@
     @apply border-border;
   }
   body {
-    @apply bg-background font-sans text-foreground;
+    @apply relative bg-background font-sans text-foreground;
+  }
+
+  /* A faint paper grain over the whole page. Flat digital fills are the single
+     loudest "this was generated" cue; ~2% of monochrome noise is invisible as
+     texture but stops large areas from looking dead. Pointer-events-none and
+     fixed, so it never interferes with layout or interaction. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.035;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  .dark body::before {
+    opacity: 0.05;
   }
 }
 
@@ -62,16 +91,26 @@
   /* Shared page gutter. The header and every centered page use this so the
      wordmark and the page heading share one left edge. */
   .page-container {
-    @apply mx-auto w-full max-w-5xl px-4 sm:px-6;
+    @apply relative z-10 mx-auto w-full max-w-5xl px-4 sm:px-6;
   }
 
-  /* Accent wash behind the hero. Written here rather than as an arbitrary
-     Tailwind value so the `hsl(... / alpha)` slash stays unambiguous. */
-  .hero-glow {
-    background-image: radial-gradient(
-      65% 100% at 50% 0%,
-      hsl(var(--primary) / 0.1),
-      transparent 70%
-    );
+  /* Display type wants its own tracking and optical size — Fraunces at hero
+     size is too loose on defaults and its lower-contrast "soft" axis keeps it
+     from reading as a stock serif. */
+  .display {
+    font-family: var(--font-display), Georgia, serif;
+    font-variation-settings:
+      "SOFT" 30,
+      "WONK" 1;
+    letter-spacing: -0.018em;
+  }
+
+  /* The eyebrow rule above the hero: a short clay dash, then small caps. */
+  .eyebrow {
+    @apply flex items-center gap-2.5 font-mono text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground;
+  }
+  .eyebrow::before {
+    content: "";
+    @apply h-px w-7 shrink-0 bg-primary;
   }
 }
