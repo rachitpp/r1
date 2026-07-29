@@ -44,14 +44,14 @@ def parse_citations(text: str) -> list[Citation]:
 
 
 async def validate_citations(
-    conn: asyncpg.Connection, repo_id: UUID, citations: list[Citation]
+    conn: asyncpg.Connection, snapshot_id: UUID, citations: list[Citation]
 ) -> list[Citation]:
     """Drop citations whose file is not in the repo; clamp ranges to EOF."""
     if not citations:
         return []
     rows = await conn.fetch(
-        "SELECT path, n_lines FROM files WHERE repo_id = $1 AND path = ANY($2::text[])",
-        repo_id,
+        "SELECT path, n_lines FROM files WHERE snapshot_id = $1 AND path = ANY($2::text[])",
+        snapshot_id,
         [c["file_path"] for c in citations],
     )
     n_lines_of = {str(r["path"]): int(r["n_lines"]) for r in rows}

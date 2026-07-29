@@ -57,13 +57,13 @@ def _number_lines(code: str, start_line: int) -> str:
 
 
 async def search_code(
-    conn: asyncpg.Connection, repo_id: UUID, query: str, k: int = SEARCH_K
+    conn: asyncpg.Connection, snapshot_id: UUID, query: str, k: int = SEARCH_K
 ) -> dict[str, Any]:
     """Semantic entry-point finding over implementation chunks (§5.4)."""
     if not query.strip():
         return _err("query must be a non-empty string")
     try:
-        hits = await search(conn, repo_id, query, k=k, mode="hybrid")
+        hits = await search(conn, snapshot_id, query, k=k, mode="hybrid")
     except Exception as exc:  # noqa: BLE001 — never raise into the loop
         logger.exception("search_code failed")
         return _err(f"search failed: {exc}")
@@ -77,15 +77,15 @@ async def search_code(
 
 async def read_file(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     path: str,
     start_line: int | None = None,
     end_line: int | None = None,
 ) -> dict[str, Any]:
     """Line-numbered file content, whole-file only under ``READ_MAX_LINES``."""
     row = await conn.fetchrow(
-        "SELECT content, n_lines FROM files WHERE repo_id = $1 AND path = $2",
-        repo_id,
+        "SELECT content, n_lines FROM files WHERE snapshot_id = $1 AND path = $2",
+        snapshot_id,
         path,
     )
     if row is None:
@@ -128,7 +128,7 @@ async def read_file(
 
 async def get_definition(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     symbol: str,
     *,
     include_tests: bool = False,
@@ -147,14 +147,14 @@ async def get_definition(
                c.code, c.symbol_id
           FROM symbols s
           LEFT JOIN chunks c
-            ON c.repo_id = s.repo_id AND c.symbol_id = s.id AND c.part = 1
-         WHERE s.repo_id = $1
+            ON c.snapshot_id = s.snapshot_id AND c.symbol_id = s.id AND c.part = 1
+         WHERE s.snapshot_id = $1
            AND (s.name = $2 OR s.qualname = $2 OR s.qualname LIKE '%.' || $2)
            {"" if include_tests else "AND NOT s.is_test"}
          ORDER BY length(s.qualname), s.qualname
          LIMIT $3
         """,
-        repo_id,
+        snapshot_id,
         symbol,
         MAX_DEFINITION_MATCHES,
     )
@@ -167,7 +167,7 @@ async def get_definition(
         code = str(r["code"] or "")
         block = await called_by_block(
             conn,
-            repo_id,
+            snapshot_id,
             symbol_id=r["symbol_id"],
             file_path=str(r["file_path"]),
             qualname=str(r["qualname"]),
@@ -192,7 +192,7 @@ async def get_definition(
 
 async def find_references(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     symbol: str,
     kind: str | None = None,
     *,
@@ -212,13 +212,13 @@ async def find_references(
           FROM edges e
           JOIN symbols t ON t.id = e.to_symbol
           JOIN symbols f ON f.id = e.from_symbol
-         WHERE e.repo_id = $1
+         WHERE e.snapshot_id = $1
            AND (t.name = $2 OR t.qualname = $2 OR t.qualname LIKE '%.' || $2)
            {"" if include_tests else "AND NOT f.is_test"}
            {"AND e.kind = $3" if kind else ""}
          ORDER BY f.file_path, line
         """,
-        *( (repo_id, symbol, kind) if kind else (repo_id, symbol) ),
+        *( (snapshot_id, symbol, kind) if kind else (snapshot_id, symbol) ),
     )
     return {
         "references": [
@@ -240,7 +240,7 @@ async def find_references(
 
 async def expand_context(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     symbol: str,
     depth: int = 1,
     direction: str = "out",
@@ -262,13 +262,13 @@ async def expand_context(
     root = await conn.fetchrow(
         f"""
         SELECT id, qualname FROM symbols
-         WHERE repo_id = $1
+         WHERE snapshot_id = $1
            AND (name = $2 OR qualname = $2 OR qualname LIKE '%.' || $2)
            {"" if include_tests else "AND NOT is_test"}
          ORDER BY length(qualname)
          LIMIT 1
         """,
-        repo_id,
+        snapshot_id,
         symbol,
     )
     if root is None:
@@ -281,7 +281,7 @@ async def expand_context(
                    o.qualname AS to_q
               FROM edges e JOIN symbols s ON s.id = e.from_symbol
                            JOIN symbols o ON o.id = e.to_symbol
-             WHERE e.repo_id = $1 AND e.from_symbol = $2 {test_clause}
+             WHERE e.snapshot_id = $1 AND e.from_symbol = $2 {test_clause}
         """
     elif direction == "in":
         edge_sql = f"""
@@ -289,7 +289,7 @@ async def expand_context(
                    s.qualname AS to_q
               FROM edges e JOIN symbols s ON s.id = e.to_symbol
                            JOIN symbols o ON o.id = e.from_symbol
-             WHERE e.repo_id = $1 AND e.to_symbol = $2 {test_clause}
+             WHERE e.snapshot_id = $1 AND e.to_symbol = $2 {test_clause}
         """
     else:
         edge_sql = f"""
@@ -302,7 +302,7 @@ async def expand_context(
                            JOIN symbols o
                              ON o.id = CASE WHEN e.from_symbol = $2
                                             THEN e.to_symbol ELSE e.from_symbol END
-             WHERE e.repo_id = $1
+             WHERE e.snapshot_id = $1
                AND (e.from_symbol = $2 OR e.to_symbol = $2) {test_clause}
         """
 
@@ -315,7 +315,7 @@ async def expand_context(
         node_id, d = frontier.popleft()
         if d >= depth:
             continue
-        for r in await conn.fetch(edge_sql, repo_id, node_id):
+        for r in await conn.fetch(edge_sql, snapshot_id, node_id):
             other = int(r["other"])
             edges_out.append(
                 {
@@ -339,7 +339,7 @@ async def expand_context(
             SELECT s.qualname, s.file_path, s.start_line, s.end_line, c.code
               FROM symbols s
               LEFT JOIN chunks c
-                ON c.repo_id = s.repo_id AND c.symbol_id = s.id AND c.part = 1
+                ON c.snapshot_id = s.snapshot_id AND c.symbol_id = s.id AND c.part = 1
              WHERE s.id = $1
             """,
             sid,
@@ -374,17 +374,17 @@ async def expand_context(
 
 
 async def list_directory(
-    conn: asyncpg.Connection, repo_id: UUID, path: str = ""
+    conn: asyncpg.Connection, snapshot_id: UUID, path: str = ""
 ) -> dict[str, Any]:
     """Two-level tree with sizes, served from the ``files`` table (§10)."""
     prefix = path.strip("/")
     rows = await conn.fetch(
         """
         SELECT path, n_lines FROM files
-         WHERE repo_id = $1 AND ($2 = '' OR path LIKE $2 || '/%' OR path = $2)
+         WHERE snapshot_id = $1 AND ($2 = '' OR path LIKE $2 || '/%' OR path = $2)
          ORDER BY path
         """,
-        repo_id,
+        snapshot_id,
         prefix,
     )
     if not rows:

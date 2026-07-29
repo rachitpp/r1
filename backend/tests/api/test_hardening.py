@@ -103,10 +103,16 @@ async def test_metrics_expose_prometheus_text(client: httpx.AsyncClient) -> None
 async def test_metrics_label_paths_by_route_template_not_by_id(
     client: httpx.AsyncClient,
 ) -> None:
-    """A label per repo id would mint a time series per repo, forever."""
+    """A label per repo id would mint a time series per repo, forever.
+
+    The template is `{snapshot_id}` since §14: the path parameter was renamed
+    with everything else, and the metric label follows the route. That renames
+    one Prometheus series — harmless here, and the new name is the accurate one,
+    but it is a real change for anything already graphing the old label.
+    """
     await client.get(f"/repos/{REPO_ID}")
     text = (await client.get("/metrics")).text
-    assert 'path="/repos/{repo_id}"' in text
+    assert 'path="/repos/{snapshot_id}"' in text
     assert str(REPO_ID) not in text
 
 
@@ -231,7 +237,7 @@ async def test_ingest_is_refused_when_too_many_are_already_active(
     monkeypatch.setattr(get_settings(), "MAX_ACTIVE_INGESTS", 1)
 
     async def busy(sql: str, *args: Any) -> int:
-        return 5 if "count(*) FROM repos" in sql else 0
+        return 5 if "count(*) FROM repo_snapshots" in sql else 0
 
     monkeypatch.setattr(conn, "fetchval", busy)
     resp = await client.post("/repos", json={"url": "https://github.com/psf/requests"})

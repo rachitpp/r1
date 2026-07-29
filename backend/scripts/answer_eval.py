@@ -57,7 +57,7 @@ from app.agent.graph import answer_question, repo_facts  # noqa: E402
 from app.agent.model import build_chat_model, provider_for  # noqa: E402
 from app.config import AGENT_TOOL_CAP, SEARCH_K, get_settings  # noqa: E402
 from app.db.pool import close_pool, create_pool  # noqa: E402
-from app.db.queries import resolve_repo_id  # noqa: E402
+from app.db.queries import resolve_snapshot_id  # noqa: E402
 from app.retrieval.hybrid import search  # noqa: E402
 
 DOCS = Path(__file__).resolve().parent.parent.parent / "docs"
@@ -200,7 +200,7 @@ def uses_symbol(answer: str, symbols: list[str]) -> bool:
 
 
 async def run_stuffed(
-    model: object, conn: asyncpg.Connection, repo_id: UUID, question: str
+    model: object, conn: asyncpg.Connection, snapshot_id: UUID, question: str
 ) -> tuple[str, int]:
     """One model call with the top-10 default-pipeline chunks in context.
 
@@ -208,7 +208,7 @@ async def run_stuffed(
     *same* retrieval the agent's first `search_code` would do, and the *same*
     citation contract in its prompt. If it loses, it must not lose on format.
     """
-    hits = await search(conn, repo_id, question, k=SEARCH_K, mode="hybrid")
+    hits = await search(conn, snapshot_id, question, k=SEARCH_K, mode="hybrid")
     blocks = []
     for h in hits:
         row = await conn.fetchrow("SELECT code FROM chunks WHERE id = $1", h["chunk_id"])
@@ -232,7 +232,7 @@ async def run_stuffed(
 
 
 async def run_agent(
-    model: object, conn: asyncpg.Connection, repo_id: UUID, question: str, cap: int
+    model: object, conn: asyncpg.Connection, snapshot_id: UUID, question: str, cap: int
 ) -> tuple[str, int, list[str]]:
     """The full loop. Also returns which tools were called, in order.
 
@@ -241,7 +241,7 @@ async def run_agent(
     claim is that graph traversal reaches code search missed, so
     `expand_context` / `find_references` usage is what distinguishes the two.
     """
-    state = await answer_question(model, conn, repo_id, question, tool_cap=cap)  # type: ignore[arg-type]
+    state = await answer_question(model, conn, snapshot_id, question, tool_cap=cap)  # type: ignore[arg-type]
     from langchain_core.messages import AIMessage
 
     answer = ""
@@ -278,10 +278,10 @@ async def evaluate(
     results = [ModeResult(mode=m) for m in modes]
     try:
         async with pool.acquire() as conn:
-            repo_id = await resolve_repo_id(conn, repo_ref)
-            if repo_id is None:
+            snapshot_id = await resolve_snapshot_id(conn, repo_ref)
+            if snapshot_id is None:
                 raise SystemExit(f"repo {repo_ref!r} not ingested")
-            name, _, _ = await repo_facts(conn, repo_id)
+            name, _, _ = await repo_facts(conn, snapshot_id)
             print(f"repo {name}   model {model_name}   {len(questions)} questions")
 
             model = build_chat_model()
@@ -296,19 +296,19 @@ async def evaluate(
                     try:
                         if mr.mode == "stuffed":
                             answer, used = await run_stuffed(
-                                model, conn, repo_id, q["question"]
+                                model, conn, snapshot_id, q["question"]
                             )
                             n_calls += 1
                         else:
                             answer, used, names = await run_agent(
-                                model, conn, repo_id, q["question"], cap
+                                model, conn, snapshot_id, q["question"], cap
                             )
                             n_calls += used + 1
                     except Exception as exc:  # noqa: BLE001 — one failure is a row
                         err = f"{type(exc).__name__}: {str(exc)[:120]}"
 
                     cites = await validate_citations(
-                        conn, repo_id, parse_citations(answer)
+                        conn, snapshot_id, parse_citations(answer)
                     )
                     hit = any(c["file_path"] in truth for c in cites)
                     sym_hit = hit and uses_symbol(

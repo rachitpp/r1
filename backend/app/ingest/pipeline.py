@@ -42,7 +42,7 @@ import asyncpg
 from app.config import PROGRESS_EVERY_N, get_settings
 from app.db import queries
 from app.db.pool import close_pool, create_pool
-from app.exceptions import IngestError
+from app.exceptions import IngestError, SnapshotSuperseded
 from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo
 from app.ingest.embedder import get_embedder
@@ -67,15 +67,12 @@ ProgressLog = Callable[[str], None]
 # baseline and is reachable only from the CLI (SPEC §2.7).
 STRATEGIES = ("ast", "naive")
 
-# Marks a baseline repo row. `repos.url` is UNIQUE (§3), so the naive corpus of
-# a repo needs a distinct URL string to coexist with its AST corpus; the
-# fragment is stripped before cloning and is never sent to git.
-NAIVE_URL_FRAGMENT = "#naive"
-
-
-def baseline_url(url: str) -> str:
-    """The naive corpus's row URL for ``url`` — a distinct, non-cloneable key."""
-    return f"{url}{NAIVE_URL_FRAGMENT}"
+# The `#naive` URL fragment is gone (SPEC §14.6). It existed only because
+# `repos.url` was UNIQUE and the baseline corpus needed a distinct key to
+# coexist with the AST corpus; a snapshot carries `strategy` instead, so the
+# two live side by side at the same commit with no string mangling. A refactor
+# that deletes a workaround rather than relocating it is evidence the model
+# fits — the opposite outcome would have been evidence against.
 
 
 @dataclasses.dataclass
@@ -87,7 +84,7 @@ class IngestStats:
     """
 
     name: str
-    repo_id: str
+    snapshot_id: str
     head_sha: str
     default_branch: str
     selection: SelectionResult
@@ -123,7 +120,7 @@ def _chunk_to_row(chunk: Chunk, embedding: list[float]) -> queries.ChunkRow:
 
 async def _store_graph(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     repo_dir: Path,
     selection: SelectionResult,
     parsed: list[ParsedFile],
@@ -142,26 +139,26 @@ async def _store_graph(
 
     await queries.insert_symbols(
         conn,
-        repo_id,
+        snapshot_id,
         [
             (s.name, s.qualname, s.kind, s.file_path, s.start_line, s.end_line, s.is_test)
             for s in symbols
         ],
     )
-    id_of = await queries.symbol_id_map(conn, repo_id)
+    id_of = await queries.symbol_id_map(conn, snapshot_id)
     edge_rows: list[queries.EdgeRowT] = [
         (id_of[e.from_key], id_of[e.to_key], e.kind, e.line)
         for e in edges
         if e.from_key in id_of and e.to_key in id_of
     ]
-    await queries.insert_edges(conn, repo_id, edge_rows)
+    await queries.insert_edges(conn, snapshot_id, edge_rows)
 
     n_test = sum(1 for s in symbols if s.is_test)
     return len(symbols), n_test, len(edge_rows), stats
 
 
 async def run_ingest(
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     pool: asyncpg.Pool | None = None,
     build_graph: bool = True,
@@ -190,7 +187,7 @@ async def run_ingest(
     try:
         async with pool.acquire() as conn:
             return await _run(
-                conn, repo_id, build_graph=build_graph, strategy=strategy, say=say
+                conn, snapshot_id, build_graph=build_graph, strategy=strategy, say=say
             )
     finally:
         if own_pool:
@@ -199,48 +196,66 @@ async def run_ingest(
 
 async def _run(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     build_graph: bool,
     strategy: str,
     say: ProgressLog,
 ) -> IngestStats:
-    row = await conn.fetchrow("SELECT url FROM repos WHERE id = $1", repo_id)
+    row = await queries.source_of(conn, snapshot_id)
     if row is None:
-        raise IngestError(f"no repo row {repo_id}")
-    url = str(row["url"])
-    # A baseline row's URL carries the marker fragment; git must not see it.
-    clone_url = url.split("#", 1)[0]
+        raise IngestError(f"no snapshot {snapshot_id}")
+    # The URL is already canonical — no fragment to strip, because there is no
+    # longer a fragment to add (§14.6).
+    clone_url = str(row["url"])
 
     embedder = get_embedder()  # also the real TokenCounter for oversize splits
-    await queries.start_ingest(conn, repo_id, status="cloning")
+    await queries.start_ingest(conn, snapshot_id, status="cloning")
     say(f"cloning {clone_url}")
 
     parse_start = time.perf_counter()
     with cloned_repo(clone_url) as info:
+        # §14.4, the half of dedup that needs the clone. The commit SHA is not
+        # knowable before this point — checking earlier would dedup on URL,
+        # which is wrong (two users, two commits), and checking after ingesting
+        # would dedup nothing. This is where a thousand submissions of one
+        # popular repo collapse into a single stored corpus.
+        kept = await queries.find_ready_snapshot(
+            conn, row["source_id"], info.head_sha, strategy
+        )
+        if kept is not None and kept != snapshot_id:
+            await queries.supersede_snapshot(conn, snapshot_id, kept)
+            say(f"already ingested at {info.head_sha[:12]}; reusing snapshot {kept}")
+            raise SnapshotSuperseded(kept)
+
         await queries.set_repo_clone_info(
             conn,
-            repo_id,
-            # The clone reports the upstream name, which would make a baseline
-            # row indistinguishable from its AST twin in /repos and the UI.
-            name=f"{info.name}@naive" if strategy == "naive" else info.name,
+            snapshot_id,
+            # The plain upstream name: the AST and naive corpora of one repo
+            # now share a source and are told apart by `strategy` (§14.6),
+            # so the name no longer has to carry the distinction.
+            name=info.name,
             head_sha=info.head_sha,
             default_branch=info.default_branch,
         )
 
         # --- parsing -------------------------------------------------------
-        await queries.set_repo_status(conn, repo_id, "parsing")
+        await queries.set_repo_status(conn, snapshot_id, "parsing")
         selection = select_files(info.path)
         say(f"selected {selection.n_kept} of {selection.n_candidates} candidate files")
 
-        # Delete-and-replace at the start (§10 idempotency): a retry or a
-        # re-ingest must not stack rows on top of the previous attempt's.
-        await queries.clear_repo_graph(conn, repo_id)
-        await queries.clear_repo_content(conn, repo_id)
+        # A snapshot is written once and frozen (§14.3), so there is normally
+        # nothing here to clear — this is a fresh row. The clear survives for
+        # one case only: an ARQ retry re-entering a snapshot whose first
+        # attempt died partway. Those rows are unreachable (a non-`ready`
+        # snapshot is not servable), so clearing them races with no reader,
+        # which is exactly what was untrue before the split.
+        await queries.clear_repo_graph(conn, snapshot_id)
+        await queries.clear_repo_content(conn, snapshot_id)
         file_rows = [(f.path, f.text, f.n_lines) for f in selection.files]
-        await queries.insert_files(conn, repo_id, file_rows)
+        await queries.insert_files(conn, snapshot_id, file_rows)
         await queries.set_repo_progress(
-            conn, repo_id, files_total=len(file_rows), files_parsed=0
+            conn, snapshot_id, files_total=len(file_rows), files_parsed=0
         )
 
         parsed: list[ParsedFile] = []
@@ -253,7 +268,7 @@ async def _run(
             else:
                 parsed.append(pf)
             if i - last_written >= PROGRESS_EVERY_N or i == len(selection.files):
-                await queries.set_repo_progress(conn, repo_id, files_parsed=i)
+                await queries.set_repo_progress(conn, snapshot_id, files_parsed=i)
                 last_written = i
         say(f"parsed {len(parsed)} files ({n_syntax_errors} syntax errors)")
 
@@ -277,7 +292,7 @@ async def _run(
             heuristic_chunk_count = sum(len(chunk_file(pf, heuristic)) for pf in parsed)
         parse_elapsed = time.perf_counter() - parse_start
         await queries.set_repo_progress(
-            conn, repo_id, chunks_total=len(chunks), chunks_embedded=0
+            conn, snapshot_id, chunks_total=len(chunks), chunks_embedded=0
         )
 
         # --- linking -------------------------------------------------------
@@ -285,11 +300,11 @@ async def _run(
         graph_stats: EdgeStats | None = None
         graph_elapsed = 0.0
         if build_graph:
-            await queries.set_repo_status(conn, repo_id, "linking")
+            await queries.set_repo_status(conn, snapshot_id, "linking")
             say("building symbol graph (tree-sitter sites, Jedi resolve)…")
             graph_start = time.perf_counter()
             n_symbols, n_symbols_test, n_edges, graph_stats = await _store_graph(
-                conn, repo_id, info.path, selection, parsed
+                conn, snapshot_id, info.path, selection, parsed
             )
             graph_elapsed = time.perf_counter() - graph_start
             say(
@@ -300,7 +315,7 @@ async def _run(
         # --- embedding -----------------------------------------------------
         # The clone is no longer needed from here on, but staying inside the
         # context costs only disk and keeps the exit path single.
-        await queries.set_repo_status(conn, repo_id, "embedding")
+        await queries.set_repo_status(conn, snapshot_id, "embedding")
         db_start = time.perf_counter()
         total = len(chunks)
         done = 0
@@ -312,10 +327,10 @@ async def _run(
             rows = [
                 _chunk_to_row(c, v) for c, v in zip(batch, vectors, strict=True)
             ]
-            await queries.insert_chunks(conn, repo_id, rows)
+            await queries.insert_chunks(conn, snapshot_id, rows)
             done += len(batch)
             if done - last_written >= PROGRESS_EVERY_N or done == total:
-                await queries.set_repo_progress(conn, repo_id, chunks_embedded=done)
+                await queries.set_repo_progress(conn, snapshot_id, chunks_embedded=done)
                 rate = done / max(time.perf_counter() - embed_start, 1e-9)
                 say(f"embedded {done}/{total} chunks ({rate:.0f}/s)")
                 last_written = done
@@ -323,12 +338,12 @@ async def _run(
 
         n_linked = 0
         if build_graph:
-            n_linked = await queries.backfill_chunk_symbol_ids(conn, repo_id)
+            n_linked = await queries.backfill_chunk_symbol_ids(conn, snapshot_id)
             say(f"linked {n_linked} chunks to a symbol")
 
         await queries.finalize_repo(
             conn,
-            repo_id,
+            snapshot_id,
             files_total=len(file_rows),
             files_parsed=len(parsed),
             chunks_total=total,
@@ -338,7 +353,7 @@ async def _run(
 
         return IngestStats(
             name=info.name,
-            repo_id=str(repo_id),
+            snapshot_id=str(snapshot_id),
             head_sha=info.head_sha,
             default_branch=info.default_branch,
             selection=selection,

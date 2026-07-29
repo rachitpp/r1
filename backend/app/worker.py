@@ -23,6 +23,7 @@ from arq.connections import RedisSettings
 from app.config import ZOMBIE_AFTER_S, get_settings
 from app.db import queries
 from app.db.pool import close_pool, create_pool
+from app.exceptions import SnapshotSuperseded
 from app.ingest.embedder import get_embedder
 from app.ingest.pipeline import run_ingest
 from app.logging_setup import configure_logging
@@ -48,7 +49,7 @@ async def ping(ctx: dict[str, Any]) -> str:
     return "pong"
 
 
-async def ingest_repo(ctx: dict[str, Any], repo_id: str) -> str:
+async def ingest_repo(ctx: dict[str, Any], snapshot_id: str) -> str:
     """Ingest one repo (SPEC §10). Owns the ``failed`` status and error text.
 
     :func:`run_ingest` raises rather than recording failures itself, because the
@@ -61,17 +62,24 @@ async def ingest_repo(ctx: dict[str, Any], repo_id: str) -> str:
     re-enters cleanly because the pipeline deletes and replaces at the start).
     Anything the retry does not fix is caught by the zombie sweep.
     """
-    rid = UUID(str(repo_id))
+    rid = UUID(str(snapshot_id))
     pool = ctx["pool"]
     try:
         stats = await run_ingest(
-            rid, pool=pool, log=lambda m: logger.info("[%s] %s", repo_id, m)
+            rid, pool=pool, log=lambda m: logger.info("[%s] %s", snapshot_id, m)
         )
+    except SnapshotSuperseded as dedup:
+        # A success, not a failure (SPEC §14.4): the clone found this commit
+        # already ingested, the submitters were moved to the existing snapshot,
+        # and this row is gone. Nothing to mark `failed` — there is no row left
+        # to mark, and marking the kept one would be a lie about a good corpus.
+        logger.info("[%s] %s", snapshot_id, dedup)
+        return f"deduped: {dedup.kept_id}"
     except asyncio.CancelledError:
-        logger.warning("ingest cancelled for %s (timeout or abort)", repo_id)
+        logger.warning("ingest cancelled for %s (timeout or abort)", snapshot_id)
         raise
     except Exception as exc:  # noqa: BLE001 — every failure belongs on the row
-        logger.exception("ingest failed for %s", repo_id)
+        logger.exception("ingest failed for %s", snapshot_id)
         # Redacted, because `repos.error` is not an operator-only field: it is
         # served straight to the browser by `RepoOut`. A clone failure that
         # embeds a credentialed URL, or an asyncpg error carrying the DSN, would
@@ -86,7 +94,7 @@ async def ingest_repo(ctx: dict[str, Any], repo_id: str) -> str:
         f"ready: {stats.name} files={stats.selection.n_kept} "
         f"chunks={len(stats.chunks)} symbols={stats.n_symbols} edges={stats.n_edges}"
     )
-    logger.info("[%s] %s", repo_id, summary)
+    logger.info("[%s] %s", snapshot_id, summary)
     return summary
 
 

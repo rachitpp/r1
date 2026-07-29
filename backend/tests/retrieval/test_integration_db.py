@@ -16,9 +16,11 @@ import asyncpg
 import pytest
 
 from app.config import get_settings
+from app.db import queries
 from app.db.pool import close_pool, create_pool
-from app.db.queries import count_chunks, resolve_repo_id
+from app.db.queries import count_chunks, resolve_snapshot_id
 from app.ingest.cli import ingest_to_db
+from app.ingest.pipeline import run_ingest
 from app.retrieval.hybrid import search
 
 pytestmark = pytest.mark.integration
@@ -73,6 +75,25 @@ def _make_git_repo(root: Path) -> Path:
     return repo
 
 
+def _add_commit(repo: Path, filename: str, body: str) -> None:
+    """A second commit, so the next ingest resolves to a different SHA.
+
+    Without this the two ingests are of the *same* commit and §14.4 dedup
+    correctly refuses to build a second corpus — which is the right behaviour
+    and the wrong setup for testing isolation between two corpora.
+    """
+
+    def run(*args: str) -> None:
+        subprocess.run(args, cwd=repo, check=True, capture_output=True)
+
+    (repo / filename).write_text(body, encoding="utf-8")
+    run("git", "add", ".")
+    run(
+        "git", "-c", "user.email=t@example.com", "-c", "user.name=tester",
+        "commit", "-q", "-m", "second",
+    )
+
+
 async def _delete_repo(url: str) -> None:
     pool = await create_pool(get_settings().DATABASE_URL)
     try:
@@ -99,10 +120,10 @@ async def test_db_ingest_idempotent_and_search(
         pool = await create_pool(get_settings().DATABASE_URL)
         try:
             async with pool.acquire() as conn:
-                repo_id = await resolve_repo_id(conn, url)
-                assert repo_id is not None
+                snapshot_id = await resolve_snapshot_id(conn, url)
+                assert snapshot_id is not None
 
-                stored = await count_chunks(conn, repo_id)
+                stored = await count_chunks(conn, snapshot_id)
                 assert stored == len(first.chunks)
 
                 n_repo_rows = await conn.fetchval(
@@ -111,7 +132,7 @@ async def test_db_ingest_idempotent_and_search(
                 assert n_repo_rows == 1  # upsert, not duplicate
 
                 hits = await search(
-                    conn, repo_id, "alpha helper join path", k=5, mode="hybrid+rerank"
+                    conn, snapshot_id, "alpha helper join path", k=5, mode="hybrid+rerank"
                 )
                 assert hits
                 assert any(h["file_path"] == "a.py" for h in hits)
@@ -142,26 +163,86 @@ async def test_retrieval_order_survives_a_row_rewrite(
         pool = await create_pool(get_settings().DATABASE_URL, command_timeout=None)
         try:
             async with pool.acquire() as conn:
-                repo_id = await resolve_repo_id(conn, url)
-                assert repo_id is not None
+                snapshot_id = await resolve_snapshot_id(conn, url)
+                assert snapshot_id is not None
 
                 query = "alpha helper join path"
                 before = [
-                    [h["chunk_id"] for h in await search(conn, repo_id, query, mode=m)]
+                    [h["chunk_id"] for h in await search(conn, snapshot_id, query, mode=m)]
                     for m in ("vector", "fts", "hybrid")
                 ]
                 assert any(before), "fixture produced no hits to compare"
 
                 rewritten = await conn.execute(
-                    "UPDATE chunks SET part = part WHERE repo_id = $1", repo_id
+                    "UPDATE chunks SET part = part WHERE snapshot_id = $1", snapshot_id
                 )
                 assert rewritten != "UPDATE 0"
 
                 after = [
-                    [h["chunk_id"] for h in await search(conn, repo_id, query, mode=m)]
+                    [h["chunk_id"] for h in await search(conn, snapshot_id, query, mode=m)]
                     for m in ("vector", "fts", "hybrid")
                 ]
                 assert after == before
+        finally:
+            await close_pool(pool)
+    finally:
+        await _delete_repo(url)
+
+
+async def test_a_ready_snapshot_survives_another_ingest_of_the_same_source(
+    tmp_path: Path, require_db: None
+) -> None:
+    """The race SPEC §14 exists to remove, against a real database.
+
+    Before the split there was one row per URL and every ingest began by
+    clearing its content, so a second ingest of the same repo deleted the corpus
+    the first was serving — mid-chat, silently. Now a second ingest is a
+    *different snapshot*: same source, its own rows.
+
+    Asserted the way it would actually fail: capture the exact chunk ids the
+    first snapshot serves, run a full second ingest of the same source, then
+    search the first snapshot again and require the identical id sequence.
+    """
+    repo = _make_git_repo(tmp_path)
+    url = repo.as_uri()
+    try:
+        await ingest_to_db(url)
+        pool = await create_pool(get_settings().DATABASE_URL, command_timeout=None)
+        try:
+            async with pool.acquire() as conn:
+                first = await resolve_snapshot_id(conn, url)
+                assert first is not None
+                query = "alpha helper join path"
+                before = [
+                    h["chunk_id"]
+                    for h in await search(conn, first, query, mode="hybrid")
+                ]
+                assert before, "fixture produced no hits to compare"
+                n_before = await count_chunks(conn, first)
+
+                source = await queries.source_of(conn, first)
+                assert source is not None
+
+            # A genuinely different commit, or §14.4 dedup would (rightly)
+            # decline to build a second corpus at all.
+            _add_commit(repo, "c.py", "def gamma():\n    return 3\n")
+
+            async with pool.acquire() as conn:
+                second = await queries.create_snapshot(conn, source["source_id"])
+                assert second != first
+
+            await run_ingest(second, pool=pool)
+
+            async with pool.acquire() as conn:
+                after = [
+                    h["chunk_id"]
+                    for h in await search(conn, first, query, mode="hybrid")
+                ]
+                # The original corpus is byte-for-byte the one it was.
+                assert after == before
+                assert await count_chunks(conn, first) == n_before
+                # And the new snapshot is a genuinely separate corpus.
+                assert await count_chunks(conn, second) > 0
         finally:
             await close_pool(pool)
     finally:

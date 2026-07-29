@@ -53,20 +53,21 @@ REPO_STATUSES: tuple[str, ...] = (
 IN_FLIGHT_STATUSES: tuple[str, ...] = ("cloning", "parsing", "linking", "embedding")
 
 
-async def create_repo(
-    conn: asyncpg.Connection, *, url: str, name: str
-) -> tuple[UUID, bool]:
-    """Get-or-create the ``queued`` repo row for ``url``; return ``(id, created)``.
+STRATEGIES: tuple[str, ...] = ("ast", "naive")
 
-    ``url`` is UNIQUE (§3), and ``POST /repos`` distinguishes 201 from 200 on
-    exactly this boolean. Nothing about an existing row is overwritten here —
-    re-ingest resets the row (:func:`start_ingest`), and doing it at submit time
-    would blank out a perfectly good ``ready`` repo before the job even starts.
+
+async def get_or_create_source(
+    conn: asyncpg.Connection, *, url: str, name: str
+) -> UUID:
+    """Get-or-create the `repo_sources` row for ``url`` (SPEC §14.2).
+
+    A source is the repo itself, independent of any commit or chunking
+    strategy. It is created once and never rewritten: everything that varies —
+    the commit, the status, the progress — belongs to a snapshot.
     """
     row = await conn.fetchrow(
         """
-        INSERT INTO repos (url, name, status)
-        VALUES ($1, $2, 'queued')
+        INSERT INTO repo_sources (url, name) VALUES ($1, $2)
         ON CONFLICT (url) DO NOTHING
         RETURNING id
         """,
@@ -74,29 +75,58 @@ async def create_repo(
         name,
     )
     if row is not None:
-        created_id: UUID = row["id"]  # asyncpg decodes UUID columns to uuid.UUID
-        return created_id, True
-    existing = await conn.fetchrow("SELECT id FROM repos WHERE url = $1", url)
-    assert existing is not None  # the conflict we just hit proves the row exists
-    existing_id: UUID = existing["id"]
-    return existing_id, False
+        created: UUID = row["id"]
+        return created
+    existing = await conn.fetchrow("SELECT id FROM repo_sources WHERE url = $1", url)
+    assert existing is not None  # the conflict we just hit proves it exists
+    found: UUID = existing["id"]
+    return found
 
 
-REPO_COLUMNS = (
-    "id, url, name, status, error, head_sha, default_branch, "
-    "files_total, files_parsed, chunks_total, chunks_embedded, created_at"
+async def create_snapshot(
+    conn: asyncpg.Connection, source_id: UUID, *, strategy: str = "ast"
+) -> UUID:
+    """Open a new ``queued`` snapshot for ``source_id`` (§14.2).
+
+    Always a fresh row. A snapshot is written once and frozen (§14.3), so a
+    re-index is a *new* snapshot rather than a reset of the old one — which is
+    the entire point of the phase: the corpus a reader is using is never the
+    corpus a writer is rebuilding.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO repo_snapshots (source_id, strategy, status)
+        VALUES ($1, $2, 'queued')
+        RETURNING id
+        """,
+        source_id,
+        strategy,
+    )
+    assert row is not None
+    new_id: UUID = row["id"]
+    return new_id
+
+
+# `commit_sha` is aliased to `head_sha` so `RepoOut.from_row` — and therefore
+# the whole §8 contract and the frontend — is unchanged by the split (§14.7).
+SNAPSHOT_COLUMNS = (
+    "sn.id, s.url, s.name, sn.status, sn.error, sn.commit_sha AS head_sha, "
+    "sn.default_branch, sn.files_total, sn.files_parsed, sn.chunks_total, "
+    "sn.chunks_embedded, sn.created_at"
 )
+SNAPSHOT_FROM = "repo_snapshots sn JOIN repo_sources s ON s.id = sn.source_id"
 
 
-async def get_repo(conn: asyncpg.Connection, repo_id: UUID) -> asyncpg.Record | None:
-    """One repo row with its §8 ``RepoOut`` columns, or ``None``."""
+async def get_repo(conn: asyncpg.Connection, snapshot_id: UUID) -> asyncpg.Record | None:
+    """One snapshot with its §8 ``RepoOut`` columns, or ``None``."""
     return await conn.fetchrow(
-        f"SELECT {REPO_COLUMNS} FROM repos WHERE id = $1", repo_id
+        f"SELECT {SNAPSHOT_COLUMNS} FROM {SNAPSHOT_FROM} WHERE sn.id = $1",
+        snapshot_id,
     )
 
 
 async def get_owned_repo(
-    conn: asyncpg.Connection, user_id: UUID, repo_id: UUID
+    conn: asyncpg.Connection, user_id: UUID, snapshot_id: UUID
 ) -> asyncpg.Record | None:
     """``get_repo``, but only if ``user_id`` has it in their library (§13.5).
 
@@ -105,10 +135,10 @@ async def get_owned_repo(
     the fact being protected.
     """
     return await conn.fetchrow(
-        f"""SELECT {REPO_COLUMNS} FROM repos r
-             JOIN user_repos ur ON ur.repo_id = r.id
-            WHERE r.id = $1 AND ur.user_id = $2""",
-        repo_id,
+        f"""SELECT {SNAPSHOT_COLUMNS} FROM {SNAPSHOT_FROM}
+             JOIN user_repos ur ON ur.snapshot_id = sn.id
+            WHERE sn.id = $1 AND ur.user_id = $2""",
+        snapshot_id,
         user_id,
     )
 
@@ -116,24 +146,94 @@ async def get_owned_repo(
 async def list_repos(
     conn: asyncpg.Connection, user_id: UUID | None = None
 ) -> list[asyncpg.Record]:
-    """Repo rows, newest first — the caller's library when ``user_id`` is given.
+    """Snapshots, newest first — the caller's library when ``user_id`` is given.
 
-    ``None`` means every repo and is for the CLIs and the worker, which act
+    ``None`` means every snapshot and is for the CLIs and the worker, which act
     outside any user's session. No HTTP route may pass ``None`` (§13.6).
     """
     if user_id is None:
         rows = await conn.fetch(
-            f"SELECT {REPO_COLUMNS} FROM repos ORDER BY created_at DESC"
+            f"SELECT {SNAPSHOT_COLUMNS} FROM {SNAPSHOT_FROM} ORDER BY sn.created_at DESC"
         )
     else:
         rows = await conn.fetch(
-            f"""SELECT {REPO_COLUMNS} FROM repos r
-                 JOIN user_repos ur ON ur.repo_id = r.id
+            f"""SELECT {SNAPSHOT_COLUMNS} FROM {SNAPSHOT_FROM}
+                 JOIN user_repos ur ON ur.snapshot_id = sn.id
                 WHERE ur.user_id = $1
-                ORDER BY r.created_at DESC""",
+                ORDER BY sn.created_at DESC""",
             user_id,
         )
     return list(rows)
+
+
+async def newest_snapshot_for_source(
+    conn: asyncpg.Connection, source_id: UUID, *, strategy: str = "ast"
+) -> asyncpg.Record | None:
+    """The most recent snapshot for a source, whatever its status (§14.5).
+
+    ``POST /repos`` decides what to do from this one row: a ``ready`` snapshot
+    is returned as-is, a ``failed`` one is superseded by a new attempt, and an
+    in-flight one is joined rather than duplicated.
+    """
+    return await conn.fetchrow(
+        f"""SELECT {SNAPSHOT_COLUMNS} FROM {SNAPSHOT_FROM}
+            WHERE sn.source_id = $1 AND sn.strategy = $2
+            ORDER BY sn.created_at DESC LIMIT 1""",
+        source_id,
+        strategy,
+    )
+
+
+async def find_ready_snapshot(
+    conn: asyncpg.Connection, source_id: UUID, commit_sha: str, strategy: str
+) -> UUID | None:
+    """A finished snapshot of exactly this commit, if one exists (§14.4).
+
+    The worker's half of dedup, asked *after* the clone because the SHA is not
+    knowable before it. This is where a thousand users submitting one popular
+    repo collapses into a single ingest.
+    """
+    row = await conn.fetchrow(
+        """SELECT id FROM repo_snapshots
+            WHERE source_id = $1 AND commit_sha = $2 AND strategy = $3
+              AND status = 'ready'
+            LIMIT 1""",
+        source_id,
+        commit_sha,
+        strategy,
+    )
+    return UUID(str(row["id"])) if row else None
+
+
+async def source_of(conn: asyncpg.Connection, snapshot_id: UUID) -> asyncpg.Record | None:
+    """``(source_id, url, name, strategy)`` for a snapshot — what the pipeline
+    needs to clone, and what dedup needs to search on."""
+    return await conn.fetchrow(
+        """SELECT sn.source_id, s.url, s.name, sn.strategy
+             FROM repo_snapshots sn JOIN repo_sources s ON s.id = sn.source_id
+            WHERE sn.id = $1""",
+        snapshot_id,
+    )
+
+
+async def supersede_snapshot(
+    conn: asyncpg.Connection, redundant_id: UUID, keep_id: UUID
+) -> None:
+    """Move every library entry off a redundant snapshot, then delete it (§14.4).
+
+    Runs when a clone reveals the commit is already ingested. The users who
+    submitted it get the existing corpus — the whole saving — and the row that
+    would have duplicated it goes away rather than lingering as a second copy
+    nobody can tell apart from the first.
+    """
+    await conn.execute(
+        """INSERT INTO user_repos (user_id, snapshot_id)
+           SELECT user_id, $2 FROM user_repos WHERE snapshot_id = $1
+           ON CONFLICT DO NOTHING""",
+        redundant_id,
+        keep_id,
+    )
+    await conn.execute("DELETE FROM repo_snapshots WHERE id = $1", redundant_id)
 
 
 # ---------------------------------------------------------------------------
@@ -229,9 +329,9 @@ async def resolve_owner_id(
 
 
 async def link_user_repo(
-    conn: asyncpg.Connection, user_id: UUID, repo_id: UUID
+    conn: asyncpg.Connection, user_id: UUID, snapshot_id: UUID
 ) -> None:
-    """Put ``repo_id`` in ``user_id``'s library; idempotent (§13.6).
+    """Put ``snapshot_id`` in ``user_id``'s library; idempotent (§13.6).
 
     A second user submitting a known URL joins the existing repo rather than
     re-ingesting it — the v1 schema already made a repo a singleton keyed by
@@ -239,20 +339,20 @@ async def link_user_repo(
     design.
     """
     await conn.execute(
-        """INSERT INTO user_repos (user_id, repo_id) VALUES ($1, $2)
+        """INSERT INTO user_repos (user_id, snapshot_id) VALUES ($1, $2)
            ON CONFLICT DO NOTHING""",
         user_id,
-        repo_id,
+        snapshot_id,
     )
 
 
 async def get_file(
-    conn: asyncpg.Connection, repo_id: UUID, path: str
+    conn: asyncpg.Connection, snapshot_id: UUID, path: str
 ) -> asyncpg.Record | None:
     """One stored file for the code viewer (§8 ``GET /repos/{id}/files``)."""
     return await conn.fetchrow(
-        "SELECT path, content, n_lines FROM files WHERE repo_id = $1 AND path = $2",
-        repo_id,
+        "SELECT path, content, n_lines FROM files WHERE snapshot_id = $1 AND path = $2",
+        snapshot_id,
         path,
     )
 
@@ -272,14 +372,14 @@ async def count_active_ingests(conn: asyncpg.Connection) -> int:
     queue nobody bounded is just a slower way to run out of machine.
     """
     value = await conn.fetchval(
-        "SELECT count(*) FROM repos WHERE status = ANY($1::text[])",
+        "SELECT count(*) FROM repo_snapshots WHERE status = ANY($1::text[])",
         list(ACTIVE_STATUSES),
     )
     return int(value)
 
 
 async def start_ingest(
-    conn: asyncpg.Connection, repo_id: UUID, *, status: str = "cloning"
+    conn: asyncpg.Connection, snapshot_id: UUID, *, status: str = "cloning"
 ) -> None:
     """Reset counters and clear any previous error at the start of a job (§10).
 
@@ -289,32 +389,32 @@ async def start_ingest(
     """
     await conn.execute(
         """
-        UPDATE repos
+        UPDATE repo_snapshots
            SET status = $2, error = NULL,
                files_total = 0, files_parsed = 0,
                chunks_total = 0, chunks_embedded = 0,
                updated_at = now()
          WHERE id = $1
         """,
-        repo_id,
+        snapshot_id,
         status,
     )
 
 
 async def set_repo_status(
-    conn: asyncpg.Connection, repo_id: UUID, status: str
+    conn: asyncpg.Connection, snapshot_id: UUID, status: str
 ) -> None:
     """Advance the §10 state machine, touching ``updated_at`` (zombie sweep)."""
     await conn.execute(
-        "UPDATE repos SET status = $2, updated_at = now() WHERE id = $1",
-        repo_id,
+        "UPDATE repo_snapshots SET status = $2, updated_at = now() WHERE id = $1",
+        snapshot_id,
         status,
     )
 
 
 async def set_repo_clone_info(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     name: str,
     head_sha: str,
@@ -322,25 +422,35 @@ async def set_repo_clone_info(
 ) -> None:
     """Record what the clone resolved to. Known only after ``cloning`` (§10).
 
-    ``name`` is refreshed here because the row was created from the submitted
-    URL alone; the clone is the first thing that has seen the actual repository.
+    Two rows, because the split put these facts in two places (§14.2): the
+    commit and the branch describe *this* snapshot, while the name describes
+    the source and is shared by every snapshot of it. ``name`` is refreshed
+    because the source was created from the submitted URL alone; the clone is
+    the first thing that has actually seen the repository.
     """
     await conn.execute(
         """
-        UPDATE repos
-           SET name = $2, head_sha = $3, default_branch = $4, updated_at = now()
+        UPDATE repo_snapshots
+           SET commit_sha = $2, default_branch = $3, updated_at = now()
          WHERE id = $1
         """,
-        repo_id,
-        name,
+        snapshot_id,
         head_sha,
         default_branch,
+    )
+    await conn.execute(
+        """
+        UPDATE repo_sources SET name = $2
+         WHERE id = (SELECT source_id FROM repo_snapshots WHERE id = $1)
+        """,
+        snapshot_id,
+        name,
     )
 
 
 async def set_repo_progress(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     files_total: int | None = None,
     files_parsed: int | None = None,
@@ -355,7 +465,7 @@ async def set_repo_progress(
     """
     await conn.execute(
         """
-        UPDATE repos
+        UPDATE repo_snapshots
            SET files_total     = COALESCE($2, files_total),
                files_parsed    = COALESCE($3, files_parsed),
                chunks_total    = COALESCE($4, chunks_total),
@@ -363,7 +473,7 @@ async def set_repo_progress(
                updated_at = now()
          WHERE id = $1
         """,
-        repo_id,
+        snapshot_id,
         files_total,
         files_parsed,
         chunks_total,
@@ -371,15 +481,15 @@ async def set_repo_progress(
     )
 
 
-async def fail_repo(conn: asyncpg.Connection, repo_id: UUID, error: str) -> None:
+async def fail_repo(conn: asyncpg.Connection, snapshot_id: UUID, error: str) -> None:
     """Record a job failure on the row (§10). Truncated — this reaches a UI."""
     await conn.execute(
         """
-        UPDATE repos
+        UPDATE repo_snapshots
            SET status = 'failed', error = $2, updated_at = now()
          WHERE id = $1
         """,
-        repo_id,
+        snapshot_id,
         error[:2000],
     )
 
@@ -395,7 +505,7 @@ async def sweep_zombie_repos(conn: asyncpg.Connection, older_than_s: int) -> lis
     """
     rows = await conn.fetch(
         """
-        UPDATE repos
+        UPDATE repo_snapshots
            SET status = 'failed', error = 'worker died', updated_at = now()
          WHERE status = ANY($1::text[])
            AND updated_at < now() - make_interval(secs => $2::double precision)
@@ -407,30 +517,30 @@ async def sweep_zombie_repos(conn: asyncpg.Connection, older_than_s: int) -> lis
     return [str(r["id"]) for r in rows]
 
 
-async def clear_repo_content(conn: asyncpg.Connection, repo_id: UUID) -> None:
-    """Delete all files and chunks for ``repo_id`` (delete-and-replace, §10)."""
-    await conn.execute("DELETE FROM chunks WHERE repo_id = $1", repo_id)
-    await conn.execute("DELETE FROM files WHERE repo_id = $1", repo_id)
+async def clear_repo_content(conn: asyncpg.Connection, snapshot_id: UUID) -> None:
+    """Delete all files and chunks for ``snapshot_id`` (delete-and-replace, §10)."""
+    await conn.execute("DELETE FROM chunks WHERE snapshot_id = $1", snapshot_id)
+    await conn.execute("DELETE FROM files WHERE snapshot_id = $1", snapshot_id)
 
 
 async def insert_files(
-    conn: asyncpg.Connection, repo_id: UUID, files: Sequence[FileRow]
+    conn: asyncpg.Connection, snapshot_id: UUID, files: Sequence[FileRow]
 ) -> int:
     """Batch-insert file rows; return the count inserted."""
     if not files:
         return 0
     await conn.executemany(
         """
-        INSERT INTO files (repo_id, path, content, n_lines)
+        INSERT INTO files (snapshot_id, path, content, n_lines)
         VALUES ($1, $2, $3, $4)
         """,
-        [(repo_id, path, content, n_lines) for path, content, n_lines in files],
+        [(snapshot_id, path, content, n_lines) for path, content, n_lines in files],
     )
     return len(files)
 
 
 async def insert_chunks(
-    conn: asyncpg.Connection, repo_id: UUID, rows: Sequence[ChunkRow]
+    conn: asyncpg.Connection, snapshot_id: UUID, rows: Sequence[ChunkRow]
 ) -> int:
     """Batch-insert chunk rows (embedding last); return the count inserted."""
     if not rows:
@@ -438,18 +548,18 @@ async def insert_chunks(
     await conn.executemany(
         """
         INSERT INTO chunks
-          (repo_id, file_path, is_test, symbol, kind, part, n_parts,
+          (snapshot_id, file_path, is_test, symbol, kind, part, n_parts,
            start_line, end_line, header, code, embedding)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
         """,
-        [(repo_id, *row) for row in rows],
+        [(snapshot_id, *row) for row in rows],
     )
     return len(rows)
 
 
 async def finalize_repo(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     files_total: int,
     files_parsed: int,
@@ -463,13 +573,13 @@ async def finalize_repo(
     """
     await conn.execute(
         """
-        UPDATE repos
+        UPDATE repo_snapshots
            SET files_total = $2, files_parsed = $3,
                chunks_total = $4, chunks_embedded = $4,
                status = $5, updated_at = now()
          WHERE id = $1
         """,
-        repo_id,
+        snapshot_id,
         files_total,
         files_parsed,
         chunks_total,
@@ -477,20 +587,36 @@ async def finalize_repo(
     )
 
 
-async def resolve_repo_id(conn: asyncpg.Connection, ref: str) -> UUID | None:
-    """Resolve a repo by exact URL or by id string; return its id or ``None``."""
+async def resolve_snapshot_id(
+    conn: asyncpg.Connection, ref: str, *, strategy: str = "ast"
+) -> UUID | None:
+    """Resolve a snapshot by its id, or by its source URL; ``None`` if neither.
+
+    What the CLIs take on the command line. A URL now names a *source*, which
+    may have several snapshots, so it resolves to the newest ready one of the
+    requested strategy — the corpus someone typing a URL means. An id is exact
+    and bypasses that entirely.
+    """
     row = await conn.fetchrow(
-        "SELECT id FROM repos WHERE url = $1 OR id::text = $1", ref
+        f"""SELECT sn.id FROM {SNAPSHOT_FROM}
+             WHERE sn.id::text = $1
+                OR (s.url = $1 AND sn.strategy = $2)
+             ORDER BY (sn.id::text = $1) DESC,
+                      (sn.status = 'ready') DESC,
+                      sn.created_at DESC
+             LIMIT 1""",
+        ref,
+        strategy,
     )
     if row is None:
         return None
-    repo_id: UUID = row["id"]
-    return repo_id
+    snapshot_id: UUID = row["id"]
+    return snapshot_id
 
 
-async def count_chunks(conn: asyncpg.Connection, repo_id: UUID) -> int:
-    """Return the number of chunk rows stored for ``repo_id``."""
-    value = await conn.fetchval("SELECT count(*) FROM chunks WHERE repo_id = $1", repo_id)
+async def count_chunks(conn: asyncpg.Connection, snapshot_id: UUID) -> int:
+    """Return the number of chunk rows stored for ``snapshot_id``."""
+    value = await conn.fetchval("SELECT count(*) FROM chunks WHERE snapshot_id = $1", snapshot_id)
     return int(value)
 
 
@@ -508,7 +634,7 @@ SymbolRowT = tuple[
 
 
 async def insert_symbols(
-    conn: asyncpg.Connection, repo_id: UUID, rows: Sequence[SymbolRowT]
+    conn: asyncpg.Connection, snapshot_id: UUID, rows: Sequence[SymbolRowT]
 ) -> int:
     """Batch-insert symbol rows; return the count inserted."""
     if not rows:
@@ -516,16 +642,16 @@ async def insert_symbols(
     await conn.executemany(
         """
         INSERT INTO symbols
-          (repo_id, name, qualname, kind, file_path, start_line, end_line, is_test)
+          (snapshot_id, name, qualname, kind, file_path, start_line, end_line, is_test)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """,
-        [(repo_id, *row) for row in rows],
+        [(snapshot_id, *row) for row in rows],
     )
     return len(rows)
 
 
 async def symbol_id_map(
-    conn: asyncpg.Connection, repo_id: UUID
+    conn: asyncpg.Connection, snapshot_id: UUID
 ) -> dict[tuple[str, int], int]:
     """Map ``(file_path, start_line)`` -> ``symbols.id`` for one repo.
 
@@ -533,7 +659,7 @@ async def symbol_id_map(
     this is how edge rows get resolved to foreign keys after the symbol insert.
     """
     rows = await conn.fetch(
-        "SELECT id, file_path, start_line FROM symbols WHERE repo_id = $1", repo_id
+        "SELECT id, file_path, start_line FROM symbols WHERE snapshot_id = $1", snapshot_id
     )
     return {(str(r["file_path"]), int(r["start_line"])): int(r["id"]) for r in rows}
 
@@ -542,7 +668,7 @@ EdgeRowT = tuple[int, int, str, int | None]  # from_symbol, to_symbol, kind, lin
 
 
 async def insert_edges(
-    conn: asyncpg.Connection, repo_id: UUID, rows: Sequence[EdgeRowT]
+    conn: asyncpg.Connection, snapshot_id: UUID, rows: Sequence[EdgeRowT]
 ) -> int:
     """Batch-insert edge rows, ignoring duplicates; return rows offered.
 
@@ -553,16 +679,16 @@ async def insert_edges(
         return 0
     await conn.executemany(
         """
-        INSERT INTO edges (repo_id, from_symbol, to_symbol, kind, line)
+        INSERT INTO edges (snapshot_id, from_symbol, to_symbol, kind, line)
         VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT DO NOTHING
         """,
-        [(repo_id, *row) for row in rows],
+        [(snapshot_id, *row) for row in rows],
     )
     return len(rows)
 
 
-async def backfill_chunk_symbol_ids(conn: asyncpg.Connection, repo_id: UUID) -> int:
+async def backfill_chunk_symbol_ids(conn: asyncpg.Connection, snapshot_id: UUID) -> int:
     """Link chunks to their defining symbol; return the number linked.
 
     Joins on ``(file_path, start_line)`` and is **restricted to ``part = 1``**.
@@ -579,32 +705,32 @@ async def backfill_chunk_symbol_ids(conn: asyncpg.Connection, repo_id: UUID) -> 
         UPDATE chunks c
            SET symbol_id = s.id
           FROM symbols s
-         WHERE c.repo_id = $1
-           AND s.repo_id = $1
+         WHERE c.snapshot_id = $1
+           AND s.snapshot_id = $1
            AND c.part = 1
            AND c.file_path = s.file_path
            AND c.start_line = s.start_line
         """,
-        repo_id,
+        snapshot_id,
     )
     return int(result.split()[-1]) if result else 0
 
 
-async def clear_repo_graph(conn: asyncpg.Connection, repo_id: UUID) -> None:
-    """Delete symbols (and, by cascade, edges) for ``repo_id``.
+async def clear_repo_graph(conn: asyncpg.Connection, snapshot_id: UUID) -> None:
+    """Delete symbols (and, by cascade, edges) for ``snapshot_id``.
 
     Chunk ``symbol_id`` values are ``ON DELETE`` unconstrained, so null them
     first to avoid dangling references after a delete-and-replace re-ingest.
     """
     await conn.execute(
-        "UPDATE chunks SET symbol_id = NULL WHERE repo_id = $1", repo_id
+        "UPDATE chunks SET symbol_id = NULL WHERE snapshot_id = $1", snapshot_id
     )
-    await conn.execute("DELETE FROM symbols WHERE repo_id = $1", repo_id)
+    await conn.execute("DELETE FROM symbols WHERE snapshot_id = $1", snapshot_id)
 
 
 async def resolve_symbol_id(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     symbol_id: int | None,
     file_path: str,
@@ -618,7 +744,7 @@ async def resolve_symbol_id(
     particular — must come through here, or a long function silently loses its
     caller annotations on every part but the first.
 
-    The fallback keys on ``(repo_id, file_path, qualname)``: parts share both
+    The fallback keys on ``(snapshot_id, file_path, qualname)``: parts share both
     with their definition, and the pair is unique per definition in practice.
     """
     if symbol_id is not None:
@@ -628,11 +754,11 @@ async def resolve_symbol_id(
     row = await conn.fetchrow(
         """
         SELECT id FROM symbols
-         WHERE repo_id = $1 AND file_path = $2 AND qualname = $3
+         WHERE snapshot_id = $1 AND file_path = $2 AND qualname = $3
          ORDER BY start_line
          LIMIT 1
         """,
-        repo_id,
+        snapshot_id,
         file_path,
         qualname,
     )
@@ -640,7 +766,7 @@ async def resolve_symbol_id(
 
 
 async def implementation_callers(
-    conn: asyncpg.Connection, repo_id: UUID, symbol_id: int, limit: int
+    conn: asyncpg.Connection, snapshot_id: UUID, symbol_id: int, limit: int
 ) -> tuple[list[tuple[str, int, str]], int]:
     """Incoming call/import edges from **implementation** symbols (SPEC §7.4).
 
@@ -654,13 +780,13 @@ async def implementation_callers(
         SELECT s.file_path, COALESCE(e.line, s.start_line) AS line, s.name
           FROM edges e
           JOIN symbols s ON s.id = e.from_symbol
-         WHERE e.repo_id = $1
+         WHERE e.snapshot_id = $1
            AND e.to_symbol = $2
            AND NOT s.is_test
          ORDER BY s.file_path, line
          LIMIT $3
         """,
-        repo_id,
+        snapshot_id,
         symbol_id,
         limit,
     )
@@ -668,9 +794,9 @@ async def implementation_callers(
         """
         SELECT count(*)
           FROM edges e JOIN symbols s ON s.id = e.from_symbol
-         WHERE e.repo_id = $1 AND e.to_symbol = $2 AND NOT s.is_test
+         WHERE e.snapshot_id = $1 AND e.to_symbol = $2 AND NOT s.is_test
         """,
-        repo_id,
+        snapshot_id,
         symbol_id,
     )
     return [(str(r["file_path"]), int(r["line"]), str(r["name"])) for r in rows], int(

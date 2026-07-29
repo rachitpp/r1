@@ -9,6 +9,7 @@ retrying the delete.
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import re
 import shutil
@@ -23,6 +24,8 @@ from typing import Any
 from git import GitCommandError, Repo
 
 from app.exceptions import CloneError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -62,13 +65,29 @@ def _on_rm_error(
 
 
 def _rmtree(path: Path) -> None:
-    """Remove a tree, tolerating Windows read-only git object files."""
+    """Remove a tree, tolerating Windows read-only git object files.
+
+    **Best effort, never fatal.** This runs in the ``finally`` of
+    :func:`cloned_repo`, so an exception here replaces whatever the block
+    produced — turning a *completed* ingest into a failure and writing a
+    ``failed`` snapshot for a corpus that is already safely in Postgres. The
+    clone is scratch; the database is the durable copy (DECISIONS 2026-07-24).
+
+    Windows makes this a live concern rather than a theoretical one: git marks
+    objects read-only, and a virus scanner or indexer can hold a handle briefly
+    after the process exits, so even the chmod-and-retry above can lose. A
+    leaked temp directory is a nuisance the OS eventually clears; a lost ingest
+    is not.
+    """
     if not path.exists():
         return
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(path, onexc=_on_rm_error)
-    else:  # pragma: no cover - exercised only on <3.12 interpreters
-        shutil.rmtree(path, onerror=_on_rm_error)
+    try:
+        if sys.version_info >= (3, 12):
+            shutil.rmtree(path, onexc=_on_rm_error)
+        else:  # pragma: no cover - exercised only on <3.12 interpreters
+            shutil.rmtree(path, onerror=_on_rm_error)
+    except OSError as exc:
+        logger.warning("could not remove clone workdir %s: %s", path, exc)
 
 
 def clone_repo(url: str) -> CloneInfo:

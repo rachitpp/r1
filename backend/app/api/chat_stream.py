@@ -110,7 +110,7 @@ def _tool_output_text(output: Any) -> str:
 async def chat_event_stream(
     model: BaseChatModel,
     source: ConnSource,
-    repo_id: UUID,
+    snapshot_id: UUID,
     question: str,
     *,
     tool_cap: int = AGENT_TOOL_CAP,
@@ -144,10 +144,10 @@ async def chat_event_stream(
         # so the handler below still gets to send a clean `error` event instead
         # of the client watching a stream that simply stops.
         async with asyncio.timeout(timeout):
-            name, n_files, tops = await repo_facts(source, repo_id)
-            app = build_graph(model, source, repo_id, tool_cap=tool_cap)
+            name, n_files, tops = await repo_facts(source, snapshot_id)
+            app = build_graph(model, source, snapshot_id, tool_cap=tool_cap)
             initial: AgentState = {
-                "repo_id": str(repo_id),
+                "snapshot_id": str(snapshot_id),
                 "question": question,
                 "messages": [
                     SystemMessage(content=system_prompt(name, n_files, tops)),
@@ -215,7 +215,7 @@ async def chat_event_stream(
 
             async with acquire(source) as conn:
                 citations = await validate_citations(
-                    conn, repo_id, parse_citations(answer)
+                    conn, snapshot_id, parse_citations(answer)
                 )
 
         yield _event("citations", {"citations": citations})
@@ -235,7 +235,7 @@ async def chat_event_stream(
         outcome = "cancelled"
         logger.info(
             "chat stream cancelled for repo %s after %d tool call(s)",
-            repo_id,
+            snapshot_id,
             n_calls,
         )
         raise
@@ -243,14 +243,14 @@ async def chat_event_stream(
     except TimeoutError:
         outcome = "timeout"
         logger.warning(
-            "chat stream timed out for repo %s after %.0fs", repo_id, timeout
+            "chat stream timed out for repo %s after %.0fs", snapshot_id, timeout
         )
         timed_out = AgentTimeoutError(f"answer timed out after {timeout:.0f}s")
         yield _event("error", _error_payload(timed_out))
 
     except Exception as exc:  # noqa: BLE001 — the client gets one error event
         outcome = "error"
-        logger.exception("chat stream failed for repo %s", repo_id)
+        logger.exception("chat stream failed for repo %s", snapshot_id)
         yield _event("error", _error_payload(exc))
 
     finally:

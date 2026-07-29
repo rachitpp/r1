@@ -2035,3 +2035,70 @@ retrieval actually reads `snapshot_id`.
 
 Verified: 289 tests green, unchanged, because the old column still answers.
 
+## 2026-07-30 — V2 code layer: the race is closed, and a read-only verification nearly hid a write-fatal bug
+
+The schema landed on 2026-07-29; this is the half that uses it. `queries.py`,
+`hybrid.py`, `tools.py`, `pipeline.py`, `routes.py`, the worker and the CLIs all
+address `snapshot_id` now, and `POST /repos` follows §14.5.
+
+**The phase's criterion passed exactly.** `scripts/eval.py`, run through the new
+snapshot code path, reproduces all twelve baseline metrics unchanged: vector
+0.75/0.85/0.90 MRR 0.722, fts 0.55/0.70/0.80 MRR 0.463, hybrid 0.80/0.90/0.95
+MRR 0.753. Retrieval is a pure function of the corpus, so this is the strong
+form of "the data survived the rewrite".
+
+**A bug that reads perfectly and writes not at all.** 007 kept the legacy
+`repo_id` columns for reversibility (§14.8) but left their NOT NULL in place,
+and the new code writes only `snapshot_id`. Every existing row therefore read
+back correctly — the entire eval suite passed, twice — while **every new ingest
+failed** on a not-null violation. `008` drops those constraints.
+
+Worth recording as a lesson rather than a fix: a verification built entirely
+from reads cannot see a write-path break. The only check that caught it was the
+new integration test, because it is the only one that performs a real ingest
+instead of querying the corpus the migration produced. `008` also had to move
+`user_repos`'s primary key off `repo_id` — a PK column cannot be nullable — onto
+the `(user_id, snapshot_id)` unique index 007 had already created, so uniqueness
+is guaranteed continuously with no window for a duplicate library row.
+
+**Dedup demonstrated by a test I wrote wrong.** The interleaving test first
+failed with `SnapshotSuperseded`: it created a second snapshot of the same
+source at the *same commit*, and §14.4 correctly refused to build a duplicate
+corpus. The dedup was right and the test was wrong. Fixed by making a genuine
+second commit — which is what the test should have done, since two corpora can
+only be independent if they are of different things. It now captures the exact
+chunk ids the first snapshot serves, runs a full second ingest, and requires the
+identical sequence afterwards. That is the race §14.1 exists to close, asserted
+against a live database rather than argued.
+
+**`SnapshotSuperseded` is an exception for a success.** Raised once the clone
+reveals the commit is already ingested, after the redundant snapshot's library
+rows have been moved and its row deleted. A return value would have to be
+threaded through every frame between the clone context and the worker; the
+worker and the CLI both treat it as a successful outcome and neither writes a
+`failed` status.
+
+**A clone-cleanup failure no longer destroys a finished ingest.** `_rmtree` runs
+in the `finally` of `cloned_repo`, so the `PermissionError` Windows raises when
+a scanner holds a pack file replaced the block's result — turning a completed
+ingest into a `failed` snapshot for a corpus already safely in Postgres. It is
+best-effort now and logs a warning. Found while chasing the test above; the
+clone is scratch and the database is the durable copy (2026-07-24).
+
+**Two deliberate, observable changes.** Re-submitting a URL whose snapshot is
+`ready` returns it and enqueues nothing — the destructive re-ingest is gone, and
+Retry still works because Retry acts on a `failed` snapshot, which is superseded
+by a *new* row rather than reset. And the metrics route template is now
+`/repos/{snapshot_id}`, renaming one Prometheus series; the new name is the
+accurate one, but anything graphing the old label would need updating.
+
+**`#naive` is gone from code and data.** 0 sources with the URL fragment, 0
+names with the `@naive` suffix; both httpx corpora sit under one source at
+`b5addb64`, told apart by `strategy` (ast 1522 / naive 657). The workaround was
+deleted rather than relocated, which is the outcome §14.6 predicted.
+
+Verified: 294 tests green (5 new), `ruff` and `mypy` clean across 46 files,
+corpus still 825 impl / 697 test. One V2 box is left open on purpose: the
+rollback has not been rehearsed, and it is now lossy for anything ingested after
+`008`, so it should be rehearsed before it is relied on.
+

@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import get_settings  # noqa: E402
 from app.db.pool import close_pool, create_pool  # noqa: E402
-from app.db.queries import resolve_repo_id  # noqa: E402
+from app.db.queries import resolve_snapshot_id  # noqa: E402
 from app.retrieval.hybrid import (  # noqa: E402
     SearchHit,
     _fetch_rows,
@@ -50,13 +50,13 @@ def _print_hits(title: str, hits: list[SearchHit], score_label: str) -> None:
 
 
 async def _print_injection(
-    conn: asyncpg.Connection, repo_id: UUID, query: str
+    conn: asyncpg.Connection, snapshot_id: UUID, query: str
 ) -> None:
     idents = extract_identifiers(query)
     print("\nSYMBOL INJECTION (§5.2)")
     print("----------------------")
     print(f"  identifiers extracted: {idents or '(none)'}")
-    ids = await _inject_symbol_ids(conn, repo_id, query)
+    ids = await _inject_symbol_ids(conn, snapshot_id, query)
     rows = await _fetch_rows(conn, ids)
     if not ids:
         print("  matched chunks:        (none)")
@@ -72,8 +72,8 @@ async def run(repo_ref: str, query: str) -> int:
     pool = await create_pool(settings.DATABASE_URL)
     try:
         async with pool.acquire() as conn:
-            repo_id = await resolve_repo_id(conn, repo_ref)
-            if repo_id is None:
+            snapshot_id = await resolve_snapshot_id(conn, repo_ref)
+            if snapshot_id is None:
                 print(f"error: repo {repo_ref!r} not ingested")
                 return 1
 
@@ -83,23 +83,23 @@ async def run(repo_ref: str, query: str) -> int:
 
             _print_hits(
                 "VECTOR (cosine similarity)",
-                await search(conn, repo_id, query, k=TOP_N, mode="vector"),
+                await search(conn, snapshot_id, query, k=TOP_N, mode="vector"),
                 "sim",
             )
             _print_hits(
                 "FTS (ts_rank)",
-                await search(conn, repo_id, query, k=TOP_N, mode="fts"),
+                await search(conn, snapshot_id, query, k=TOP_N, mode="fts"),
                 "rank",
             )
             _print_hits(
                 "HYBRID (RRF fusion)",
-                await search(conn, repo_id, query, k=TOP_N, mode="hybrid"),
+                await search(conn, snapshot_id, query, k=TOP_N, mode="hybrid"),
                 "rrf",
             )
-            await _print_injection(conn, repo_id, query)
+            await _print_injection(conn, snapshot_id, query)
             _print_hits(
                 "HYBRID + RERANK (cross-encoder) — final",
-                await search(conn, repo_id, query, k=TOP_N, mode="hybrid+rerank"),
+                await search(conn, snapshot_id, query, k=TOP_N, mode="hybrid+rerank"),
                 "ce",
             )
     finally:

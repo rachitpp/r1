@@ -27,13 +27,13 @@ from pathlib import Path
 from app.config import JEDI_FILE_TIMEOUT_S, get_settings
 from app.db import queries
 from app.db.pool import close_pool, create_pool
-from app.exceptions import IngestError
+from app.exceptions import IngestError, SnapshotSuperseded
 from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo, repo_name_from_url
 from app.ingest.filters import SelectionResult, select_files
 from app.ingest.naive import naive_chunk_file
 from app.ingest.parser import parse_file
-from app.ingest.pipeline import STRATEGIES, IngestStats, baseline_url, run_ingest
+from app.ingest.pipeline import STRATEGIES, IngestStats, run_ingest
 from app.ingest.tokens import HeuristicTokenCounter
 from app.logging_setup import configure_logging
 
@@ -100,28 +100,25 @@ async def ingest_to_db(
     job result. Accepts any git-cloneable URL — GitHub validation belongs to
     ``POST /repos`` (§8), not to a developer's local CLI.
 
-    ``strategy="naive"`` stores the baseline corpus under its own repo row
-    (``<url>#naive``, name ``<name>@naive``) so it coexists with — and cannot
-    clobber — the AST corpus at the pinned SHA. It also forces ``build_graph``
-    off: the symbol graph is an AST product and would not be a baseline.
+    ``strategy="naive"`` stores the baseline corpus as its own snapshot of the
+    same source (SPEC §14.6), so it coexists with — and cannot clobber — the AST
+    corpus at the same commit. It also forces ``build_graph`` off: the symbol
+    graph is an AST product and would not be a baseline.
     """
     settings = get_settings()
-    row_url = baseline_url(url) if strategy == "naive" else url
     name = repo_name_from_url(url)
-    row_name = f"{name}@naive" if strategy == "naive" else name
     pool = await create_pool(settings.DATABASE_URL)
     try:
         async with pool.acquire() as conn:
-            repo_id, _created = await queries.create_repo(
-                conn, url=row_url, name=row_name
-            )
+            source_id = await queries.get_or_create_source(conn, url=url, name=name)
+            snapshot_id = await queries.create_snapshot(conn, source_id, strategy=strategy)
             # Since V1 a repo is only reachable through a `user_repos` row
             # (SPEC §13.5): one written without an owner is invisible to
             # `GET /repos` and 404s on every route, for everyone. `POST /repos`
             # links the submitter; there is no submitter here, so resolve one.
             owner_id = await queries.resolve_owner_id(conn, owner)
             if owner_id is not None:
-                await queries.link_user_repo(conn, owner_id, repo_id)
+                await queries.link_user_repo(conn, owner_id, snapshot_id)
             else:
                 # Loudly, not silently: the ingest still runs and the corpus is
                 # still measurable from the CLI and the eval scripts, but the
@@ -134,7 +131,7 @@ async def ingest_to_db(
                     file=sys.stderr,
                 )
         return await run_ingest(
-            repo_id,
+            snapshot_id,
             pool=pool,
             build_graph=build_graph and strategy != "naive",
             strategy=strategy,
@@ -155,7 +152,7 @@ def format_db_stats(result: IngestStats) -> str:
     lines = [
         "=" * 60,
         f"repo:        {result.name}  [DB ingest]",
-        f"repo_id:     {result.repo_id}",
+        f"snapshot_id: {result.snapshot_id}",
         f"head_sha:    {result.head_sha}",
         f"branch:      {result.default_branch}",
         "-" * 60,
@@ -336,6 +333,10 @@ def main(argv: list[str] | None = None) -> int:
                     owner=args.owner,
                 )
             )
+        except SnapshotSuperseded as dedup:
+            # Not an error: this commit is already stored (SPEC §14.4).
+            print(f"already ingested — reusing snapshot {dedup.kept_id}")
+            return 0
         except IngestError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1

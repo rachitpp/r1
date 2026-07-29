@@ -30,7 +30,7 @@ from app.agent.graph import answer_question
 from app.agent.model import build_chat_model, provider_for
 from app.config import AGENT_TOOL_CAP, get_settings
 from app.db.pool import close_pool, create_pool
-from app.db.queries import resolve_repo_id
+from app.db.queries import resolve_snapshot_id
 from app.exceptions import AppError
 
 TRACE_DIR = Path(__file__).resolve().parents[2] / "var" / "traces"
@@ -83,8 +83,8 @@ async def run(ref: str, question: str, *, as_json: bool, tool_cap: int) -> int:
     pool = await create_pool(settings.DATABASE_URL)
     try:
         async with pool.acquire() as conn:
-            repo_id = await resolve_repo_id(conn, ref)
-            if repo_id is None:
+            snapshot_id = await resolve_snapshot_id(conn, ref)
+            if snapshot_id is None:
                 print(f"error: repo {ref!r} not ingested; run the ingest CLI --db")
                 return 1
 
@@ -95,7 +95,7 @@ async def run(ref: str, question: str, *, as_json: bool, tool_cap: int) -> int:
             model = build_chat_model()
             start = time.perf_counter()
             state = await answer_question(
-                model, conn, repo_id, question, tool_cap=tool_cap
+                model, conn, snapshot_id, question, tool_cap=tool_cap
             )
             elapsed = time.perf_counter() - start
 

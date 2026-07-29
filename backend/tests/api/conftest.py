@@ -40,6 +40,12 @@ FAILED_REPO_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 USER_ID = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 OTHER_USER_ID = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
+# Sources are keyed by URL and their ids are derived, so a fixture never has to
+# thread one around: the same URL always yields the same source id.
+def _source_id_for(url: str) -> uuid.UUID:
+    return uuid.uuid5(uuid.NAMESPACE_URL, url)
+
+
 FILE_PATH = "pkg/auth.py"
 FILE_CONTENT = "def verify_token(token):\n    return SECRET_SENTINEL_VALUE\n"
 
@@ -56,8 +62,14 @@ def _user_row(user_id: uuid.UUID, login: str) -> dict[str, Any]:
     }
 
 
-def _repo_row(repo_id: uuid.UUID, name: str, status: str) -> dict[str, Any]:
-    """A `repos` row as `queries.REPO_COLUMNS` selects it.
+def _repo_row(
+    repo_id: uuid.UUID, name: str, status: str, *, strategy: str = "ast"
+) -> dict[str, Any]:
+    """A snapshot joined to its source, as `queries.SNAPSHOT_COLUMNS` selects it.
+
+    Post-§14 a "repo" in the API is a snapshot, and the join hands back the
+    source's `url`/`name` beside the snapshot's own columns — so this dict is
+    still exactly what `RepoOut.from_row` consumes (§14.7).
 
     A freshly queued repo has nothing counted yet; anything further along carries
     the same fixed numbers, which is all the progress assertions need.
@@ -65,6 +77,8 @@ def _repo_row(repo_id: uuid.UUID, name: str, status: str) -> dict[str, Any]:
     fresh = status == "queued"
     return {
         "id": repo_id,
+        "source_id": _source_id_for(f"https://github.com/{name}"),
+        "strategy": strategy,
         "url": f"https://github.com/{name}",
         "name": name,
         "status": status,
@@ -104,6 +118,12 @@ class FakeConn:
         self.user_repos: set[tuple[uuid.UUID, uuid.UUID]] = {
             (USER_ID, repo_id) for repo_id in self.repos
         }
+        # §14.2 `repo_sources`, keyed by id. Seeded from the snapshots above so
+        # a lookup by source_id finds the URL the snapshot was created from.
+        self.sources: dict[uuid.UUID, dict[str, Any]] = {
+            r["source_id"]: {"id": r["source_id"], "url": r["url"], "name": r["name"]}
+            for r in self.repos.values()
+        }
         self.files: dict[str, dict[str, Any]] = {
             FILE_PATH: {
                 "path": FILE_PATH,
@@ -116,29 +136,42 @@ class FakeConn:
     # --- asyncpg surface ---------------------------------------------------
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
-        if "INSERT INTO repos" in sql:
+        # --- §14.2 sources and snapshots ---------------------------------
+        if "INSERT INTO repo_sources" in sql:
             url, name = str(args[0]), str(args[1])
-            for row in self.repos.values():
-                if row["url"] == url:
-                    return None  # ON CONFLICT DO NOTHING
+            source_id = _source_id_for(url)
+            if source_id in self.sources:
+                return None  # ON CONFLICT DO NOTHING
+            self.sources[source_id] = {"id": source_id, "url": url, "name": name}
+            return {"id": source_id}
+        if "FROM repo_sources WHERE url" in sql:
+            return {"id": _source_id_for(str(args[0]))}
+        if "INSERT INTO repo_snapshots" in sql:
+            source_id, strategy = args[0], str(args[1])
             new_id = uuid.uuid4()
-            self.repos[new_id] = _repo_row(new_id, name, "queued")
-            self.repos[new_id]["url"] = url
+            source = self.sources[source_id]
+            url, name = str(source["url"]), str(source["name"])
+            row = _repo_row(new_id, name, "queued", strategy=strategy)
+            row["url"], row["source_id"] = url, source_id
+            self.repos[new_id] = row
             return {"id": new_id}
-        if "FROM repos WHERE url" in sql:
-            return next(
-                ({"id": r["id"]} for r in self.repos.values() if r["url"] == args[0]),
-                None,
-            )
-        if "FROM repos WHERE id" in sql:
-            return self.repos.get(args[0])
-        # §13.5 ownership join: (repo_id, user_id). Returns None for a repo that
-        # exists but belongs to someone else, which is what makes the route 404.
-        if "JOIN user_repos ur" in sql and "WHERE r.id = $1" in sql:
-            repo_id, user_id = args[0], args[1]
-            if (user_id, repo_id) not in self.user_repos:
+        # newest_snapshot_for_source: (source_id, strategy)
+        if "WHERE sn.source_id = $1" in sql:
+            matches = [
+                r
+                for r in self.repos.values()
+                if r["source_id"] == args[0] and r["strategy"] == str(args[1])
+            ]
+            return matches[-1] if matches else None
+        # §13.5 ownership join. Returns None for a snapshot that exists but
+        # belongs to someone else, which is what makes the route 404.
+        if "JOIN user_repos ur" in sql and "WHERE sn.id = $1" in sql:
+            snapshot_id, user_id = args[0], args[1]
+            if (user_id, snapshot_id) not in self.user_repos:
                 return None
-            return self.repos.get(repo_id)
+            return self.repos.get(snapshot_id)
+        if "FROM repo_snapshots sn JOIN repo_sources s" in sql and "WHERE sn.id = $1" in sql:
+            return self.repos.get(args[0])
         if "FROM users WHERE id" in sql:
             return self.users.get(args[0])
         if "FROM users WHERE login" in sql:
@@ -173,7 +206,7 @@ class FakeConn:
                 "created_at": "2026-07-29T00:00:00+00:00",
             }
             return self.users[new_id]
-        if "FROM files WHERE repo_id = $1 AND path = $2" in sql:
+        if "FROM files WHERE snapshot_id = $1 AND path = $2" in sql:
             return self.files.get(str(args[1]))
         return None
 
@@ -182,10 +215,10 @@ class FakeConn:
             user_id = args[0]
             return [
                 row
-                for repo_id, row in self.repos.items()
-                if (user_id, repo_id) in self.user_repos
+                for snapshot_id, row in self.repos.items()
+                if (user_id, snapshot_id) in self.user_repos
             ]
-        if "FROM repos ORDER BY created_at" in sql:
+        if "FROM repo_snapshots sn JOIN repo_sources s" in sql:
             return list(self.repos.values())
         if "path = ANY" in sql:
             wanted = set(args[1])
@@ -208,7 +241,7 @@ class FakeConn:
         if "INSERT INTO user_repos" in sql:
             self.user_repos.add((args[0], args[1]))
             return "INSERT 0 1"
-        if "UPDATE repos" in sql and "status = $2" in sql:
+        if "UPDATE repo_snapshots" in sql and "status = $2" in sql:
             row = self.repos.get(args[0])
             if row is not None:
                 row["status"] = args[1]

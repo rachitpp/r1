@@ -155,12 +155,12 @@ async def metrics_endpoint(request: Request) -> Response:
 
 
 async def _require_owned_repo(
-    conn: asyncpg.Connection, user_id: UUID, repo_id: UUID
+    conn: asyncpg.Connection, user_id: UUID, snapshot_id: UUID
 ) -> asyncpg.Record:
     """The caller's repo, or 404 (SPEC §13.5).
 
     **This is the only place tenancy is enforced.** The six agent tools already
-    scope every query by `repo_id`, so a route that resolved an *owned* repo
+    scope every query by `snapshot_id`, so a route that resolved an *owned* repo
     makes everything downstream safe by construction; adding checks there too
     would be six more places to get wrong and would push a user identity into a
     layer with no other reason to know users exist.
@@ -169,9 +169,9 @@ async def _require_owned_repo(
     not an authorization error: 403 would confirm the id names a real repo,
     which is the fact being protected.
     """
-    row = await queries.get_owned_repo(conn, user_id, repo_id)
+    row = await queries.get_owned_repo(conn, user_id, snapshot_id)
     if row is None:
-        raise RepoNotFoundError(repo_id)
+        raise RepoNotFoundError(snapshot_id)
     return row
 
 
@@ -181,42 +181,54 @@ async def create_repo(
 ) -> RepoOut:
     """Register a repo and queue its ingest (§8: 201 created / 200 already known).
 
-    A repeat submission of a known URL is a re-ingest request, not an error — but
-    only when nothing is already working on it, or a double-click would put two
-    workers through the same delete-and-replace.
+    §14.5 changed what a repeat submission means. A URL whose newest snapshot is
+    ``ready`` now **returns that snapshot** rather than re-ingesting it: the old
+    behaviour cleared the corpus in place, which is the race this phase exists
+    to remove. A ``failed`` snapshot is superseded by a brand-new one — never
+    reset — so the frontend's Retry button still works. An in-flight snapshot is
+    joined.
+
+    Either way the caller gets a library link, so a submission never leaves a
+    repo the submitter cannot see. A second user submitting a known URL joins
+    the existing corpus instead of duplicating it, which is where the
+    ingest-volume saving starts; the worker's post-clone check (§14.4) is where
+    it finishes.
 
     Refuses past ``MAX_ACTIVE_INGESTS``. The queue would otherwise accept work
     indefinitely: ARQ is happy to hold ten thousand jobs, and the machine that
     has to run them is the same one serving chat.
-
-    A repo is a singleton keyed by URL (§3), so a *second* user submitting a
-    known URL joins the existing row rather than duplicating the corpus — they
-    get the 200 path and a library link. The link is written before anything
-    else can fail, so a submission never leaves a repo the submitter cannot see.
     """
     url, name = normalize_github_url(body.url)
-    repo_id, created = await queries.create_repo(conn, url=url, name=name)
-    await queries.link_user_repo(conn, user["id"], repo_id)
-    row = await _require_owned_repo(conn, user["id"], repo_id)
+    source_id = await queries.get_or_create_source(conn, url=url, name=name)
+    existing = await queries.newest_snapshot_for_source(conn, source_id)
 
-    if created or row["status"] not in queries.IN_FLIGHT_STATUSES:
-        limit = get_settings().MAX_ACTIVE_INGESTS
-        active = await queries.count_active_ingests(conn)
-        # A re-ingest of a row that is already counted must not be blocked by
-        # its own presence in that count.
-        if active - (1 if row["status"] in queries.ACTIVE_STATUSES else 0) >= limit:
-            raise ServiceBusyError(
-                f"{active} ingests already queued or running (limit {limit})",
-                retry_after=60,
-                rule="ingest_capacity",
-            )
-        if not created:
-            await queries.start_ingest(conn, repo_id, status="queued")
-            row = await _require_owned_repo(conn, user["id"], repo_id)
-        await arq.enqueue_job("ingest_repo", str(repo_id))
-        logger.info("enqueued ingest for %s (%s)", name, repo_id)
+    # §14.5. A `ready` snapshot is returned as it is — re-submitting a URL is no
+    # longer a destructive re-ingest, which is the whole point of the phase: the
+    # corpus somebody is reading is never the corpus somebody else is
+    # rebuilding. An in-flight snapshot is joined rather than duplicated.
+    if existing is not None and existing["status"] != "failed":
+        await queries.link_user_repo(conn, user["id"], existing["id"])
+        response.status_code = status.HTTP_200_OK
+        return RepoOut.from_row(existing)
 
-    response.status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+    # Nothing usable: either no snapshot at all, or the newest one failed. A
+    # retry is a *new* snapshot, never a reset of the failed row (§14.3).
+    limit = get_settings().MAX_ACTIVE_INGESTS
+    active = await queries.count_active_ingests(conn)
+    if active >= limit:
+        raise ServiceBusyError(
+            f"{active} ingests already queued or running (limit {limit})",
+            retry_after=60,
+            rule="ingest_capacity",
+        )
+
+    snapshot_id = await queries.create_snapshot(conn, source_id)
+    await queries.link_user_repo(conn, user["id"], snapshot_id)
+    await arq.enqueue_job("ingest_repo", str(snapshot_id))
+    logger.info("enqueued ingest for %s (snapshot %s)", name, snapshot_id)
+
+    row = await _require_owned_repo(conn, user["id"], snapshot_id)
+    response.status_code = status.HTTP_201_CREATED
     return RepoOut.from_row(row)
 
 
@@ -227,9 +239,9 @@ async def list_repos(conn: Conn, user: CurrentUser) -> RepoList:
     return RepoList(repos=[RepoOut.from_row(r) for r in rows])
 
 
-@router.get("/repos/{repo_id}", response_model=RepoOut)
-async def get_repo(repo_id: UUID, conn: Conn, user: CurrentUser) -> RepoOut:
-    return RepoOut.from_row(await _require_owned_repo(conn, user["id"], repo_id))
+@router.get("/repos/{snapshot_id}", response_model=RepoOut)
+async def get_repo(snapshot_id: UUID, conn: Conn, user: CurrentUser) -> RepoOut:
+    return RepoOut.from_row(await _require_owned_repo(conn, user["id"], snapshot_id))
 
 
 def _file_etag(
@@ -290,9 +302,9 @@ def _slice_lines(
     return "".join(lines[first - 1 : last]), first, last
 
 
-@router.get("/repos/{repo_id}/files", response_model=FileOut)
+@router.get("/repos/{snapshot_id}/files", response_model=FileOut)
 async def get_repo_file(
-    repo_id: UUID,
+    snapshot_id: UUID,
     path: str,
     request: Request,
     response: Response,
@@ -312,7 +324,7 @@ async def get_repo_file(
     and over. ``start_line``/``end_line`` bound the response for the common case
     where the viewer only renders a window.
     """
-    row = await _require_owned_repo(conn, user["id"], repo_id)
+    row = await _require_owned_repo(conn, user["id"], snapshot_id)
 
     etag = _file_etag(row["head_sha"], path, start_line, end_line)
     if etag and _matches_etag(request.headers.get("if-none-match"), etag):
@@ -321,7 +333,7 @@ async def get_repo_file(
             headers={"ETag": etag, "Cache-Control": CACHE_IMMUTABLE},
         )
 
-    file_row = await queries.get_file(conn, repo_id, path)
+    file_row = await queries.get_file(conn, snapshot_id, path)
     if file_row is None:
         raise RepoFileNotFoundError(path)
 
@@ -344,9 +356,9 @@ async def get_repo_file(
     )
 
 
-@router.post("/repos/{repo_id}/chat")
+@router.post("/repos/{snapshot_id}/chat")
 async def chat(
-    repo_id: UUID,
+    snapshot_id: UUID,
     body: ChatRequest,
     pool: Pool,
     model: ChatModel,
@@ -364,7 +376,7 @@ async def chat(
     is returned, the only thing left to say is an ``error`` event.
     """
     async with acquire(pool) as conn:
-        row = await _require_owned_repo(conn, user["id"], repo_id)
+        row = await _require_owned_repo(conn, user["id"], snapshot_id)
     if row["status"] != "ready":
         raise RepoNotReadyError(str(row["status"]))
 
@@ -381,5 +393,5 @@ async def chat(
         metrics.chat_streams_active.set(chat_slots.used)
 
     return EventSourceResponse(
-        chat_event_stream(model, pool, repo_id, body.question, on_finish=release)
+        chat_event_stream(model, pool, snapshot_id, body.question, on_finish=release)
     )

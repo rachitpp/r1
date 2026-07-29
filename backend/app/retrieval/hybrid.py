@@ -1,6 +1,6 @@
 """Hybrid retrieval: RRF fusion + exact-symbol injection + rerank (SPEC §5).
 
-``hybrid_search(repo_id, query, k=SEARCH_K)`` is the single public entry point
+``hybrid_search(snapshot_id, query, k=SEARCH_K)`` is the single public entry point
 for feature code (CLAUDE.md hard rule 2). The default pipeline is vector ⊕ FTS
 fused with RRF over implementation chunks; the cross-encoder rerank is **off by
 default** (``RERANK_ENABLED``, SPEC §5.3) because it measured worse-or-equal
@@ -132,7 +132,7 @@ def extract_identifiers(query: str) -> list[str]:
 
 
 async def _inject_symbol_ids(
-    conn: asyncpg.Connection, repo_id: UUID, query: str, *, include_tests: bool = False
+    conn: asyncpg.Connection, snapshot_id: UUID, query: str, *, include_tests: bool = False
 ) -> list[int]:
     """Chunk ids whose symbol matches a query identifier (SPEC §5.2).
 
@@ -148,13 +148,13 @@ async def _inject_symbol_ids(
     rows = await conn.fetch(
         f"""
         SELECT id FROM chunks
-        WHERE repo_id = $1
+        WHERE snapshot_id = $1
           AND (symbol = ANY($2::text[]) OR symbol LIKE ANY($3::text[]))
           {_test_filter(include_tests)}
         ORDER BY id
         LIMIT $4
         """,
-        repo_id,
+        snapshot_id,
         names,
         patterns,
         INJECT_LIMIT,
@@ -187,7 +187,7 @@ def _fts_query_sql(param: str) -> str:
 
 async def _vector_leg(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     qvec: list[float],
     limit: int,
     *,
@@ -197,12 +197,12 @@ async def _vector_leg(
     rows = await conn.fetch(
         f"""
         SELECT id, 1 - (embedding <=> $1) AS score
-        FROM chunks WHERE repo_id = $2{_test_filter(include_tests)}
+        FROM chunks WHERE snapshot_id = $2{_test_filter(include_tests)}
         ORDER BY embedding <=> $1, id
         LIMIT $3
         """,
         qvec,
-        repo_id,
+        snapshot_id,
         limit,
     )
     return [(int(r["id"]), float(r["score"])) for r in rows]
@@ -210,7 +210,7 @@ async def _vector_leg(
 
 async def _fts_leg(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     query: str,
     limit: int,
     *,
@@ -221,13 +221,13 @@ async def _fts_leg(
         f"""
         SELECT c.id, ts_rank(c.tsv, q) AS score
         FROM chunks c, {_fts_query_sql("$1")} AS q
-        WHERE c.repo_id = $2 AND c.tsv @@ q
+        WHERE c.snapshot_id = $2 AND c.tsv @@ q
               {_test_filter(include_tests, alias="c.")}
         ORDER BY score DESC, c.id
         LIMIT $3
         """,
         query,
-        repo_id,
+        snapshot_id,
         limit,
     )
     return [(int(r["id"]), float(r["score"])) for r in rows]
@@ -235,7 +235,7 @@ async def _fts_leg(
 
 async def _fusion(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     qvec: list[float],
     query: str,
     *,
@@ -244,7 +244,7 @@ async def _fusion(
     """RRF-fuse the vector and FTS legs in one SQL statement (SPEC §5.1).
 
     Must run inside a transaction that has set ``hnsw.ef_search`` — the HNSW
-    index applies the ``repo_id`` filter post-scan, and the default ef_search
+    index applies the ``snapshot_id`` filter post-scan, and the default ef_search
     starves filtered results on multi-repo databases.
 
     **Every ordering here carries ``id`` as a tiebreaker**, in the window and in
@@ -265,13 +265,13 @@ async def _fusion(
         f"""
         WITH vec AS (
           SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1, id) AS rnk
-          FROM chunks WHERE repo_id = $2{no_tests}
+          FROM chunks WHERE snapshot_id = $2{no_tests}
           ORDER BY embedding <=> $1, id LIMIT $4
         ),
         fts AS (
           SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC, id) AS rnk
           FROM chunks, {_fts_query_sql("$3")} AS q
-          WHERE repo_id = $2 AND tsv @@ q{no_tests}
+          WHERE snapshot_id = $2 AND tsv @@ q{no_tests}
           ORDER BY ts_rank(tsv, q) DESC, id LIMIT $5
         )
         SELECT COALESCE(v.id, f.id) AS chunk_id,
@@ -281,7 +281,7 @@ async def _fusion(
         LIMIT $7
         """,
         qvec,
-        repo_id,
+        snapshot_id,
         query,
         VEC_K,
         FTS_K,
@@ -333,7 +333,7 @@ async def _set_ef_search(conn: asyncpg.Connection) -> None:
 
 async def search(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     query: str,
     *,
     k: int = SEARCH_K,
@@ -352,7 +352,7 @@ async def search(
     the shadowed condition and exists to keep that counterfactual measurable.
     """
     if mode == "fts":
-        scored = await _fts_leg(conn, repo_id, query, k, include_tests=include_tests)
+        scored = await _fts_leg(conn, snapshot_id, query, k, include_tests=include_tests)
         rows = await _fetch_rows(conn, [i for i, _ in scored])
         return [_hit(rows[i], s) for i, s in scored if i in rows]
 
@@ -364,7 +364,7 @@ async def search(
         async with conn.transaction():
             await _set_ef_search(conn)
             scored = await _vector_leg(
-                conn, repo_id, qvec, k, include_tests=include_tests
+                conn, snapshot_id, qvec, k, include_tests=include_tests
             )
         rows = await _fetch_rows(conn, [i for i, _ in scored])
         return [_hit(rows[i], s) for i, s in scored if i in rows]
@@ -372,7 +372,7 @@ async def search(
     # hybrid / hybrid+rerank both start from RRF fusion.
     async with conn.transaction():
         await _set_ef_search(conn)
-        fused = await _fusion(conn, repo_id, qvec, query, include_tests=include_tests)
+        fused = await _fusion(conn, snapshot_id, qvec, query, include_tests=include_tests)
 
     if mode == "hybrid":
         rows = await _fetch_rows(conn, [i for i, _ in fused])
@@ -381,7 +381,7 @@ async def search(
 
     # hybrid+rerank: fusion ∪ injection, deduped, cross-encoder reranked.
     injected = await _inject_symbol_ids(
-        conn, repo_id, query, include_tests=include_tests
+        conn, snapshot_id, query, include_tests=include_tests
     )
     pool_ids: list[int] = list(dict.fromkeys([i for i, _ in fused] + injected))
     rows = await _fetch_rows(conn, pool_ids)
@@ -395,7 +395,7 @@ async def search(
 
 
 async def hybrid_search(
-    repo_id: UUID,
+    snapshot_id: UUID,
     query: str,
     k: int = SEARCH_K,
     *,
@@ -438,14 +438,14 @@ async def hybrid_search(
     if source is not None:
         async with acquire(source) as conn:
             return await search(
-                conn, repo_id, query, k=k, mode=mode, include_tests=include_tests
+                conn, snapshot_id, query, k=k, mode=mode, include_tests=include_tests
             )
 
     pool = await create_pool(settings.DATABASE_URL, min_size=1, max_size=2)
     try:
         async with acquire(pool) as conn:
             return await search(
-                conn, repo_id, query, k=k, mode=mode, include_tests=include_tests
+                conn, snapshot_id, query, k=k, mode=mode, include_tests=include_tests
             )
     finally:
         await close_pool(pool)

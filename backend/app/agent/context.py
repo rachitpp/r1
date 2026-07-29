@@ -38,7 +38,7 @@ def format_called_by(
 
 async def called_by_block(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     *,
     symbol_id: int | None,
     file_path: str,
@@ -52,11 +52,11 @@ async def called_by_block(
     annotations instead of silently rendering empty.
     """
     resolved = await queries.resolve_symbol_id(
-        conn, repo_id, symbol_id=symbol_id, file_path=file_path, qualname=qualname
+        conn, snapshot_id, symbol_id=symbol_id, file_path=file_path, qualname=qualname
     )
     if resolved is None:
         return ""
     callers, total = await queries.implementation_callers(
-        conn, repo_id, resolved, limit
+        conn, snapshot_id, resolved, limit
     )
     return format_called_by(callers, total, limit=limit)

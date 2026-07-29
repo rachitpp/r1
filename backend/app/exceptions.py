@@ -140,6 +140,27 @@ class UnauthorizedError(AppError):
     """A protected endpoint was called without the right credentials (401)."""
 
 
+class SnapshotSuperseded(AppError):
+    """**Not a failure.** The clone revealed this commit is already ingested.
+
+    Raised by the pipeline once the SHA is known and an existing `ready`
+    snapshot of the same `(source, commit, strategy)` is found (SPEC §14.4).
+    The redundant snapshot's library entries are moved to the existing one and
+    its row is deleted before this is raised, so by the time a caller sees it
+    the work is done — there is simply nothing left to ingest.
+
+    An exception rather than a return value because it unwinds from the middle
+    of the clone context, several frames below the caller that cares, and every
+    layer in between would otherwise have to thread a sentinel through. It
+    subclasses `AppError` so nothing catches it as an infrastructure fault; the
+    worker and the CLI both treat it as a successful outcome.
+    """
+
+    def __init__(self, kept_id: object) -> None:
+        self.kept_id = kept_id
+        super().__init__(f"already ingested at this commit; using snapshot {kept_id}")
+
+
 class AuthNotConfiguredError(AppError):
     """Sign-in was attempted without OAuth credentials in the environment (503).
 

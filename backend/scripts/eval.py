@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import get_settings  # noqa: E402
 from app.db.pool import close_pool, create_pool  # noqa: E402
-from app.db.queries import resolve_repo_id  # noqa: E402
+from app.db.queries import resolve_snapshot_id  # noqa: E402
 from app.retrieval.hybrid import (  # noqa: E402
     MODES,
     Mode,
@@ -85,14 +85,14 @@ def _first_hit_rank(
 
 
 async def _truth_file_guard(
-    conn: asyncpg.Connection, repo_id: UUID, questions: list[dict]
+    conn: asyncpg.Connection, snapshot_id: UUID, questions: list[dict]
 ) -> None:
     """Warn loudly if any ground-truth file is missing from the files table.
 
     Catches path-format drift (Reconciliation 3) before it silently zeroes a
     question — a missing file can never be a hit.
     """
-    rows = await conn.fetch("SELECT path FROM files WHERE repo_id = $1", repo_id)
+    rows = await conn.fetch("SELECT path FROM files WHERE snapshot_id = $1", snapshot_id)
     present = {r["path"] for r in rows}
     wanted = {
         f for q in questions for f in q.get("truth", {}).get("files", [])
@@ -130,7 +130,7 @@ CONDITION_LABELS = {
 
 async def _measure(
     conn: asyncpg.Connection,
-    repo_id: UUID,
+    snapshot_id: UUID,
     questions: list[dict],
     modes: list[Mode],
     *,
@@ -149,7 +149,7 @@ async def _measure(
         for mode in modes:
             found = await search(
                 conn,
-                repo_id,
+                snapshot_id,
                 q["question"],
                 k=MAX_K,
                 mode=mode,
@@ -178,31 +178,31 @@ async def run(modes: list[Mode], repo_ref: str, conditions: list[bool]) -> int:
     results: list[ConditionResult] = []
     try:
         async with pool.acquire() as conn:
-            repo_id = await resolve_repo_id(conn, ref)
-            if repo_id is None:
+            snapshot_id = await resolve_snapshot_id(conn, ref)
+            if snapshot_id is None:
                 print(f"error: repo {ref!r} not ingested; run the CLI --db first")
                 return 1
 
             head_sha = await conn.fetchval(
-                "SELECT head_sha FROM repos WHERE id = $1", repo_id
+                "SELECT head_sha FROM repos WHERE id = $1", snapshot_id
             )
             n_chunks = await conn.fetchval(
-                "SELECT count(*) FROM chunks WHERE repo_id = $1", repo_id
+                "SELECT count(*) FROM chunks WHERE snapshot_id = $1", snapshot_id
             )
             n_impl = await conn.fetchval(
-                "SELECT count(*) FROM chunks WHERE repo_id = $1 AND NOT is_test",
-                repo_id,
+                "SELECT count(*) FROM chunks WHERE snapshot_id = $1 AND NOT is_test",
+                snapshot_id,
             )
             if sha and head_sha and not head_sha.startswith(sha[:12]):
                 print(f"WARNING: ingested head {head_sha} != EVAL pinned {sha}")
 
-            await _truth_file_guard(conn, repo_id, questions)
+            await _truth_file_guard(conn, snapshot_id, questions)
 
             for include_tests in conditions:
                 print(f"\n>>> condition: {CONDITION_LABELS[include_tests]}")
                 results.append(
                     await _measure(
-                        conn, repo_id, questions, modes, include_tests=include_tests
+                        conn, snapshot_id, questions, modes, include_tests=include_tests
                     )
                 )
     finally:
