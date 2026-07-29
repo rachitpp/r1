@@ -2282,3 +2282,39 @@ re-run, a real kill — and none by inspecting the diff.
 Verified: 304 unit tests, 14 integration (9 lease tests), `ruff` and `mypy`
 clean, `eval.py` hybrid unchanged at 0.80 / 0.90 / 0.95 MRR 0.753.
 
+## 2026-07-30 — Eval through the live inference service: byte-identical vectors
+
+§16.5's criterion is that `scripts/eval.py` be unchanged with the HTTP embedder
+in place — same corpus, same vectors, different transport. Run against a live
+service:
+
+    uv run uvicorn app.inference.main:service --port 8001
+    INFERENCE_URL=http://localhost:8001 uv run python scripts/eval.py --mode vector,fts,hybrid
+
+All twelve metrics identical to the local path: vector 0.75/0.85/0.90 MRR 0.722,
+fts 0.55/0.70/0.80 MRR 0.463, hybrid 0.80/0.90/0.95 MRR 0.753. `/health`
+confirmed the service was on `BAAI/bge-small-en-v1.5` at dim 384, and
+`get_embedder()` returned `HttpEmbedder` rather than the local model — worth
+checking explicitly, because an eval that silently fell back to the in-process
+model would produce exactly the same numbers and prove nothing.
+
+**Then the stronger check, because equal rankings are not equal vectors.** Local
+and remote embeddings of the same four texts — including a 400-character one —
+compared directly: **byte-identical, 4/4, maximum absolute difference exactly
+0.0**, and `token_len` agreeing on all four. A float discrepancy small enough not
+to reorder any result would have passed the eval criterion and failed this one,
+so "same vectors" is literal rather than inferred.
+
+A small corroboration noticed in passing: the first three components the service
+returned for *"how does the client pick a transport"* are
+`-0.028223, -0.03184, 0.007634` — the same values a locally computed query vector
+for that string showed earlier in the session, in an unrelated `EXPLAIN` probe.
+
+**V3 is complete, 8/8.** The fleet is verified by running it (three concurrent
+workers, and a killed worker that exposed the commit-bricking unique key), and
+the inference service is verified by measuring through it.
+
+fts is included in the run deliberately even though it needs no embedder: it is
+the control. If the harness had been misconfigured in some way that changed the
+corpus rather than the transport, fts would have moved too.
+
