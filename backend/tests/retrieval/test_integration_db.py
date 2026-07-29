@@ -119,3 +119,50 @@ async def test_db_ingest_idempotent_and_search(
             await close_pool(pool)
     finally:
         await _delete_repo(url)
+
+
+async def test_retrieval_order_survives_a_row_rewrite(
+    tmp_path: Path, require_db: None
+) -> None:
+    """Tied results must not depend on physical row order.
+
+    Every ORDER BY in `hybrid.py` carries `id` as a tiebreaker. Without one,
+    tied rows come back in heap order, so an UPDATE — which writes each row
+    version to a new location — silently reshuffles results. That is not
+    hypothetical: it moved fts MRR 0.503 -> 0.494 on the benchmark corpus when
+    a migration rewrote 104 chunk rows (DECISIONS 2026-07-29).
+
+    A value-preserving UPDATE is the exact mechanism, so the assertion is that
+    retrieval returns the identical id sequence across one.
+    """
+    repo = _make_git_repo(tmp_path)
+    url = repo.as_uri()
+    try:
+        await ingest_to_db(url)
+        pool = await create_pool(get_settings().DATABASE_URL, command_timeout=None)
+        try:
+            async with pool.acquire() as conn:
+                repo_id = await resolve_repo_id(conn, url)
+                assert repo_id is not None
+
+                query = "alpha helper join path"
+                before = [
+                    [h["chunk_id"] for h in await search(conn, repo_id, query, mode=m)]
+                    for m in ("vector", "fts", "hybrid")
+                ]
+                assert any(before), "fixture produced no hits to compare"
+
+                rewritten = await conn.execute(
+                    "UPDATE chunks SET part = part WHERE repo_id = $1", repo_id
+                )
+                assert rewritten != "UPDATE 0"
+
+                after = [
+                    [h["chunk_id"] for h in await search(conn, repo_id, query, mode=m)]
+                    for m in ("vector", "fts", "hybrid")
+                ]
+                assert after == before
+        finally:
+            await close_pool(pool)
+    finally:
+        await _delete_repo(url)

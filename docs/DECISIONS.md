@@ -1848,3 +1848,69 @@ raises `UnicodeDecodeError` on a UTF-8 host — it is a docs artifact, and the
 database copy is correct. And the skeleton renderer double-spaces class
 docstrings (a blank line after every line), which costs tokens and looks odd in
 agent context but changes nothing about correctness.
+
+## 2026-07-29 — Every retrieval ordering carries `id`; the numbers were re-measured once, on purpose
+
+The previous entry logged the FTS leg's missing tiebreaker as the next
+candidate and deliberately left it. Doing it now, and the first thing
+measurement changed was the scope: **ties are not an FTS problem, they are a
+retrieval-wide one.** Across the 20 frozen questions, at each leg's top-40:
+
+| leg | questions with ties | tied slots |
+|---|---|---|
+| FTS | 20/20 | 489 |
+| vector | 11/20 | 59 |
+| RRF fusion | 20/20 | 236 |
+
+Fusion ties are structural rather than incidental: a chunk found by one leg
+only scores `1/(RRF_K + rank)`, so a chunk at rank 5 in the vector leg and a
+*different* chunk at rank 5 in the FTS leg collide exactly. Fixing FTS alone
+would have left 236 arbitrary slots and looked like a fix.
+
+So `id` is now the tiebreaker in **every** ordering in `hybrid.py`: both legs,
+both fusion CTEs — in the `ROW_NUMBER` window *and* the matching `ORDER BY`, or
+the rank assigned would disagree with which rows survive the `LIMIT` — and the
+final `ORDER BY rrf DESC, chunk_id`. `_inject_symbol_ids` also had a bare
+`LIMIT` with no `ORDER BY` at all, which is the same bug with no ordering to
+tiebreak; it now orders by `id` too. The injection path is dormant with rerank
+off, so that one was latent rather than active.
+
+**Plan-neutral.** `EXPLAIN` before and after is byte-identical for the vector
+leg, with and without `enable_seqscan`. Worth recording *why*: at this corpus
+size the planner picks `chunks_repo_file` and sorts, and **never chooses
+`chunks_hnsw` at all** — the `repo_id` predicate is more selective than the
+vector ordering is valuable. That is another data point for the V4 gate: the
+HNSW index's behaviour under filtering is effectively untested here, and adding
+a secondary sort key to a query that *does* use it would need re-checking then.
+
+**The re-measurement, which is the point.** This change moves published numbers
+by construction — that is what fixing a tie order does — so it was done as one
+deliberate experiment, four eval blocks, framed in EVAL.md:
+
+| | pre-fix | post-fix |
+|---|---|---|
+| vector | 0.75 / 0.85 / 0.90, MRR 0.722 | **unchanged** |
+| fts | 0.60 / 0.70 / 0.80, MRR 0.494 | 0.55 / 0.70 / 0.80, MRR 0.463 |
+| hybrid | 0.80 / 0.85 / 0.95, MRR 0.752 | 0.80 / **0.90** / 0.95, MRR 0.753 |
+
+**The new values land on the 2026-07-26 published numbers** — fts hit@3 0.55,
+hybrid hit@5 0.90 — which is the strongest evidence that this is a correction
+rather than a drift. That corpus had just been ingested, so physical heap order
+still *was* id order; every write since (the naive baseline on 07-27, the span
+migration on 07-29) walked it away. The tiebreaker pins permanently what was
+briefly true by accident.
+
+**Proof, not assertion.** Two consecutive runs are byte-identical. A third,
+taken after `UPDATE chunks SET part = part` rewrote all 1522 row versions — the
+exact mechanism that shifted fts MRR by 0.031 when the span migration rewrote
+only 104 — is also byte-identical. 14× the perturbation, zero movement.
+`test_retrieval_order_survives_a_row_rewrite` pins it: capture the id sequence
+for all three modes, rewrite every row, assert the sequence is unchanged.
+
+**Note for whoever runs the integration suite.** It cannot complete on this
+Windows host: `test_db_ingest_idempotent_and_search` uses `mode="hybrid+rerank"`,
+and loading the 2.4 GB `bge-reranker-v2-m3` CrossEncoder kills the interpreter
+with a `Windows fatal exception: access violation` inside torch's weight
+materialisation. Nothing to do with this change — the new test avoids the
+reranker and passes in 78 s. Rerank is off by default (SPEC §5.3), so this only
+bites the integration suite.

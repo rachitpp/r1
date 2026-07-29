@@ -151,6 +151,7 @@ async def _inject_symbol_ids(
         WHERE repo_id = $1
           AND (symbol = ANY($2::text[]) OR symbol LIKE ANY($3::text[]))
           {_test_filter(include_tests)}
+        ORDER BY id
         LIMIT $4
         """,
         repo_id,
@@ -197,7 +198,7 @@ async def _vector_leg(
         f"""
         SELECT id, 1 - (embedding <=> $1) AS score
         FROM chunks WHERE repo_id = $2{_test_filter(include_tests)}
-        ORDER BY embedding <=> $1
+        ORDER BY embedding <=> $1, id
         LIMIT $3
         """,
         qvec,
@@ -222,7 +223,7 @@ async def _fts_leg(
         FROM chunks c, {_fts_query_sql("$1")} AS q
         WHERE c.repo_id = $2 AND c.tsv @@ q
               {_test_filter(include_tests, alias="c.")}
-        ORDER BY score DESC
+        ORDER BY score DESC, c.id
         LIMIT $3
         """,
         query,
@@ -246,6 +247,15 @@ async def _fusion(
     index applies the ``repo_id`` filter post-scan, and the default ef_search
     starves filtered results on multi-repo databases.
 
+    **Every ordering here carries ``id`` as a tiebreaker**, in the window and in
+    the matching ``ORDER BY`` alike. Without one, tied rows come back in
+    physical heap order, so any ``UPDATE``, ``VACUUM FULL``, restore, or
+    re-ingest silently reshuffles results — and ties are the common case, not
+    the corner: on the benchmark corpus 20/20 questions carry tied ``ts_rank``
+    scores and 20/20 carry tied RRF sums, because ``1/(k+rank)`` from a single
+    leg collides exactly whenever two chunks hold the same rank in the two
+    legs. Threshold metrics survive that; MRR does not (DECISIONS 2026-07-29).
+
     Both CTEs apply the §5.4 test filter, so exclusion happens *before* the
     per-leg LIMIT — test chunks never consume a top-40 slot that implementation
     could have taken.
@@ -254,20 +264,20 @@ async def _fusion(
     rows = await conn.fetch(
         f"""
         WITH vec AS (
-          SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1) AS rnk
+          SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1, id) AS rnk
           FROM chunks WHERE repo_id = $2{no_tests}
-          ORDER BY embedding <=> $1 LIMIT $4
+          ORDER BY embedding <=> $1, id LIMIT $4
         ),
         fts AS (
-          SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC) AS rnk
+          SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC, id) AS rnk
           FROM chunks, {_fts_query_sql("$3")} AS q
           WHERE repo_id = $2 AND tsv @@ q{no_tests}
-          ORDER BY ts_rank(tsv, q) DESC LIMIT $5
+          ORDER BY ts_rank(tsv, q) DESC, id LIMIT $5
         )
         SELECT COALESCE(v.id, f.id) AS chunk_id,
                COALESCE(1.0/($6 + v.rnk), 0) + COALESCE(1.0/($6 + f.rnk), 0) AS rrf
         FROM vec v FULL OUTER JOIN fts f ON v.id = f.id
-        ORDER BY rrf DESC
+        ORDER BY rrf DESC, chunk_id
         LIMIT $7
         """,
         qvec,

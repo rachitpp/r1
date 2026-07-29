@@ -1034,6 +1034,28 @@ Per-question hit@10:
 | q20 | ✓ | ✓ | ✓ |
 
 
+> **The four 2026-07-29 blocks below are one experiment, not four measurements.**
+> Read them in order (DECISIONS 2026-07-29):
+>
+> 1. **After the rendered-span fix.** Verifies `005_rendered_chunk_spans.sql`
+>    moved no hit@k. It didn't — but fts MRR shifted 0.503 → 0.494, because the
+>    migration's `UPDATE` rewrote row versions and the ordering had no
+>    tiebreaker, so tied rows came back in a new physical order.
+> 2. **After adding `id` as a tiebreaker** to every ordering in `hybrid.py`.
+>    This is the deliberate, one-time re-measurement that change entails. fts
+>    hit@3 0.60 → 0.55 and MRR → 0.463; hybrid hit@5 0.85 → 0.90, MRR → 0.753.
+>    Both land back on the **2026-07-26 published values** — that corpus was
+>    freshly ingested, so heap order was still id order, which is exactly what
+>    the tiebreaker now pins permanently.
+> 3. **Repeat run, nothing changed.** Byte-identical to 2.
+> 4. **Repeat run after `UPDATE chunks SET part = part` on all 1522 rows** — the
+>    exact mechanism that caused the drift in 1, at 14x the scale.
+>    Byte-identical to 2 and 3.
+>
+> Blocks 2-4 being identical *is* the result: retrieval order no longer depends
+> on physical row layout. Pinned by
+> `test_retrieval_order_survives_a_row_rewrite`.
+
 ### Results — 2026-07-29
 
 **Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks (825 implementation, 697 test), 20 questions. Modes: vector, fts, hybrid.
@@ -1045,6 +1067,120 @@ Per-question hit@10:
 | vector | 0.75 (15/20) | 0.85 (17/20) | 0.90 (18/20) | 0.722 |
 | fts | 0.60 (12/20) | 0.70 (14/20) | 0.80 (16/20) | 0.494 |
 | hybrid | 0.80 (16/20) | 0.85 (17/20) | 0.95 (19/20) | 0.752 |
+
+Per-question hit@10:
+
+| q | vector | fts | hybrid |
+|---|---|---|---|
+| q01 | ✓ | · | ✓ |
+| q02 | ✓ | ✓ | ✓ |
+| q03 | ✓ | ✓ | ✓ |
+| q04 | ✓ | ✓ | ✓ |
+| q05 | ✓ | ✓ | ✓ |
+| q06 | ✓ | ✓ | ✓ |
+| q07 | ✓ | ✓ | ✓ |
+| q08 | ✓ | ✓ | ✓ |
+| q09 | · | ✓ | ✓ |
+| q10 | · | · | · |
+| q11 | ✓ | ✓ | ✓ |
+| q12 | ✓ | ✓ | ✓ |
+| q13 | ✓ | · | ✓ |
+| q14 | ✓ | · | ✓ |
+| q15 | ✓ | ✓ | ✓ |
+| q16 | ✓ | ✓ | ✓ |
+| q17 | ✓ | ✓ | ✓ |
+| q18 | ✓ | ✓ | ✓ |
+| q19 | ✓ | ✓ | ✓ |
+| q20 | ✓ | ✓ | ✓ |
+
+
+### Results — 2026-07-29
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks (825 implementation, 697 test), 20 questions. Modes: vector, fts, hybrid.
+
+**Corpus condition:** implementation-only (default, is_test excluded)
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| vector | 0.75 (15/20) | 0.85 (17/20) | 0.90 (18/20) | 0.722 |
+| fts | 0.55 (11/20) | 0.70 (14/20) | 0.80 (16/20) | 0.463 |
+| hybrid | 0.80 (16/20) | 0.90 (18/20) | 0.95 (19/20) | 0.753 |
+
+Per-question hit@10:
+
+| q | vector | fts | hybrid |
+|---|---|---|---|
+| q01 | ✓ | · | ✓ |
+| q02 | ✓ | ✓ | ✓ |
+| q03 | ✓ | ✓ | ✓ |
+| q04 | ✓ | ✓ | ✓ |
+| q05 | ✓ | ✓ | ✓ |
+| q06 | ✓ | ✓ | ✓ |
+| q07 | ✓ | ✓ | ✓ |
+| q08 | ✓ | ✓ | ✓ |
+| q09 | · | ✓ | ✓ |
+| q10 | · | · | · |
+| q11 | ✓ | ✓ | ✓ |
+| q12 | ✓ | ✓ | ✓ |
+| q13 | ✓ | · | ✓ |
+| q14 | ✓ | · | ✓ |
+| q15 | ✓ | ✓ | ✓ |
+| q16 | ✓ | ✓ | ✓ |
+| q17 | ✓ | ✓ | ✓ |
+| q18 | ✓ | ✓ | ✓ |
+| q19 | ✓ | ✓ | ✓ |
+| q20 | ✓ | ✓ | ✓ |
+
+
+### Results — 2026-07-29
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks (825 implementation, 697 test), 20 questions. Modes: vector, fts, hybrid.
+
+**Corpus condition:** implementation-only (default, is_test excluded)
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| vector | 0.75 (15/20) | 0.85 (17/20) | 0.90 (18/20) | 0.722 |
+| fts | 0.55 (11/20) | 0.70 (14/20) | 0.80 (16/20) | 0.463 |
+| hybrid | 0.80 (16/20) | 0.90 (18/20) | 0.95 (19/20) | 0.753 |
+
+Per-question hit@10:
+
+| q | vector | fts | hybrid |
+|---|---|---|---|
+| q01 | ✓ | · | ✓ |
+| q02 | ✓ | ✓ | ✓ |
+| q03 | ✓ | ✓ | ✓ |
+| q04 | ✓ | ✓ | ✓ |
+| q05 | ✓ | ✓ | ✓ |
+| q06 | ✓ | ✓ | ✓ |
+| q07 | ✓ | ✓ | ✓ |
+| q08 | ✓ | ✓ | ✓ |
+| q09 | · | ✓ | ✓ |
+| q10 | · | · | · |
+| q11 | ✓ | ✓ | ✓ |
+| q12 | ✓ | ✓ | ✓ |
+| q13 | ✓ | · | ✓ |
+| q14 | ✓ | · | ✓ |
+| q15 | ✓ | ✓ | ✓ |
+| q16 | ✓ | ✓ | ✓ |
+| q17 | ✓ | ✓ | ✓ |
+| q18 | ✓ | ✓ | ✓ |
+| q19 | ✓ | ✓ | ✓ |
+| q20 | ✓ | ✓ | ✓ |
+
+
+### Results — 2026-07-29
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks (825 implementation, 697 test), 20 questions. Modes: vector, fts, hybrid.
+
+**Corpus condition:** implementation-only (default, is_test excluded)
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| vector | 0.75 (15/20) | 0.85 (17/20) | 0.90 (18/20) | 0.722 |
+| fts | 0.55 (11/20) | 0.70 (14/20) | 0.80 (16/20) | 0.463 |
+| hybrid | 0.80 (16/20) | 0.90 (18/20) | 0.95 (19/20) | 0.753 |
 
 Per-question hit@10:
 
