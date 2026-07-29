@@ -29,6 +29,15 @@ class RecordingConn:
         self.calls.append((sql, args))
         return [{"id": uuid.uuid4()}]
 
+    async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        """Non-None so `claim_snapshot` succeeds (SPEC §15.4).
+
+        A worker that cannot take the lease returns early without ingesting, so
+        a fake that refused the claim would make every test here assert nothing.
+        """
+        self.calls.append((sql, args))
+        return {"id": args[0] if args else uuid.uuid4()}
+
     async def execute(self, sql: str, *args: Any) -> str:
         self.calls.append((sql, args))
         return "UPDATE 1"
@@ -104,7 +113,13 @@ async def test_ingest_repo_lets_cancellation_propagate(
     monkeypatch.setattr(worker, "run_ingest", cancelled)
     with pytest.raises(asyncio.CancelledError):
         await worker.ingest_repo({"pool": FakePool(conn)}, str(uuid.uuid4()))
-    assert conn.calls == []
+
+    # The claim is expected — it happens before any work (SPEC §15.4). What must
+    # NOT happen is a failure being recorded: a cancelled job is retryable, and
+    # writing `failed` here would brick a snapshot ARQ intends to run again.
+    written = " ".join(sql for sql, _ in conn.calls)
+    assert "claimed_by" in written
+    assert "failed" not in written
 
 
 def test_worker_settings_match_the_spec_and_the_budget_rule() -> None:

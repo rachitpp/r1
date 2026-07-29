@@ -213,11 +213,15 @@ async def create_repo(
 
     # Nothing usable: either no snapshot at all, or the newest one failed. A
     # retry is a *new* snapshot, never a reset of the failed row (§14.3).
+    # §15.5: per *user*, not global. As a global count, one person's queued
+    # repos refused everybody else's first submission — a per-user limit
+    # masquerading as capacity protection. Real capacity is bounded by the size
+    # of the worker fleet and by the §15.3 one-in-flight-per-source index.
     limit = get_settings().MAX_ACTIVE_INGESTS
-    active = await queries.count_active_ingests(conn)
+    active = await queries.count_active_ingests_for_user(conn, user["id"])
     if active >= limit:
         raise ServiceBusyError(
-            f"{active} ingests already queued or running (limit {limit})",
+            f"you already have {active} ingests queued or running (limit {limit})",
             retry_after=60,
             rule="ingest_capacity",
         )

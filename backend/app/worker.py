@@ -15,12 +15,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 from typing import Any
 from uuid import UUID
 
 from arq.connections import RedisSettings
 
-from app.config import ZOMBIE_AFTER_S, get_settings
+from app.config import (
+    HEARTBEAT_EVERY_S,
+    LEASE_EXPIRY_S,
+    ZOMBIE_AFTER_S,
+    get_settings,
+)
 from app.db import queries
 from app.db.pool import close_pool, create_pool
 from app.exceptions import SnapshotSuperseded
@@ -44,6 +51,34 @@ MAX_TRIES = 2
 POLL_DELAY_S = 2.0
 
 
+# Worker identity for the lease (§15.2): enough to find the process, never used
+# as a lock — a hostname can repeat, so the lease is the timestamp, not the name.
+WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
+
+
+async def _heartbeat(pool: Any, snapshot_id: UUID) -> None:
+    """Refresh the lease on a timer until cancelled (§15.4).
+
+    A *timer*, not a progress hook — that distinction is the whole fix. The old
+    sweep inferred liveness from progress writes, so the silent stretch inside
+    `linking` (one status write, then Jedi to completion) was indistinguishable
+    from a dead worker, and the window had to be sized for the quietest phase.
+
+    Failures are logged and swallowed: a missed beat is survivable
+    (LEASE_EXPIRY_S covers several), and letting this task die would silently
+    stop the heartbeat for the rest of a long ingest.
+    """
+    while True:
+        try:
+            await asyncio.sleep(HEARTBEAT_EVERY_S)
+            async with pool.acquire() as conn:
+                await queries.touch_heartbeat(conn, snapshot_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — a missed beat is not fatal
+            logger.warning("heartbeat failed for %s: %s", snapshot_id, exc)
+
+
 async def ping(ctx: dict[str, Any]) -> str:
     """No-op health task (Phase 0; kept as a queue smoke test)."""
     return "pong"
@@ -64,6 +99,20 @@ async def ingest_repo(ctx: dict[str, Any], snapshot_id: str) -> str:
     """
     rid = UUID(str(snapshot_id))
     pool = ctx["pool"]
+
+    # §15.4. Claim the lease and start beating before any work begins, so a
+    # crash at any point after this leaves a row the sweep can reclaim in
+    # LEASE_EXPIRY_S rather than one that looks busy until ZOMBIE_AFTER_S.
+    async with pool.acquire() as conn:
+        claimed = await queries.claim_snapshot(conn, rid, WORKER_ID)
+    if not claimed:
+        # Another worker got there first, or the row is no longer queued. Not an
+        # error: the §15.3 partial index exists precisely so this resolves
+        # quietly instead of two workers ingesting the same repo.
+        logger.info("[%s] not claimable (already taken or not queued)", snapshot_id)
+        return "skipped: not claimable"
+
+    beat = asyncio.create_task(_heartbeat(pool, rid))
     try:
         stats = await run_ingest(
             rid, pool=pool, log=lambda m: logger.info("[%s] %s", snapshot_id, m)
@@ -89,6 +138,11 @@ async def ingest_repo(ctx: dict[str, Any], snapshot_id: str) -> str:
         async with pool.acquire() as conn:
             await queries.fail_repo(conn, rid, detail)
         return f"failed: {detail}"
+    finally:
+        # Every exit path, including the two returns above and the re-raised
+        # CancelledError: a heartbeat outliving its job would keep a dead row
+        # looking alive for as long as the process lasts.
+        beat.cancel()
 
     summary = (
         f"ready: {stats.name} files={stats.selection.n_kept} "
@@ -122,13 +176,25 @@ async def on_startup(ctx: dict[str, Any]) -> None:
     # Models load once per process, never per job (SPEC §4).
     get_embedder()
 
-    # Any row still claiming to be mid-ingest is the corpse of a previous
-    # worker: the job that owned it died with it, so nothing will ever move it
-    # again. Startup is the moment we know for certain no such job is running.
+    # Two sweeps, because they cover different rows and neither can reap what
+    # the other owns (§15.4).
+    #
+    # The old comment here claimed "startup is the moment we know for certain no
+    # such job is running" — which was never what the query did, and is false
+    # with a worker fleet. `sweep_zombie_repos` has always been time-based, so
+    # startup is simply a convenient moment to run it, not a guarantee.
+    #
+    # Leases are the precise mechanism: a heartbeat is unconditional, so an
+    # expired one means the worker is gone, and LEASE_EXPIRY_S (120s) can be a
+    # tenth of ZOMBIE_AFTER_S (1200s). The zombie sweep stays for rows with no
+    # heartbeat at all — snapshots that predate the lease columns.
     async with ctx["pool"].acquire() as conn:
-        swept = await queries.sweep_zombie_repos(conn, ZOMBIE_AFTER_S)
-    if swept:
-        logger.warning("zombie sweep failed %d stale repo(s): %s", len(swept), swept)
+        expired = await queries.sweep_expired_leases(conn, LEASE_EXPIRY_S)
+        legacy = await queries.sweep_zombie_repos(conn, ZOMBIE_AFTER_S)
+    if expired:
+        logger.warning("reclaimed %d snapshot(s) on expired leases: %s", len(expired), expired)
+    if legacy:
+        logger.warning("zombie sweep failed %d leaseless row(s): %s", len(legacy), legacy)
 
 
 async def on_shutdown(ctx: dict[str, Any]) -> None:

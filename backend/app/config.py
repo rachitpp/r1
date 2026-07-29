@@ -78,6 +78,24 @@ MAX_REQUEST_BYTES: int = 64 * 1024
 FILE_RANGE_MAX_LINES: int = 5_000
 
 # ---------------------------------------------------------------------------
+# Job leases — SPEC §15 (v2 phase V3)
+# ---------------------------------------------------------------------------
+
+# How stale a lease may get before the sweep reclaims its snapshot.
+#
+# Far tighter than ZOMBIE_AFTER_S (1200s) can safely be, and that is the point:
+# the old sweep leaned on *progress* writes, which are incidental — `linking`
+# writes its status once and then runs Jedi silently — so the window had to be
+# long enough to cover the quietest legitimate phase. A heartbeat is
+# unconditional, so a dead worker's job comes back in two minutes rather than
+# twenty (§15.1, §15.4).
+LEASE_EXPIRY_S: int = 120
+
+# Heartbeat cadence. Must divide LEASE_EXPIRY_S with room for several missed
+# beats: one slow write, or one GC pause, must not look like a dead worker.
+HEARTBEAT_EVERY_S: int = 20
+
+# ---------------------------------------------------------------------------
 # Identity & tenancy — SPEC §13.8 (v2 phase V1)
 # ---------------------------------------------------------------------------
 

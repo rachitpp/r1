@@ -517,6 +517,96 @@ async def sweep_zombie_repos(conn: asyncpg.Connection, older_than_s: int) -> lis
     return [str(r["id"]) for r in rows]
 
 
+async def claim_snapshot(
+    conn: asyncpg.Connection, snapshot_id: UUID, worker: str
+) -> bool:
+    """Take the lease on a snapshot (SPEC §15.4). ``False`` if someone else has it.
+
+    **The status transition is part of the claim**, not a separate step the
+    pipeline does afterwards. Guarding on ``status = 'queued'`` while leaving the
+    row queued makes the guard vacuous: two workers both match, both "win", and
+    both ingest into the same snapshot — doubling every row. Moving it to
+    ``cloning`` in the same statement is what makes exactly one UPDATE match.
+
+    Claim, transition and first heartbeat are therefore one statement, so there
+    is no instant where a row is claimed but looks stale, and none where it is
+    claimable twice.
+    """
+    row = await conn.fetchrow(
+        """
+        UPDATE repo_snapshots
+           SET status = 'cloning',
+               claimed_by = $2, claimed_at = now(), heartbeat_at = now(),
+               updated_at = now()
+         WHERE id = $1 AND status = 'queued'
+        RETURNING id
+        """,
+        snapshot_id,
+        worker,
+    )
+    return row is not None
+
+
+async def touch_heartbeat(conn: asyncpg.Connection, snapshot_id: UUID) -> None:
+    """Refresh the lease (§15.4).
+
+    Deliberately *not* touching ``updated_at``: that column means "the job made
+    progress", and conflating it with "the worker is alive" is what left the old
+    sweep unable to tell a silent-but-healthy `linking` phase from a dead one.
+    """
+    await conn.execute(
+        "UPDATE repo_snapshots SET heartbeat_at = now() WHERE id = $1", snapshot_id
+    )
+
+
+async def sweep_expired_leases(
+    conn: asyncpg.Connection, expiry_s: int
+) -> list[str]:
+    """Fail in-flight snapshots whose lease has gone stale; return their ids.
+
+    Replaces the ``updated_at``-based sweep for rows that carry a lease. A row
+    with no ``heartbeat_at`` is left alone here — it predates the lease columns,
+    and :func:`sweep_zombie_repos` still covers it on the old timer, so neither
+    path can reap what the other owns.
+    """
+    rows = await conn.fetch(
+        """
+        UPDATE repo_snapshots
+           SET status = 'failed',
+               error = 'worker lease expired',
+               updated_at = now()
+         WHERE status = ANY($1::text[])
+           AND heartbeat_at IS NOT NULL
+           AND heartbeat_at < now() - make_interval(secs => $2::double precision)
+        RETURNING id
+        """,
+        list(IN_FLIGHT_STATUSES),
+        float(expiry_s),
+    )
+    return [str(r["id"]) for r in rows]
+
+
+async def count_active_ingests_for_user(
+    conn: asyncpg.Connection, user_id: UUID
+) -> int:
+    """How many ingests *this user* has queued or running (§15.5).
+
+    The global count it replaces meant one user's three queued repos refused
+    everybody else's first submission — a per-user limit dressed up as capacity
+    protection. Capacity is still bounded, by the size of the worker fleet.
+    """
+    count = await conn.fetchval(
+        """
+        SELECT count(*) FROM repo_snapshots sn
+          JOIN user_repos ur ON ur.snapshot_id = sn.id
+         WHERE ur.user_id = $1 AND sn.status = ANY($2::text[])
+        """,
+        user_id,
+        list(ACTIVE_STATUSES),
+    )
+    return int(count or 0)
+
+
 async def clear_repo_content(conn: asyncpg.Connection, snapshot_id: UUID) -> None:
     """Delete all files and chunks for ``snapshot_id`` (delete-and-replace, §10)."""
     await conn.execute("DELETE FROM chunks WHERE snapshot_id = $1", snapshot_id)

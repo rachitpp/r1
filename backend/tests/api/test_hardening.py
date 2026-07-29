@@ -242,7 +242,9 @@ async def test_ingest_is_refused_when_too_many_are_already_active(
     monkeypatch.setattr(conn, "fetchval", busy)
     resp = await client.post("/repos", json={"url": "https://github.com/psf/requests"})
     assert resp.status_code == 429
-    assert "already queued or running" in resp.json()["detail"]
+    # Per-user wording since §15.5 — the limit is the caller's, not the box's.
+    assert "you already have" in resp.json()["detail"]
+    assert "queued or running" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -504,6 +506,13 @@ async def test_a_repo_error_from_the_worker_is_redacted(arq: FakeArq) -> None:
         async def execute(self, sql: str, *args: Any) -> str:
             recorded.append((sql, args))
             return "UPDATE 1"
+
+        async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any]:
+            # Non-None so the §15.4 lease claim succeeds; a worker that cannot
+            # claim returns before ingesting, and this test needs it to ingest
+            # and fail so the error text can be checked for redaction.
+            recorded.append((sql, args))
+            return {"id": args[0] if args else uuid.uuid4()}
 
     class Pool:
         def acquire(self) -> Any:

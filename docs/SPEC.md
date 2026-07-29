@@ -1036,3 +1036,141 @@ runs) is vector `0.75 / 0.85 / 0.90` MRR `0.722`, fts `0.55 / 0.70 / 0.80` MRR
 Supporting checks: httpx still reports `825 | 697`; a spot-checked embedding is
 byte-identical to its pre-migration value; and a chat streaming against one
 snapshot is provably unaffected by another ingest of the same source.
+
+---
+
+## §15 Job leases (v2 phase V3)
+
+### 15.1 Correcting the premise
+
+V2.md justified this work by claiming the startup sweep would destroy a second
+worker's live job: *"Worker 2 starting up will sweep worker 1's live job."*
+**That is not true of the code as written**, and the plan should not have said
+it.
+
+`sweep_zombie_repos` is already **time-based**, not startup-scoped:
+
+```sql
+WHERE status = ANY(in_flight)
+  AND updated_at < now() - ZOMBIE_AFTER_S     -- 1200s
+```
+
+A live job writes progress as it goes, so its `updated_at` stays fresh and the
+predicate does not match it. And `job_timeout` (900s) is deliberately below
+`ZOMBIE_AFTER_S` (1200s), so ARQ cancels a wedged job *before* the sweep could
+reach it. Adding a second worker is therefore **not** an emergency.
+
+There is one real hole, and it is narrower than the plan implied: **progress
+writes are incidental, not a heartbeat.** The `linking` phase writes its status
+once and then runs Jedi resolution silently to completion (`pipeline.py`), so a
+long-enough repo could go quiet for minutes. Today the 900s job timeout caps
+that exposure. Raise `JOB_TIMEOUT_S` past 1200 without adding a heartbeat and
+the sweep starts killing healthy jobs.
+
+So leases are worth building — for worker identity, precise reaping, and the
+dedup constraint in §15.3 — but they are an improvement, not a precondition.
+Recorded this way because a plan that overstates a risk earns the same distrust
+as one that misses it.
+
+### 15.2 Schema
+
+```sql
+-- 009
+ALTER TABLE repo_snapshots
+  ADD COLUMN claimed_by   TEXT,          -- worker identity, for humans and reaping
+  ADD COLUMN claimed_at   TIMESTAMPTZ,
+  ADD COLUMN heartbeat_at TIMESTAMPTZ;
+CREATE INDEX repo_snapshots_lease ON repo_snapshots (status, heartbeat_at);
+```
+
+`claimed_by` is `<hostname>:<pid>` — enough to find the process, and never used
+as a lock (a hostname can repeat; the lease is the timestamp).
+
+### 15.3 In-flight dedup
+
+```sql
+CREATE UNIQUE INDEX repo_snapshots_one_in_flight
+  ON repo_snapshots (source_id, strategy)
+  WHERE status IN ('queued','cloning','parsing','linking','embedding');
+```
+
+A partial unique index, in **Postgres** rather than a Redis lock: job state
+already lives here, and a lock in the other datastore can drift from the truth
+without anything noticing. Two simultaneous submissions of one repo now collide
+at insert time, and the loser joins the winner's snapshot.
+
+Note this is `(source_id, strategy)` and *not* `(source_id, commit_sha)` as
+V2.md said — `commit_sha` is NULL until the clone reports it, and NULLs are
+distinct in a unique index, so a commit-based constraint would permit exactly
+the duplicate work it is meant to prevent.
+
+### 15.4 The heartbeat and the sweep
+
+* A worker claims a snapshot by setting `claimed_by`/`claimed_at`/`heartbeat_at`
+  in the same statement that moves it out of `queued`.
+* It refreshes `heartbeat_at` **on a timer**, independent of progress — that is
+  the fix for §15.1's hole.
+* The sweep reaps rows whose `heartbeat_at` is older than `LEASE_EXPIRY_S`,
+  regardless of status or of which worker is starting.
+
+`LEASE_EXPIRY_S` (120s) can be far tighter than `ZOMBIE_AFTER_S` (1200s) because
+a heartbeat is unconditional: a dead worker's job is reclaimed in two minutes
+instead of twenty.
+
+### 15.5 Per-user quota
+
+`count_active_ingests` is global today, so one user's three queued repos refuse
+everybody else's first submission. It becomes a count scoped through
+`user_repos`, with `MAX_ACTIVE_INGESTS` applying **per user**.
+
+### 15.6 `max_jobs` stays 1
+
+Ingest is CPU-bound (tree-sitter, Jedi, embedding). Throughput comes from more
+worker *processes*, not more concurrent jobs inside one — raising `max_jobs`
+just makes every job on that box slower.
+
+---
+
+## §16 Inference service (v2 phase V3)
+
+### 16.1 Why
+
+`embedder.py` loads sentence-transformers into whatever process imports it, so
+every API replica carries a 130 MB model (2.4 GB with the reranker) and HTTP
+capacity cannot be scaled independently of embedding capacity.
+
+CLAUDE.md rule 3 — *only* `embedder.py` imports sentence-transformers — is what
+makes this a small change rather than a refactor: the seam already exists.
+
+### 16.2 Contract
+
+```
+POST /embed    {"texts": [str], "batch_size": int?}  -> {"vectors": [[float]], "dim": int}
+POST /rerank   {"query": str, "passages": [str]}     -> {"scores": [float]}
+GET  /health                                          -> {"ok": true, "model": str}
+```
+
+Order is significant in both directions: `vectors[i]` corresponds to `texts[i]`.
+The service is stateless and holds no repo or user concept — it sees text.
+
+### 16.3 Client
+
+`embedder.py` gains `HttpEmbedder`, satisfying the existing `Embedder` Protocol
+(including `token_len`, which the §2.5 oversize split needs — so the service
+must expose tokenisation or the client must carry the same tokeniser).
+
+`INFERENCE_URL` selects the implementation: unset keeps the in-process model, so
+local development and the CLIs work unchanged with nothing new to run.
+
+### 16.4 Two deployments, one image
+
+Query embedding is one short string on a user's critical path; ingest embedding
+is thousands of chunks, throughput-bound. Same service, different sizing —
+latency-tuned for the API, batch-tuned for the workers.
+
+### 16.5 Verification
+
+`scripts/eval.py` must be **unchanged** with the HTTP embedder in place: same
+corpus, same vectors, different transport. Any movement means the service is not
+producing the same numbers the in-process model does, which is a correctness
+failure and not a deployment detail.

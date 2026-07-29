@@ -2102,3 +2102,59 @@ corpus still 825 impl / 697 test. One V2 box is left open on purpose: the
 rollback has not been rehearsed, and it is now lossy for anything ingested after
 `008`, so it should be rehearsed before it is relied on.
 
+## 2026-07-30 — V3 leases: the plan's premise was wrong, and the first claim was vacuous
+
+SPEC §15/§16 written first, then `009_job_leases.sql` and the lease half of the
+code. Two corrections matter more than the feature.
+
+**The justification V2.md gave for this phase was false.** It claimed worker 2's
+startup would sweep worker 1's live job, calling leases "the precondition for a
+second worker existing". `sweep_zombie_repos` has always been *time-based*
+(`updated_at < now() - ZOMBIE_AFTER_S`), never startup-scoped, and `job_timeout`
+(900s) sits deliberately below `ZOMBIE_AFTER_S` (1200s) so ARQ cancels a wedged
+job before the sweep can reach it. **A second worker was already safe.** Written
+up in §15.1 rather than quietly fixed, because a plan that overstates a risk
+earns the same distrust as one that misses it.
+
+The real hole is narrower: **progress writes are incidental, not a heartbeat.**
+`linking` sets its status once and then runs Jedi silently to completion, so only
+the 900s job timeout bounds how long a healthy job can look stale. Raise
+`JOB_TIMEOUT_S` past 1200 without a heartbeat and the sweep starts killing live
+work. A heartbeat is unconditional, which is what lets `LEASE_EXPIRY_S` be 120s
+instead of 1200s — a dead worker's job returns in two minutes rather than twenty.
+
+**The first version of `claim_snapshot` did nothing.** It guarded on
+`status = 'queued'` but did not *change* the status, so two workers both matched
+the UPDATE, both believed they held the lease, and both would have ingested into
+one snapshot — doubling every row. The status transition is now part of the claim
+statement. Caught by `test_only_one_worker_can_claim_a_snapshot`, which is a live
+database test precisely because a fake connection routing SQL by substring would
+have reported the statement was sent and told us nothing about whether it was
+exclusive.
+
+**Dedup is keyed on `(source_id, strategy)`, not `(source_id, commit_sha)`** as
+V2.md specified — a second plan error. `commit_sha` is NULL until the clone
+reports it and NULLs are distinct in a unique index, so a commit-based constraint
+would admit unlimited queued duplicates: exactly the work it exists to prevent.
+The index is *partial* (in-flight statuses only) so a source still accumulates
+`ready` snapshots over time, which is the §14 model.
+
+**Two sweeps, disjoint by construction.** The lease sweep reaps rows with a stale
+`heartbeat_at`; the old zombie sweep reaps rows with **no** `heartbeat_at` at
+all, which is every snapshot predating these columns. Neither can reap what the
+other owns, so the two windows do not fight.
+
+`touch_heartbeat` deliberately leaves `updated_at` alone: that column means "the
+job made progress", and conflating it with "the worker is alive" is the exact
+confusion that left the old sweep unable to tell a silent `linking` phase from a
+dead process.
+
+**Per-user quota (§15.5).** `count_active_ingests` was global, so one user's
+three queued repos refused everybody else's first submission — a per-user limit
+dressed up as capacity protection. Real capacity is bounded by the worker fleet
+and by the one-in-flight index.
+
+Verified: 294 unit tests, 12 integration (7 new lease tests against the live
+database), `ruff` and `mypy` clean. **The inference service half of V3 (§16) is
+not built** — the API still imports torch.
+
