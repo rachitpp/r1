@@ -28,23 +28,30 @@ agent traversing the symbol graph.
 |---|---|---|---|
 | chunks (same 60 files) | 657 | 1522 | 1522 |
 | **Retrieval — hit@10** (hybrid, default) | **0.95** | **0.95** | n/a |
-| hit@5 | 0.80 | 0.85 | n/a |
+| hit@5 | 0.80 | 0.90 | n/a |
 | hit@3 | 0.80 | 0.80 | n/a |
-| MRR | 0.734 | 0.752 | n/a |
+| MRR | 0.759 | 0.753 | n/a |
 | vector hit@10 · fts hit@10 | 0.90 · 0.90 | 0.90 · 0.80 | n/a |
 | **Answer — file-level** | not run | 0.90 | 0.90–0.95 |
 | **Answer — symbol-level** | not run | 0.75 (Mistral) · 0.80 (Vertex) | 0.85–1.00 · 0.85–0.90 |
 | **q10** — missed by every retrieval mode | miss | miss | **5/5 Mistral · 2/5 Vertex** (see below) |
 
-Retrieval rows: `scripts/eval.py`, implementation-only condition, 2026-07-27
-(naive re-run and reproduced question-for-question). Answer rows: the *stuffed*
+Retrieval rows: `scripts/eval.py`, implementation-only condition, **re-measured
+2026-07-30** after the FTS/RRF tie ordering was made deterministic (DECISIONS
+2026-07-29) — before that, tied results came back in physical row order and MRR
+was not reproducible across any write to the table. Both columns were re-run;
+the AST column then reproduced identically three more times across the V2
+snapshot migration. Answer rows: the *stuffed*
 baseline (top-10 pool, one model call) vs the agent, three controlled repeat
 runs per model at temperature 0 — the AST-column figure is the baseline, the
 agent column its range across runs.
 
-**Read this table honestly: naive does not lose on hit@k.** Fixed 1000-character
-windows match AST chunking at hit@10 on both hybrid (0.95) and vector (0.90),
-and beat it on FTS (0.90 vs 0.80). Naive chunks are ~2.3× larger, which favours
+**Read this table honestly: naive does not lose on hit@k, and now edges ahead on
+MRR.** Fixed 1000-character windows match AST chunking at hit@10 on both hybrid
+(0.95) and vector (0.90), beat it on FTS (0.90 vs 0.80), and after the
+deterministic-ordering fix come out marginally *ahead* on MRR (0.759 vs 0.753) —
+a reversal of the earlier reading, reported because it came out that way. AST
+still leads at hit@5 (0.90 vs 0.80). Naive chunks are ~2.3× larger, which favours
 them on a metric that only asks whether a ground-truth symbol landed *somewhere*
 in a retrieved window. The window parameters were fixed before measurement and
 were not adjusted afterwards. A baseline tuned until it loses is not evidence,
@@ -172,14 +179,21 @@ Two more results that cut against the project's own expectations:
 
 ## Measured pipeline results
 
-Retrieval, `encode/httpx`, 1522 chunks, implementation-only, 2026-07-27:
+Retrieval, `encode/httpx`, 1522 chunks, implementation-only, 2026-07-30:
 
 | Mode | hit@3 | hit@5 | hit@10 | MRR |
 |---|---|---|---|---|
 | vector | 0.75 | 0.85 | 0.90 | 0.722 |
-| fts | 0.60 | 0.70 | 0.80 | 0.503 |
-| **hybrid** (default) | **0.80** | **0.85** | **0.95** | **0.752** |
-| hybrid+rerank | 0.80 | 0.80 | 0.85 | 0.722 |
+| fts | 0.55 | 0.70 | 0.80 | 0.463 |
+| **hybrid** (default) | **0.80** | **0.90** | **0.95** | **0.753** |
+| hybrid+rerank † | 0.80 | 0.80 | 0.85 | 0.722 |
+
+† The rerank row predates the deterministic-ordering fix and has not been
+re-measured: loading the 2.4 GB cross-encoder crashes torch on the current dev
+host (`Windows fatal exception: access violation`). It is off by default, so the
+figure carries no claim in the comparison above — but it is the one number on
+this page that is older than the others, and it is marked rather than quietly
+refreshed.
 
 The cross-encoder reranker is **off by default**: it measured worse-or-equal to
 plain RRF fusion at every k and at MRR, in both corpus conditions, for ~2.4 GB

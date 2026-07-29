@@ -1283,3 +1283,41 @@ Per-question hit@10:
 | q19 | ✓ | ✓ | ✓ |
 | q20 | ✓ | ✓ | ✓ |
 
+
+### Results — 2026-07-30
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 657 chunks (327 implementation, 330 test), 20 questions. Modes: vector, fts, hybrid.
+
+**Corpus condition:** implementation-only (default, is_test excluded)
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| vector | 0.90 (18/20) | 0.90 (18/20) | 0.90 (18/20) | 0.767 |
+| fts | 0.75 (15/20) | 0.80 (16/20) | 0.90 (18/20) | 0.647 |
+| hybrid | 0.80 (16/20) | 0.80 (16/20) | 0.95 (19/20) | 0.759 |
+
+Per-question hit@10:
+
+| q | vector | fts | hybrid |
+|---|---|---|---|
+| q01 | ✓ | ✓ | ✓ |
+| q02 | ✓ | ✓ | ✓ |
+| q03 | ✓ | ✓ | ✓ |
+| q04 | ✓ | ✓ | ✓ |
+| q05 | ✓ | ✓ | ✓ |
+| q06 | ✓ | ✓ | ✓ |
+| q07 | ✓ | ✓ | ✓ |
+| q08 | ✓ | ✓ | ✓ |
+| q09 | · | ✓ | ✓ |
+| q10 | · | · | · |
+| q11 | ✓ | ✓ | ✓ |
+| q12 | ✓ | ✓ | ✓ |
+| q13 | ✓ | ✓ | ✓ |
+| q14 | ✓ | · | ✓ |
+| q15 | ✓ | ✓ | ✓ |
+| q16 | ✓ | ✓ | ✓ |
+| q17 | ✓ | ✓ | ✓ |
+| q18 | ✓ | ✓ | ✓ |
+| q19 | ✓ | ✓ | ✓ |
+| q20 | ✓ | ✓ | ✓ |
+
