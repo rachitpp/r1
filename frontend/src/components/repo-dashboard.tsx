@@ -20,6 +20,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 
+import { SignInButton } from "@/components/auth/user-menu";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -98,7 +99,7 @@ function Meta({
 }) {
   return (
     <span className="inline-flex items-center gap-1">
-      <Icon className="size-3.5 shrink-0 text-muted-foreground/70" />
+      <Icon className="size-3.5 shrink-0 text-muted-foreground" />
       {children}
     </span>
   );
@@ -168,7 +169,7 @@ function RepoRow({ repo }: { repo: RepoOut }) {
               {name}
             </span>
             {tag && (
-              <span className="shrink-0 rounded-sm border border-[hsl(var(--ochre)/0.35)] bg-[hsl(var(--ochre)/0.1)] px-1.5 py-px text-[10px] font-medium uppercase tracking-wide text-[hsl(var(--ochre))]">
+              <span className="shrink-0 rounded-sm border border-[hsl(var(--ochre)/0.35)] bg-[hsl(var(--ochre)/0.1)] px-1.5 py-px text-[11px] font-medium uppercase tracking-wide text-[hsl(var(--ochre))]">
                 {tag}
                 {/* The badge is shrink-0, so on a narrow screen the long form
                     would eat the repo name's width instead of its own. */}
@@ -185,6 +186,51 @@ function RepoRow({ repo }: { repo: RepoOut }) {
         <ChevronRight className="size-4 shrink-0 text-muted-foreground/40 transition-all group-hover:translate-x-0.5 group-hover:text-muted-foreground" />
       </div>
     </Link>
+  );
+}
+
+/**
+ * The hero's submit slot. Signed in → the real form. Signed out → the primary
+ * action stays *visible*: a real (disabled) input and a sign-in CTA, rather than
+ * a card that hides what you came to do. A visitor sees the exact interaction
+ * they'll get once signed in.
+ */
+export function RepoSubmit() {
+  const { user, isLoading } = useUser();
+
+  if (isLoading) {
+    return (
+      <div className="space-y-2" aria-busy>
+        <Skeleton className="h-12 w-full" />
+        <Skeleton className="h-3.5 w-2/3" />
+      </div>
+    );
+  }
+
+  if (user) return <SubmitForm />;
+
+  return (
+    <div>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="relative flex-1">
+          <Github
+            aria-hidden
+            className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            disabled
+            placeholder="https://github.com/owner/repo"
+            aria-label="GitHub repository URL"
+            className="h-12 rounded-md border-input bg-card pl-10 font-mono text-sm shadow-none"
+          />
+        </div>
+        <SignInButton className="h-12 w-full rounded-md px-7 text-sm sm:w-auto" />
+      </div>
+      <p className="mt-3 text-[13px] font-medium text-muted-foreground">
+        Sign in with GitHub to index a repo — your repositories stay private to
+        your account.
+      </p>
+    </div>
   );
 }
 

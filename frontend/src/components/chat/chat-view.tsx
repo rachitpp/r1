@@ -15,7 +15,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, MessageSquarePlus, Square } from "lucide-react";
+import { ArrowLeft, ArrowRight, MessageSquarePlus, Square } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -28,6 +28,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useRepoChat } from "@/hooks/use-repo-chat";
 import { ApiError, getRepo } from "@/lib/api";
 import { type Citation, citationKey } from "@/lib/citations";
+import { splitRepoName, stripStrategySuffix } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 /** Questions that make sense for any repo — one click to a live demo. */
@@ -40,6 +41,31 @@ const SUGGESTIONS = [
 /** Auto-follow stops fighting the reader once they scroll away from the tail. */
 const STICK_THRESHOLD_PX = 120;
 const COMPOSER_MAX_PX = 160;
+
+/** Owner avatar for the pane header, falling back to a monogram tile. */
+function HeaderAvatar({ owner, name }: { owner: string | null; name: string }) {
+  const [failed, setFailed] = useState(false);
+  if (owner && !failed) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element -- remote avatar host, deliberately not via next/image
+      <img
+        src={`https://github.com/${owner}.png?size=56`}
+        alt=""
+        loading="lazy"
+        onError={() => setFailed(true)}
+        className="size-7 shrink-0 rounded border bg-muted object-cover"
+      />
+    );
+  }
+  return (
+    <span
+      aria-hidden
+      className="flex size-7 shrink-0 items-center justify-center rounded bg-[hsl(var(--primary)/0.12)] font-mono text-xs font-semibold text-primary"
+    >
+      {(name[0] ?? "?").toUpperCase()}
+    </span>
+  );
+}
 
 export function ChatView({ repoId }: { repoId: string }) {
   const router = useRouter();
@@ -160,6 +186,7 @@ export function ChatView({ repoId }: { repoId: string }) {
   const activeKey = selection ? citationKey(selection) : null;
   const empty = chat.transcript.length === 0 && !chat.current;
   const progress = repo.data.progress;
+  const { owner, name } = splitRepoName(stripStrategySuffix(repo.data.name));
 
   return (
     // Full-bleed on purpose: this is an app shell, not a document column. A
@@ -170,25 +197,34 @@ export function ChatView({ repoId }: { repoId: string }) {
           below: a flex item defaults to `min-width: auto` and will not shrink
           below its content. */}
       <section className="flex min-h-0 min-w-0 flex-1 flex-col lg:border-r">
-        {/* Three levels, not three same-weight links: the repo names the pane,
-            its counts are meta beneath, and only the one action that changes
-            state ("New chat") carries a border. */}
-        <div className="flex items-center justify-between gap-3 border-b px-4 py-2">
-          <div className="flex min-w-0 flex-col">
-            <span className="truncate font-mono text-sm font-medium leading-tight">
-              {repo.data.name}
-            </span>
-            <span className="hidden truncate text-[11px] leading-tight text-muted-foreground sm:inline">
-              {progress.files_total} files · {progress.chunks_total} chunks
-            </span>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
+        {/* Header — back arrow, the repo's identity (avatar + owner/name with
+            counts beneath), and the one state-changing action ("New chat"). The
+            band matches the source pane's header, so the split reads as one tool
+            with two panes rather than two unrelated columns. */}
+        <div className="flex items-center justify-between gap-3 border-b bg-secondary/40 px-4 py-2">
+          <div className="flex min-w-0 items-center gap-2.5">
             <Link
               href={`/repos/${repoId}`}
-              className="rounded-sm text-xs text-muted-foreground underline decoration-border decoration-dotted underline-offset-4 transition-colors hover:text-foreground"
+              aria-label="Back to repository overview"
+              title="Back to repository overview"
+              className="shrink-0 rounded-sm p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
-              status
+              <ArrowLeft className="size-4" />
             </Link>
+            <HeaderAvatar owner={owner} name={name} />
+            <div className="flex min-w-0 flex-col">
+              <span className="truncate font-mono text-sm font-medium leading-tight">
+                {owner && (
+                  <span className="text-muted-foreground">{owner}/</span>
+                )}
+                {name}
+              </span>
+              <span className="hidden truncate text-[11px] leading-tight text-muted-foreground sm:inline">
+                {progress.files_total} files · {progress.chunks_total} chunks
+              </span>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
             {chat.transcript.length > 0 && (
               <button
                 type="button"
@@ -270,7 +306,7 @@ export function ChatView({ repoId }: { repoId: string }) {
         </div>
 
         <form
-          className="border-t p-3"
+          className="border-t bg-secondary/20 p-3"
           onSubmit={(e) => {
             e.preventDefault();
             send(question);
@@ -298,6 +334,10 @@ export function ChatView({ repoId }: { repoId: string }) {
                 streaming ? "Waiting for the answer…" : "Ask a question…"
               }
               aria-label="Question"
+              // Disabled while a stream is live: the Stop button is the only
+              // action then, and a composer that accepts text it silently won't
+              // send (Enter is a no-op mid-stream) reads as broken.
+              disabled={streaming}
               className="flex max-h-40 min-h-[42px] w-full resize-none rounded-md border border-input bg-card px-3 py-2.5 text-sm shadow-none placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50"
             />
             {streaming ? (

@@ -8,6 +8,13 @@
 
 import type { Citation } from "@/lib/citations";
 
+/**
+ * sessionStorage namespace for saved transcripts: `chat:<repoId>`. Defined here,
+ * the leaf both the chat hook and sign-out reach, so the two never drift — the
+ * hook writes under it, and logout clears everything under it (§13 teardown).
+ */
+export const CHAT_STORAGE_PREFIX = "chat:";
+
 export interface ToolLocation {
   file_path: string;
   start_line: number;

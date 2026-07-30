@@ -14,11 +14,14 @@
  * answer) but whole-message on a non-streaming provider — always accumulate.
  */
 
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { USER_QUERY_KEY } from "@/hooks/use-user";
 import { apiUrl } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import {
+  CHAT_STORAGE_PREFIX,
   type ChatExchange,
   type ChatStatus,
   type ChatStep,
@@ -27,7 +30,7 @@ import {
 } from "@/lib/chat-types";
 import { SseRequestError, streamSse } from "@/lib/sse";
 
-const storageKey = (repoId: string) => `chat:${repoId}`;
+const storageKey = (repoId: string) => `${CHAT_STORAGE_PREFIX}${repoId}`;
 
 function loadTranscript(repoId: string): ChatExchange[] {
   if (typeof window === "undefined") return [];
@@ -65,6 +68,7 @@ export interface RepoChat {
 }
 
 export function useRepoChat(repoId: string): RepoChat {
+  const queryClient = useQueryClient();
   const [transcript, setTranscript] = useState<ChatExchange[]>([]);
   const [current, setCurrent] = useState<ChatExchange | null>(null);
   const [status, setStatus] = useState<ChatStatus>("idle");
@@ -190,13 +194,31 @@ export function useRepoChat(repoId: string): RepoChat {
             setStatus("idle");
             return;
           }
+          if (err instanceof SseRequestError && err.status === 401) {
+            // Session ended mid-stream (expired, or signed out in another tab).
+            // Reset the user so RequireAuth re-gates this page to a sign-in
+            // prompt, rather than leaving a raw "401" in a red error bubble.
+            queryClient.setQueryData(USER_QUERY_KEY, null);
+            setCurrent(null);
+            setStatus("idle");
+            return;
+          }
+          if (err instanceof SseRequestError && err.status === 429) {
+            // A capacity/budget refusal (§17): nothing is broken, the box is
+            // just busy — a calm message, not a "went wrong" alarm.
+            exchange.error =
+              err.detail ||
+              "The service is busy right now — try again in a moment.";
+            finish({ ...exchange }, "error");
+            return;
+          }
           exchange.error =
             err instanceof Error ? err.message : "request failed";
           finish({ ...exchange }, "error");
         }
       })();
     },
-    [repoId, finish],
+    [repoId, finish, queryClient],
   );
 
   const stop = useCallback(() => {

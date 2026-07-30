@@ -75,10 +75,15 @@ export function ExchangeView({
   );
 
   const copyAnswer = () => {
-    void navigator.clipboard.writeText(exchange.answer).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    });
+    void navigator.clipboard
+      ?.writeText(exchange.answer)
+      .then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1600);
+      })
+      .catch(() => {
+        // Clipboard unavailable (insecure origin) or permission denied: no-op.
+      });
   };
 
   return (

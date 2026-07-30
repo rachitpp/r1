@@ -47,7 +47,7 @@ function Line({
       {mark && (
         <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-primary" />
       )}
-      <span className="w-6 shrink-0 select-none text-right tabular-nums text-muted-foreground/45">
+      <span className="w-6 shrink-0 select-none text-right tabular-nums text-muted-foreground/60">
         {n}
       </span>
       <span>{children}</span>

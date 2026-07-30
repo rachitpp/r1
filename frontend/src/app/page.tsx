@@ -1,6 +1,5 @@
-import { RequireAuth } from "@/components/auth/require-auth";
 import { AnswerPreview } from "@/components/landing/answer-preview";
-import { RepoList, SubmitForm } from "@/components/repo-dashboard";
+import { RepoList, RepoSubmit } from "@/components/repo-dashboard";
 
 /**
  * Every figure here is measured and lives in README.md ("The comparison").
@@ -31,7 +30,7 @@ function Measures() {
               <dt className="display text-3xl font-semibold leading-none sm:text-4xl">
                 {measure.value}
               </dt>
-              <dd className="mt-2.5 text-xs leading-snug text-muted-foreground">
+              <dd className="mt-2.5 text-xs font-medium leading-snug text-muted-foreground">
                 {measure.label}
               </dd>
             </div>
@@ -51,15 +50,15 @@ function Measures() {
  */
 function Hero() {
   return (
-    <section className="page-container pb-10 pt-14 sm:pt-20">
+    <section className="page-container pb-0 pt-8 sm:pt-10">
       <p className="eyebrow">Public Python repos</p>
 
-      <h1 className="display mt-6 text-[2.6rem] font-semibold leading-[0.98] sm:text-6xl lg:text-7xl">
+      <h1 className="display mt-3 text-[2.1rem] font-semibold leading-[1.03] sm:text-5xl lg:text-6xl">
         Understand
         <br />
         an unfamiliar codebase
         <br />
-        <span className="text-primary xl:-ml-12 xl:inline-block">
+        <span className="text-primary xl:-ml-8 xl:inline-block">
           in minutes.
         </span>
       </h1>
@@ -75,22 +74,17 @@ export default function Home() {
       {/* The form and the still sit side by side: the left column says what to
           do, the right shows what comes back. Below `lg` the still stacks under
           the form, where it still reads as an answer to "and then what?". */}
-      <section className="page-container pb-14">
+      <section className="page-container -mt-3 pb-10">
         {/* Centred, not top-aligned: the still is much taller than the form, and
             top-aligning left ~400px of dead space under the button. */}
-        <div className="grid items-start gap-10 lg:grid-cols-12 lg:items-center lg:gap-14">
+        <div className="grid items-start gap-6 lg:grid-cols-12 lg:items-center lg:gap-10">
           <div className="lg:col-span-7">
-            <p className="mb-7 max-w-lg text-[15px] leading-relaxed text-muted-foreground">
+            <p className="mb-4 max-w-lg text-[15px] font-medium leading-relaxed text-foreground/80">
               Point it at a repo. It chunks the code on AST boundaries, builds a
               symbol graph, then answers your questions with citations you can
               click straight into the source.
             </p>
-            <RequireAuth
-              title="Sign in to index a repo"
-              description="Indexing is per-account, so your repositories stay yours."
-            >
-              <SubmitForm />
-            </RequireAuth>
+            <RepoSubmit />
           </div>
 
           <div className="lg:col-span-5">

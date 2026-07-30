@@ -27,7 +27,7 @@ export function RequireAuth({
   title?: string;
   description?: string;
 }) {
-  const { user, isLoading, isUnreachable } = useUser();
+  const { user, isLoading, isUnreachable, error } = useUser();
 
   if (isLoading) {
     return (
@@ -47,6 +47,25 @@ export function RequireAuth({
         <p className="font-medium">Can&apos;t reach the API</p>
         <p className="mt-1 text-muted-foreground">
           The backend isn&apos;t responding. Start it and reload.
+        </p>
+      </div>
+    );
+  }
+
+  if (error) {
+    // Reachable but erroring (a 5xx). Not "down", and not "signed out" — say so,
+    // and quote the request id so the failure can be found in the server log.
+    return (
+      <div className="rounded-lg border border-border bg-card p-5 text-sm">
+        <p className="font-medium">Couldn&apos;t verify your session</p>
+        <p className="mt-1 text-muted-foreground">
+          The API returned an error. Reload to try again.
+          {error.requestId ? (
+            <>
+              {" "}
+              <span className="font-mono text-xs">({error.requestId})</span>
+            </>
+          ) : null}
         </p>
       </div>
     );
