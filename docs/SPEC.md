@@ -707,6 +707,9 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `JEDI_FILE_TIMEOUT_S` | 10 | §6.1 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
+| `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
+| `USER_CHAT_CONCURRENCY` | 2 | §17.7 |
+| `MODEL_TOKEN_COST` | per-model USD/1K in+out rate table | §17.2 |
 
 Constants live in `app/config.py` under these exact names so SPEC and
 code stay greppable against each other.
@@ -1174,3 +1177,203 @@ latency-tuned for the API, batch-tuned for the workers.
 corpus, same vectors, different transport. Any movement means the service is not
 producing the same numbers the in-process model does, which is a correctness
 failure and not a deployment detail.
+
+---
+
+## §17 Quotas & accounting (v2 phase V5)
+
+This is the last multi-tenant phase. §13 made requests attributable to a user
+and §14 made corpora immutable; §17 spends both. Every answer gets a known,
+recorded cost attributed to a user, a per-user budget can refuse work before it
+runs, an immutable snapshot lets a popular question be answered from cache, and
+one user cannot starve another. It is the phase that turns "multi-user" into
+"multi-user without one account being able to run up the bill or hog the box".
+
+Nothing here begins while a v1 phase or an earlier v2 phase is open. The design
+rationale, when V5 opens, is owed a `DECISIONS.md` entry per the working
+agreement — this section is the contract, not the argument.
+
+### 17.1 What this closes
+
+Three gaps, each independently exploitable once there is more than one user:
+
+* **Cost is invisible.** An agent run makes up to `AGENT_TOOL_CAP` (8) model
+  calls (§7.2); nothing records how many tokens they burned or against whom. On
+  a metered provider (the default is Mistral, §7.2) that is an unbounded,
+  unattributable bill.
+* **There is no budget.** Rate limits (2026-07-28) bound *requests per window*,
+  never *work per user*. A caller inside the rate limit can still run the
+  expensive path indefinitely.
+* **The concurrency gate is global, not fair.** `chat_slots`
+  (`routes.py:56`, `Slots(CHAT_MAX_CONCURRENCY)`) caps total concurrent answer
+  streams at 8 and is first-come-first-served: one user can hold all 8 while
+  everyone else gets `ServiceBusyError`. The gate protects the *box*; it does
+  nothing for *fairness between users*.
+
+### 17.2 The budget unit — tokens, not dollars
+
+Budgets are enforced in **tokens**, and dollar cost is a derived, advisory
+figure recorded alongside. This is deliberate and is the one real decision in
+this section:
+
+* Token counts are **exact and provider-independent** — the model returns
+  `usage_metadata` on every response, so the enforced quantity is ground truth,
+  not an estimate.
+* Dollar cost is an **estimate** from a static per-model rate table
+  (`MODEL_TOKEN_COST` in `app/config.py`, USD per 1K input/output tokens keyed
+  by model id). Because `AGENT_MODEL` is provider-configurable (§7.2), the rate
+  is whatever that model's row says, and an unknown model records `NULL` cost
+  rather than a wrong one — the tokens are still recorded.
+
+Enforcing on the exact quantity and reporting the estimate keeps the refusal
+deterministic (a user is never refused because a price guess drifted) while
+still answering "what did this cost". Consistent with the project's
+measure-don't-guess line: the number you act on is measured; the number you
+show is labelled an estimate.
+
+### 17.3 Schema
+
+```sql
+-- 011
+CREATE TABLE agent_runs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  snapshot_id   UUID NOT NULL REFERENCES repo_snapshots(id) ON DELETE CASCADE,
+  question_hash BYTEA NOT NULL,            -- sha256 of the normalised question (§17.5)
+  model         TEXT NOT NULL,             -- the AGENT_MODEL that answered
+  input_tokens  INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL,
+  est_cost_usd  NUMERIC(10,6),             -- NULL when the model has no rate row
+  tool_calls    SMALLINT NOT NULL,         -- ≤ AGENT_TOOL_CAP
+  cache_hit     BOOLEAN NOT NULL DEFAULT false,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX agent_runs_user_day ON agent_runs (user_id, created_at);
+
+CREATE TABLE answer_cache (
+  snapshot_id   UUID NOT NULL REFERENCES repo_snapshots(id) ON DELETE CASCADE,
+  question_hash BYTEA NOT NULL,
+  answer        TEXT NOT NULL,
+  citations     JSONB NOT NULL,            -- the exact §7.5 citation list
+  tool_calls    SMALLINT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (snapshot_id, question_hash)
+);
+```
+
+`agent_runs` is the accounting ledger: one row per answered question, written
+**with the run** inside the same request, so a crash after answering cannot lose
+the charge. `answer_cache` is keyed on `(snapshot_id, question_hash)` and on
+nothing else — see §17.5 for why that is exactly the safe key and no broader
+one is.
+
+Both tables cascade on `users`/`repo_snapshots` deletion; neither is on the
+retrieval path, so neither carries an HNSW or tsvector column.
+
+### 17.4 Token accounting
+
+The agent does not capture usage today (`app/agent/`). V5 adds it at the model
+seam: each `AIMessage` the loop receives carries `usage_metadata`
+(`input_tokens` / `output_tokens`), and the graph sums them across every turn of
+the run, then writes one `agent_runs` row when the loop finishes — cap-forced
+answer included (§7.2). A cache hit writes a row too, with `cache_hit = true`,
+`input_tokens = output_tokens = 0`: the answer is real work delivered, and the
+ledger should show it was served for free.
+
+Cost is `input_tokens/1000 * rate.in + output_tokens/1000 * rate.out` looked up
+in `MODEL_TOKEN_COST[model]`, or `NULL` if the model has no row. Queryable per
+user per day directly off `agent_runs (user_id, created_at)`.
+
+### 17.5 The answer cache — why this key is safe
+
+Cache key: `sha256(normalise(question))` under `snapshot_id`. `normalise` is
+lower-casing and whitespace-collapsing only — deliberately conservative, because
+two questions that normalise together must be genuinely the same question.
+
+**This is only correct because §14 made snapshots immutable.** An answer is a
+pure function of `(snapshot corpus, question)`: the retrieval query and the
+symbol graph are fixed for a snapshot, so the same question against the same
+snapshot yields the same citations. Cache **across** snapshots is forbidden
+(V2.md "Do not") — a different snapshot is a different corpus, so a hit there
+would return citations into the wrong commit's files. The key carries
+`snapshot_id` for exactly this reason.
+
+A hit MUST return **byte-identical citations** to the uncached run — that is the
+verification criterion (§17.9), and it is what proves the cache is a cache and
+not a subtly different code path. The cached answer is replayed as a well-formed
+§9 SSE stream (text deltas, then `citations`, then `done`), so the client cannot
+tell a hit from a miss and **the §9 event schema does not change** — the same
+guarantee §13.6 and §14.7 make. A hit runs the agent zero times, so it also
+costs zero tokens and cannot push a user over budget.
+
+Cache entries never expire: an immutable snapshot's answer cannot go stale.
+Reclaiming them is snapshot retention/GC, which is v3 backlog (V2.md) — until a
+snapshot is deleted (cascading the cache with it), its answers stay.
+
+### 17.6 Budgets and refusal
+
+A user whose rolling-24h token total (summed from `agent_runs`) is at or over
+`USER_DAILY_TOKEN_BUDGET` is refused **before** the agent runs, with the
+existing typed-exception path: a `BudgetExceededError(TooManyRequestsError)`
+sibling of `ServiceBusyError` (`app/exceptions.py`), carrying `retry_after`
+(seconds until the oldest counted run ages out of the window) and `rule`. It
+maps to **429** through `errors.py`'s existing `TooManyRequestsError` handler —
+same `{detail, request_id}` envelope and `Retry-After` header as every other
+limit. No new mapping, no new shape.
+
+The check is read-then-run, not a reservation: a run already in flight is not
+pre-charged, so a user at 99% of budget can start one more expensive answer.
+This is the same shape as the rate limiter and is intentional — a token budget
+bounds sustained spend, not a single over-shoot, and pre-charging would need a
+worst-case estimate the token count exists precisely to avoid.
+
+### 17.7 Fairness — per-user concurrency before the global gate
+
+A per-user answer-slot check runs **ahead of** the global `chat_slots` gate in
+the chat route (`routes.py:387`). A user already streaming
+`USER_CHAT_CONCURRENCY` answers is refused with `ServiceBusyError` even when
+global slots are free; only after passing the per-user check does the request
+try the global gate.
+
+Ordering is the whole point (V2.md): fairness is enforced *ahead of* capacity,
+so one user cannot occupy more than their share while another is turned away.
+Implemented as a small per-`user_id` slot map beside `chat_slots`, each entry a
+`Slots` (`app/api/ratelimit.py`) — process-local, like `chat_slots`, and
+released on the same `finally` that releases the global slot.
+
+### 17.8 Observability
+
+`user_id` joins `request_id` on every log line, using the **same seam**: a
+`_user_id` `ContextVar` in `logging_setup.py` next to `_request_id`
+(`logging_setup.py:38`), set in the request-context middleware once the
+`CurrentUser` (§13) is resolved, and added to both `FORMAT`
+(`logging_setup.py:27`) and the JSON formatter's dict. Unauthenticated routes
+log the `NO_REQUEST`-style sentinel.
+
+`user_id` is **never** a Prometheus label. It is unbounded cardinality — one
+series per user — and the 2026-07-28 entry already rejected raw-path labelling
+for that exact reason. Per-user numbers live in `agent_runs` and are queried
+with SQL, not scraped. Metrics stay aggregate (`app/metrics.py`).
+
+### 17.9 Verification
+
+* Every answered question writes an `agent_runs` row with token counts and (when
+  the model has a rate) an estimated cost, attributed to the caller; a
+  per-user-per-day total is a single SQL query. A run that hits `AGENT_TOOL_CAP`
+  and force-answers still records its tokens.
+* An over-budget user is refused with **429**, a `Retry-After` header, and the
+  standard `{detail, request_id}` body — asserted in a test that seeds
+  `agent_runs` past `USER_DAILY_TOKEN_BUDGET`, not by waiting for real spend.
+* A cache hit returns **citations byte-identical** to the uncached run for the
+  same `(snapshot_id, question)` — proven by running the question twice and
+  diffing the `citations` payloads, and by an `agent_runs` row with
+  `cache_hit = true` and zero tokens. A different snapshot for the same question
+  is a miss.
+* One user holding `USER_CHAT_CONCURRENCY` streams is refused their next while a
+  **different** user's stream is admitted in the same instant — verified by test
+  against the per-user gate, mirroring the §15.5 per-user-quota test shape.
+* `user_id` is present on every log line and on no Prometheus series.
+
+Do not: cache across snapshots; enforce the budget in estimated dollars; label a
+metric by `user_id`; pre-charge a budget reservation; add a background job to
+expire cache rows (that is snapshot GC, and it is v3 backlog).
