@@ -401,6 +401,20 @@ SearchHit = {
   on the repo row's error-free log output — ~20% unresolved is expected
   and acceptable.
 
+> **The ~20% budget was calibrated on one repo and does not hold (2026-08-01).**
+> httpx measures **4%**. `pallets/flask`, ingested as the second benchmark,
+> measures **52%** (imports 45%, calls 54%, extends 45%) — 2.6× the budget and
+> 13× httpx. Edge density across every indexed repo puts httpx alone at 1.92
+> edges/symbol and every other at ≤1.07, so httpx is the outlier the budget was
+> written from, not the norm.
+>
+> This is the graph the product claims as its differentiator over plain
+> retrieval, so a repo where it is half as dense is a real limitation rather
+> than a tuning note. The cause is **not diagnosed**: `src/`-layout packaging
+> breaking Jedi's project root is the obvious suspect, but two flat small repos
+> also sit low, so layout is not established. Numbers and the open question:
+> `docs/EVAL-FLASK.md`.
+
 ### 6.2 Traversal semantics
 `out` = edges where symbol is `from_symbol` (its callees/imports/bases);
 `in` = edges where symbol is `to_symbol` (its callers/importers/subclasses).

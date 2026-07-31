@@ -2662,3 +2662,76 @@ near-identical chips (`httpx/_models.py:382-512` ×4 in one sentence). Honest an
 each is clickable, so it ships — but if it grates, the fix is in the prompt
 (cite the most important range per claim, not every range) rather than in the
 renderer.
+
+---
+
+## 2026-08-01 — A second benchmark, and two of three claims did not replicate
+
+The evidence base was one repository, twenty questions, two model families. That
+was flagged repeatedly as the weakest part of the project and is now widened by
+one repo: `pallets/flask` at `6a2f545b`, with its own twenty questions written
+blind (`docs/EVAL-FLASK.md`).
+
+**The repo was pre-registered, which is the only part of the method that could
+not be added afterwards.** `ROADMAP.md` Phase 1 names exactly two candidates —
+*"encode/httpx, pallets/flask"* — written before any retrieval code existed.
+Taking the other name on that list is the one choice immune to "you picked a repo
+that flattered the result". The questions were written from file listings and
+`class`/`def` structure at the pinned SHA, **before ingest and before a single
+query ran**, and every truth path and symbol was verified mechanically first: 20
+questions, 0 ground-truth errors, 10/20 with zero lexical overlap against their
+own answer symbols (httpx: 11/20, so comparable difficulty).
+
+**Result: one of three claims replicated.**
+
+1. **"Naive chunking ties AST" — reversed.** httpx: hybrid tied at hit@10 0.95
+   with naive marginally ahead on MRR (0.759 vs 0.753). flask: **AST 0.95 vs
+   naive 0.90, and 0.767 vs 0.720 on MRR.** The honest conclusion is not that
+   AST wins — it is that a difference which changes sign between two repos, with
+   every margin one or two questions at n=20, was never strong enough to carry
+   what the README hung on it. Two repos now say the benchmark cannot
+   distinguish them. The README has been corrected to say that.
+
+2. **Hybrid fusion beating every single signal — fails.** This is the Phase 2
+   gate, and it is the more consequential one. On flask, **plain vector search
+   beats the shipped hybrid pipeline**: MRR 0.837 vs 0.767 on AST, and at every
+   k on naive (0.90/0.90/0.95 vs 0.80/0.85/0.90). The gate as written —
+   "default pipeline hit@10 ≥ every single-signal mode" — still passes on the
+   AST corpus, but only by a three-way tie at 0.95, and would have failed on the
+   naive corpus.
+
+   Hypothesis, labelled as one: RRF fuses *ranks*, so it drags a strong ranking
+   toward a weaker one. httpx's lexical leg is poor (MRR 0.463) so fusion could
+   only add; flask's dense leg is excellent (0.837) so fusion could only dilute.
+   If that holds, hybrid helps when the lexical signal is weak and hurts when the
+   dense signal is strong — and which one a repo is cannot be known before
+   measuring. **Not acted on.** Changing the default pipeline on n=2 repos would
+   be exactly the over-reading this exercise exists to correct; it needs a third
+   repo, and it is now a recorded question rather than an assumption.
+
+3. **The ~20% unresolved-edge budget — does not hold.** httpx 4%, flask **52%**.
+   SPEC §6.1 now carries the correction. This is the finding that matters most,
+   because the symbol graph is what the project claims over plain retrieval, and
+   on flask it is less than half as dense per symbol. Cause not diagnosed;
+   `src/`-layout breaking Jedi's project root is the suspect but two flat repos
+   also sit low, so it is unestablished and recorded as open.
+
+**Two defects found in the measuring apparatus itself**, both of the same family
+as the ones this session has been turning up — correct when written, silently
+wrong later, never failing:
+
+* `eval.py` read `head_sha` from the pre-V2 `repos` table, which V2 stopped
+  writing. It returned NULL for every post-`007` ingest, so the
+  "ingested commit != pinned commit" warning — the one check standing between a
+  result block and the wrong corpus — could not fire. Now reads
+  `repo_snapshots.commit_sha`.
+* `eval.py` crashed on Windows *after* completing a full measurement, encoding
+  `✓` to a cp1252 console, losing the run between computing and appending. Now
+  reconfigures stdout.
+
+**What this does not cover, stated so it is not assumed:** answer-level eval
+(agent vs stuffed) was **not** run on flask — ~40 model calls against a 20/day
+tier — so Phase 3's findings (a)/(b)/(c) remain httpx-only and are neither
+confirmed nor disconfirmed. `hybrid+rerank` was not measured on flask either.
+And n is still 20 per repo: the value here is that the *sign* flipped on two
+claims, which no additional precision on a single repo could ever have revealed.

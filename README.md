@@ -63,6 +63,33 @@ row by design), and which is what the agent column rests on. The naive corpus
 was never given an answer-level run; that measurement is available
 (`answer_eval.py --repo <naive-id>`) and simply was not spent.
 
+### A second repo, and what it did to the two claims above
+
+Everything in this table is one repository. On **2026-08-01** the same
+measurements were repeated on a second, **pre-registered** benchmark —
+`pallets/flask`, the other candidate named in `ROADMAP.md` Phase 1 before any
+retrieval code existed — with its own 20 questions written blind
+(`docs/EVAL-FLASK.md`). Two of the three readings above did not survive it.
+
+| Claim, as stated here | On flask |
+|---|---|
+| "naive does not lose on hit@k, and edges ahead on MRR" | **Reversed.** AST 0.95 vs naive 0.90 at hit@10; 0.767 vs 0.720 at MRR |
+| hybrid fusion ≥ every single signal | **Fails.** Plain vector beats hybrid — MRR 0.837 vs 0.767 on AST, and at every k on naive |
+| ~4% unresolved edges (SPEC §6.1 budgets ~20%) | **52%** — 13× httpx, 2.6× the budget |
+
+So the correct statement is weaker than the one this table originally supported,
+and weaker in a useful way: **at hit@k, AST chunking and fixed windows are not
+reliably distinguishable — the sign of the difference changes between repos, and
+every margin is one or two questions out of twenty.** The naive result was not
+evidence that windows are as good; it was evidence that this benchmark cannot
+tell, which only a second benchmark could show.
+
+The hybrid finding is the more consequential one and is written up in
+`docs/EVAL-FLASK.md` with the mechanism as an explicit hypothesis rather than a
+conclusion. Answer-level eval was **not** re-run on flask — it needs ~40 model
+calls against a 20/day tier — so the agent column above remains a single-repo
+result and is not corroborated here.
+
 ---
 
 ## The claim, and exactly how strong it is

@@ -41,30 +41,38 @@ from app.retrieval.hybrid import (  # noqa: E402
     search,
 )
 
-EVAL_MD = Path(__file__).resolve().parent.parent.parent / "docs" / "EVAL.md"
+DOCS = Path(__file__).resolve().parent.parent.parent / "docs"
+EVAL_MD = DOCS / "EVAL.md"  # the default benchmark; --benchmark selects another
 KS = (3, 5, 10)  # hit@3 shows reranker precision; hit@10 the recall gate
 MAX_K = max(KS)
 
 
-def _extract_yaml_block(text: str) -> str:
+def _extract_yaml_block(text: str, source: Path) -> str:
     """Return the first ```yaml fenced block's body from ``text``."""
     match = re.search(r"```yaml\n(.*?)\n```", text, re.DOTALL)
     if match is None:
-        raise SystemExit("EVAL.md: no ```yaml question block found")
+        raise SystemExit(f"{source.name}: no ```yaml question block found")
     return match.group(1)
 
 
-def _parse_eval_md() -> tuple[str, str | None, list[dict]]:
-    """Return (benchmark_url, pinned_sha, questions) parsed from EVAL.md."""
-    text = EVAL_MD.read_text(encoding="utf-8")
+def _parse_eval_md(benchmark: Path) -> tuple[str, str | None, list[dict]]:
+    """Return ``(benchmark_url, pinned_sha, questions)`` parsed from ``benchmark``.
+
+    Any file in the EVAL.md format works, which is what lets a second repo be
+    measured without the first one's ground truth being touched. Each benchmark
+    owns its own results blocks, so the append-only rule stays per-file.
+    """
+    if not benchmark.is_file():
+        raise SystemExit(f"benchmark file not found: {benchmark}")
+    text = benchmark.read_text(encoding="utf-8")
     url_match = re.search(r"\((https://github\.com/[^)]+)\)", text)
     sha_match = re.search(r"Pinned commit:\*\*\s*`([0-9a-f]{7,40})`", text)
-    questions = yaml.safe_load(_extract_yaml_block(text))
+    questions = yaml.safe_load(_extract_yaml_block(text, benchmark))
     if not isinstance(questions, list):
-        raise SystemExit("EVAL.md: question block did not parse to a list")
-    url = url_match.group(1) if url_match else "https://github.com/encode/httpx"
-    sha = sha_match.group(1) if sha_match else None
-    return url, sha, questions
+        raise SystemExit(f"{benchmark.name}: question block did not parse to a list")
+    if url_match is None:
+        raise SystemExit(f"{benchmark.name}: no benchmark repo URL found")
+    return url_match.group(1), (sha_match.group(1) if sha_match else None), questions
 
 
 def _first_hit_rank(
@@ -170,8 +178,13 @@ async def _measure(
     )
 
 
-async def run(modes: list[Mode], repo_ref: str, conditions: list[bool]) -> int:
-    url, sha, questions = _parse_eval_md()
+async def run(
+    modes: list[Mode],
+    repo_ref: str,
+    conditions: list[bool],
+    benchmark: Path = EVAL_MD,
+) -> int:
+    url, sha, questions = _parse_eval_md(benchmark)
     ref = repo_ref or url
     settings = get_settings()
     pool = await create_pool(settings.DATABASE_URL)
@@ -183,8 +196,12 @@ async def run(modes: list[Mode], repo_ref: str, conditions: list[bool]) -> int:
                 print(f"error: repo {ref!r} not ingested; run the CLI --db first")
                 return 1
 
+            # `repo_snapshots.commit_sha`, not `repos.head_sha`. V2 stopped
+            # writing the old table, so this returned NULL for every post-007
+            # ingest and the pinned-SHA warning below could never fire — the one
+            # check standing between a result block and the wrong commit.
             head_sha = await conn.fetchval(
-                "SELECT head_sha FROM repos WHERE id = $1", snapshot_id
+                "SELECT commit_sha FROM repo_snapshots WHERE id = $1", snapshot_id
             )
             n_chunks = await conn.fetchval(
                 "SELECT count(*) FROM chunks WHERE snapshot_id = $1", snapshot_id
@@ -211,8 +228,8 @@ async def run(modes: list[Mode], repo_ref: str, conditions: list[bool]) -> int:
     total = len(questions)
     corpus = _corpus_line(n_chunks, n_impl)
     print(_format_report(modes, results, url, head_sha, corpus, total))
-    _append_results(modes, results, url, head_sha, corpus, total)
-    print(f"\nappended results block to {EVAL_MD}")
+    _append_results(modes, results, url, head_sha, corpus, total, benchmark)
+    print(f"\nappended results block to {benchmark}")
     return 0
 
 
@@ -292,6 +309,7 @@ def _append_results(
     head_sha: str | None,
     corpus: str,
     total: int,
+    benchmark: Path = EVAL_MD,
 ) -> None:
     """Append ONE dated block covering every measured condition.
 
@@ -319,11 +337,19 @@ def _append_results(
             *_grid_table(modes, res.grid),
             "",
         ]
-    with EVAL_MD.open("a", encoding="utf-8") as fh:
+    with benchmark.open("a", encoding="utf-8") as fh:
         fh.write("\n".join(block) + "\n")
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The report uses ✓/· and Windows consoles default to cp1252, which cannot
+    # encode either. That crashed *after* a full measurement had been computed
+    # and before the results block was appended — the run's entire cost lost to
+    # a print. Reconfiguring is cheaper than remembering to set PYTHONIOENCODING.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+
     parser = argparse.ArgumentParser(prog="scripts/eval.py")
     parser.add_argument(
         "--mode",
@@ -334,7 +360,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--repo",
         default="",
-        help="repo url or id (default: the benchmark repo from EVAL.md)",
+        help="repo url or id (default: the repo named in the benchmark file)",
+    )
+    parser.add_argument(
+        "--benchmark",
+        default=str(EVAL_MD),
+        metavar="PATH",
+        help="benchmark file in the EVAL.md format (default: docs/EVAL.md). "
+        "Results append to whichever file is used, so each benchmark keeps its "
+        "own append-only history and neither can overwrite the other's.",
     )
     condition = parser.add_mutually_exclusive_group()
     condition.add_argument(
@@ -361,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         conditions = [False, True]
     else:
         conditions = [bool(args.include_tests)]
-    return asyncio.run(run(modes, args.repo, conditions))
+    return asyncio.run(run(modes, args.repo, conditions, Path(args.benchmark)))
 
 
 if __name__ == "__main__":
