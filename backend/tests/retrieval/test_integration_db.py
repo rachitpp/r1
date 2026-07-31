@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.db import queries
 from app.db.pool import close_pool, create_pool
 from app.db.queries import count_chunks, resolve_snapshot_id
+from app.exceptions import SnapshotSuperseded
 from app.ingest.cli import ingest_to_db
 from app.ingest.pipeline import run_ingest
 from app.retrieval.hybrid import search
@@ -95,17 +96,35 @@ def _add_commit(repo: Path, filename: str, body: str) -> None:
 
 
 async def _delete_repo(url: str) -> None:
+    """Teardown by source, which cascades to snapshots and all their content.
+
+    `repo_sources`, not `repos`: since V2 an ingest writes no `repos` row, so the
+    old statement matched nothing and every run of this file leaked a source, a
+    snapshot, and its whole corpus into the database under test.
+    """
     pool = await create_pool(get_settings().DATABASE_URL)
     try:
         async with pool.acquire() as conn:
-            await conn.execute("DELETE FROM repos WHERE url = $1", url)
+            await conn.execute("DELETE FROM repo_sources WHERE url = $1", url)
     finally:
         await close_pool(pool)
 
 
-async def test_db_ingest_idempotent_and_search(
+async def test_resubmitting_a_commit_reuses_its_corpus_and_search_works(
     tmp_path: Path, require_db: None
 ) -> None:
+    """One commit, one stored corpus — however many times it is submitted.
+
+    The invariant is the pre-V2 one; the mechanism is not. This used to be
+    delete-and-replace: the second ingest cleared the first's rows and rebuilt
+    them, which is exactly the race §14 exists to remove. Now the second ingest
+    clones, sees the commit is already stored, moves the submitter onto the
+    existing snapshot and deletes its own — `SnapshotSuperseded`, which the CLI
+    and the worker both treat as success (§14.4).
+
+    So the assertion "re-ingesting does not double the corpus" survives intact,
+    and is now also an assertion that *nothing was rebuilt*.
+    """
     repo = _make_git_repo(tmp_path)
     url = repo.as_uri()
     try:
@@ -113,23 +132,38 @@ async def test_db_ingest_idempotent_and_search(
         assert first.selection.n_kept == 3
         assert len(first.chunks) >= 3
 
-        # Re-ingest: delete-and-replace must leave counts identical (not doubled).
-        second = await ingest_to_db(url)
-        assert len(second.chunks) == len(first.chunks)
+        with pytest.raises(SnapshotSuperseded) as dedup:
+            await ingest_to_db(url)
+        assert str(dedup.value.kept_id) == str(first.snapshot_id)
 
         pool = await create_pool(get_settings().DATABASE_URL)
         try:
             async with pool.acquire() as conn:
                 snapshot_id = await resolve_snapshot_id(conn, url)
                 assert snapshot_id is not None
+                assert str(snapshot_id) == str(first.snapshot_id)
 
                 stored = await count_chunks(conn, snapshot_id)
                 assert stored == len(first.chunks)
 
-                n_repo_rows = await conn.fetchval(
-                    "SELECT count(*) FROM repos WHERE url = $1", url
+                # One source, and one snapshot under it: the redundant row was
+                # deleted rather than left as a second corpus nobody can tell
+                # apart from the first.
+                assert (
+                    await conn.fetchval(
+                        "SELECT count(*) FROM repo_sources WHERE url = $1", url
+                    )
+                    == 1
                 )
-                assert n_repo_rows == 1  # upsert, not duplicate
+                assert (
+                    await conn.fetchval(
+                        """SELECT count(*) FROM repo_snapshots sn
+                             JOIN repo_sources s ON s.id = sn.source_id
+                            WHERE s.url = $1""",
+                        url,
+                    )
+                    == 1
+                )
 
                 hits = await search(
                     conn, snapshot_id, "alpha helper join path", k=5, mode="hybrid+rerank"

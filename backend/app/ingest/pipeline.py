@@ -165,7 +165,7 @@ async def run_ingest(
     strategy: str = "ast",
     log: ProgressLog | None = None,
 ) -> IngestStats:
-    """Run the full pipeline for an existing ``repos`` row and store the result.
+    """Run the full pipeline for an existing ``repo_snapshots`` row and store it.
 
     The row must already exist (``POST /repos`` or the CLI creates it); this
     function owns everything after that, including the §10 status transitions and
