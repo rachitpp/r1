@@ -15,9 +15,15 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight, MessageSquarePlus, Square } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Download,
+  MessageSquarePlus,
+  Square,
+} from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { ExchangeView } from "@/components/chat/exchange-view";
@@ -27,8 +33,13 @@ import { CodeViewer } from "@/components/code-viewer";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRepoChat } from "@/hooks/use-repo-chat";
 import { ApiError, getRepo } from "@/lib/api";
-import { type Citation, citationKey } from "@/lib/citations";
+import { type Citation, citationKey, explainQuestion } from "@/lib/citations";
 import { splitRepoName, stripStrategySuffix } from "@/lib/format";
+import {
+  downloadMarkdown,
+  toMarkdown,
+  transcriptFilename,
+} from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 
 /** Questions that make sense for any repo — one click to a live demo. */
@@ -69,6 +80,7 @@ function HeaderAvatar({ owner, name }: { owner: string | null; name: string }) {
 
 export function ChatView({ repoId }: { repoId: string }) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const repo = useQuery({
     queryKey: ["repo", repoId],
     queryFn: () => getRepo(repoId),
@@ -123,6 +135,28 @@ export function ChatView({ repoId }: { repoId: string }) {
     chat.ask(q);
     setQuestion("");
   };
+
+  // `?q=` — a link that arrives with its question already asked. This is what
+  // makes every other surface able to hand off into chat (an overview section,
+  // a search result, a shared link) without duplicating the composer.
+  //
+  // Guarded by a ref rather than by `transcript.length`: the transcript is
+  // restored from sessionStorage one render *after* mount, so a length check
+  // would re-ask the question on every refresh of a page that already has it.
+  const askedFromUrlRef = useRef(false);
+  const urlQuestion = searchParams.get("q");
+  useEffect(() => {
+    if (askedFromUrlRef.current || !urlQuestion) return;
+    if (repo.data?.status !== "ready") return;
+    askedFromUrlRef.current = true;
+    stickRef.current = true;
+    chat.ask(urlQuestion);
+    // Drop the param so a refresh does not look like a second question and the
+    // URL stops being a re-ask trap when shared.
+    router.replace(`/repos/${repoId}/chat`, { scroll: false });
+    // `chat` is recreated each render; depending on it would re-run this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlQuestion, repo.data?.status, repoId, router]);
 
   /** The only thing that ever fills the viewer. */
   const pick = (c: Citation) => setSelection(c);
@@ -186,7 +220,21 @@ export function ChatView({ repoId }: { repoId: string }) {
   const activeKey = selection ? citationKey(selection) : null;
   const empty = chat.transcript.length === 0 && !chat.current;
   const progress = repo.data.progress;
-  const { owner, name } = splitRepoName(stripStrategySuffix(repo.data.name));
+  const fullName = stripStrategySuffix(repo.data.name);
+  const { owner, name } = splitRepoName(fullName);
+
+  // Defined here rather than beside `newConversation` because it needs
+  // `repo.data`, which is only narrowed past the guards above.
+  const exportConversation = () => {
+    downloadMarkdown(
+      transcriptFilename(fullName),
+      toMarkdown(chat.transcript, {
+        repoName: fullName,
+        repoUrl: repo.data.url,
+        headSha: repo.data.head_sha,
+      }),
+    );
+  };
 
   return (
     // Full-bleed on purpose: this is an app shell, not a document column. A
@@ -226,14 +274,25 @@ export function ChatView({ repoId }: { repoId: string }) {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {chat.transcript.length > 0 && (
-              <button
-                type="button"
-                onClick={newConversation}
-                className="inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
-              >
-                <MessageSquarePlus className="size-3.5" />
-                New chat
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={exportConversation}
+                  title="Download this conversation as Markdown"
+                  className="inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
+                  <Download className="size-3.5" />
+                  <span className="hidden sm:inline">Export</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={newConversation}
+                  className="inline-flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+                >
+                  <MessageSquarePlus className="size-3.5" />
+                  New chat
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -384,6 +443,10 @@ export function ChatView({ repoId }: { repoId: string }) {
           repoUrl={repo.data.url}
           headSha={repo.data.head_sha}
           onClose={() => setSelection(null)}
+          // Withheld mid-stream rather than disabled: the composer is already
+          // disabled for the same reason, and a live button whose click does
+          // nothing is the thing that reads as broken.
+          onExplain={streaming ? undefined : (c) => send(explainQuestion(c))}
         />
       </section>
     </div>

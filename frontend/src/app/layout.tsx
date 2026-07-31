@@ -4,6 +4,8 @@ import Link from "next/link";
 import "./globals.css";
 
 import { UserMenu } from "@/components/auth/user-menu";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 
 import { Providers } from "./providers";
 
@@ -79,7 +81,18 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${fontDisplay.variable} ${fontSans.variable} ${fontMono.variable}`}
+      suppressHydrationWarning
     >
+      <head>
+        {/* Sets `.dark` on <html> before first paint. Without it every
+            dark-mode visitor gets a full-screen white flash on every
+            navigation, because the class can only be applied once React
+            mounts. `suppressHydrationWarning` above is the cost: this script
+            deliberately makes the client's <html> differ from the server's. */}
+        <script
+          dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }}
+        />
+      </head>
       <body className="min-h-screen antialiased">
         <Providers>
           <header className="sticky top-0 z-40 border-b border-border/70 bg-background/85 backdrop-blur supports-[backdrop-filter]:bg-background/65">
@@ -105,6 +118,7 @@ export default function RootLayout({
                   <GithubIcon />
                   <span className="hidden sm:inline">Source</span>
                 </a>
+                <ThemeToggle />
                 <UserMenu />
               </div>
             </div>

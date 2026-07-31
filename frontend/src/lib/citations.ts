@@ -45,6 +45,22 @@ export function formatCitation(c: Citation): string {
   return citationKey(c);
 }
 
+/**
+ * The templated question behind the viewer's "Explain" button.
+ *
+ * Phrased as a `[path:start-end]` marker because that is the citation syntax
+ * the agent's own prompt uses (SPEC §7.5) — the model reads it as a location it
+ * already knows how to resolve, rather than as prose it has to search for. The
+ * three clauses map onto what the graph can actually answer: the definition,
+ * its callers (`find_references`), and its callees (`expand_context`).
+ */
+export function explainQuestion(c: Citation): string {
+  return (
+    `Explain [${citationKey(c)}]: what does this code do, ` +
+    `what calls it, and what does it depend on?`
+  );
+}
+
 /** Merge citation lists (event citations first), deduped by key. */
 export function dedupeCitations(...lists: Citation[][]): Citation[] {
   const out: Citation[] = [];

@@ -17,18 +17,36 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, FileCode2, WrapText, X } from "lucide-react";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  FileCode2,
+  Sparkles,
+  WrapText,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ThemedToken } from "shiki/core";
 
+import { useTheme } from "@/hooks/use-theme";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, getFile } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import { githubBlobUrl } from "@/lib/format";
-import { LIGHT_THEME, getHighlighter } from "@/lib/highlighter";
+import { DARK_THEME, LIGHT_THEME, getHighlighter } from "@/lib/highlighter";
 import { cn } from "@/lib/utils";
 
+/**
+ * Tokenise `content` under the active theme.
+ *
+ * Both Vitesse themes were already in the Shiki bundle — the dark one was
+ * loaded and never used. Re-tokenising on a theme flip is the honest way to do
+ * this: `codeToTokensBase` bakes the colour into each token, so the same tokens
+ * rendered under the other theme would be light syntax on a dark card.
+ */
 function useTokens(content: string | undefined): ThemedToken[][] | null {
+  const { resolved } = useTheme();
   const [tokens, setTokens] = useState<ThemedToken[][] | null>(null);
   useEffect(() => {
     if (content == null) {
@@ -39,13 +57,16 @@ function useTokens(content: string | undefined): ThemedToken[][] | null {
     void getHighlighter().then((h) => {
       if (cancelled) return;
       setTokens(
-        h.codeToTokensBase(content, { lang: "python", theme: LIGHT_THEME }),
+        h.codeToTokensBase(content, {
+          lang: "python",
+          theme: resolved === "dark" ? DARK_THEME : LIGHT_THEME,
+        }),
       );
     });
     return () => {
       cancelled = true;
     };
-  }, [content]);
+  }, [content, resolved]);
   return tokens;
 }
 
@@ -176,6 +197,7 @@ export function CodeViewer({
   repoUrl,
   headSha,
   onClose,
+  onExplain,
 }: {
   repoId: string;
   /** The citation to show; null renders the empty state. */
@@ -184,6 +206,8 @@ export function CodeViewer({
   headSha?: string | null;
   /** Mobile only — the viewer is a sheet there and needs a dismiss. */
   onClose?: () => void;
+  /** Ask about the open range. Omitted while a stream is live. */
+  onExplain?: (citation: Citation) => void;
 }) {
   // Wrapping defaults on where the pane is narrow — a 44% column or a phone
   // sheet otherwise makes reading any real line a horizontal scroll. Set once
@@ -252,6 +276,22 @@ export function CodeViewer({
               L{selection.start_line}–{selection.end_line}
             </span>
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
+              {/* The cheapest path from "what is this?" to an answer: the
+                  question is already fully determined by what is on screen, so
+                  making the reader type it is pure friction. Labelled rather
+                  than an icon — it is the only action here that spends a model
+                  call, and it should not look like the copy button. */}
+              {onExplain && (
+                <button
+                  type="button"
+                  onClick={() => onExplain(selection)}
+                  title="Ask about these lines"
+                  className="mr-1 inline-flex items-center gap-1 rounded-md border px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Sparkles className="size-3" />
+                  Explain
+                </button>
+              )}
               {loaded && (
                 <>
                   <IconButton
