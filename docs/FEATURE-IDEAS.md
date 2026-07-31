@@ -13,7 +13,9 @@
 > model. Read `SPEC.md` for the contracts those refer to.
 
 > **Status, 2026-07-31.** Six items are **BUILT** — 2.2, 2.4, 3.5, 4.5, 6.2 and
-> 6.6 — and are marked as such below. They were taken together because none of
+> 6.6 — and are marked as such below, each with what shipped *and* what it looks
+> like to a user. (2.2 and 2.4 landed as endpoints first and were briefly "built"
+> with no consumer; both now have a surface.) They were taken together because none of
 > them touches ingest or retrieval, so none could disturb the eval-equality
 > verification V2/V3 rest on. See SPEC §18 and DECISIONS 2026-07-31.
 >
@@ -202,6 +204,12 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   capability: the answer is exact SQL, so spending from the 8-call budget on it
   would buy nothing and cost reproducibility. Same-file edges excluded;
   `include_tests` off by default per §6.3.
+- **Surfaced as.** The Architecture panel on `/repos/[id]`: modules ranked by
+  fan-in with a bar relative to the top module, each expanding into *Depends
+  on* / *Used by* and a pre-filled question via `?q=`. On httpx it ranks
+  `_exceptions.py` (fan-in 80, fan-out 2 — the leaf everything imports) above
+  `_models.py` (71/108 — the hub), which is the right answer and is why the
+  ranking is worth showing at all.
 
 ### 2.3 Call-hierarchy & data-flow tracing
 
@@ -237,6 +245,15 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Shipped as.** `GET /repos/{id}/coverage?path=` (SPEC §18.3), both
   directions. An unknown path returns empty lists rather than 404 — a 404 would
   make it an existence oracle for paths (§13.5 reasoning, one level down).
+- **Surfaced as.** A collapsed strip under the code-viewer header, hidden
+  entirely when there is no linkage. Open, every test is a button that moves the
+  viewer to it — jumping from a function to the test that exercises it is the
+  whole point, and it reuses the same selection a citation click drives.
+- **Honest limitation.** Coverage is thin on modules whose symbols are reached
+  through a re-export rather than called directly: httpx's `_exceptions.py` shows
+  2 linked symbols, because tests mostly say `pytest.raises(httpx.ReadTimeout)`
+  and the edge resolves through `httpx/__init__.py`. Real linkage, honestly
+  partial — not a bug, and worth knowing before reading the numbers as coverage.
 
 ### 2.5 Dependency / third-party understanding *(new)*
 

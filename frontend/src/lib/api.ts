@@ -139,6 +139,81 @@ export function getFile(repoId: string, path: string): Promise<FileOut> {
 }
 
 /* -------------------------------------------------------------------------
+ * Graph views (SPEC §18)
+ *
+ * Both are deterministic reads over the symbol graph — no model, no tool
+ * budget, no tokens. Snapshots are immutable (§14.3), so the answers cannot
+ * change for a given repo id and TanStack may hold them indefinitely.
+ * ---------------------------------------------------------------------- */
+
+export interface ModuleNode {
+  path: string;
+  n_symbols: number;
+  /** Edges arriving from other modules — "how much depends on this". */
+  fan_in: number;
+  fan_out: number;
+}
+
+export interface ModuleEdge {
+  from_path: string;
+  to_path: string;
+  kind: string;
+  /** Symbol-level edges of this kind crossing the pair. */
+  weight: number;
+}
+
+export interface ArchitectureOut {
+  nodes: ModuleNode[];
+  edges: ModuleEdge[];
+  include_tests: boolean;
+  /** Either list hit its §12 cap — the map is the top of the ranking, not all of it. */
+  truncated: boolean;
+}
+
+/** A pointer at one symbol. Never carries a code body — that is `/files`. */
+export interface SymbolRef {
+  qualname: string;
+  file_path: string;
+  line: number;
+}
+
+export interface CoveredSymbol {
+  name: string;
+  qualname: string;
+  kind: string;
+  start_line: number;
+  end_line: number;
+  tests: SymbolRef[];
+}
+
+export interface CoverageOut {
+  path: string;
+  /** Symbols defined here, each with the tests that reach it. */
+  covered: CoveredSymbol[];
+  /** What this file reaches, when it is itself a test file. Empty otherwise. */
+  covers: SymbolRef[];
+  truncated: boolean;
+}
+
+export function getArchitecture(
+  repoId: string,
+  includeTests = false,
+): Promise<ArchitectureOut> {
+  return request<ArchitectureOut>(
+    `/repos/${repoId}/architecture?include_tests=${includeTests}`,
+  );
+}
+
+export function getCoverage(
+  repoId: string,
+  path: string,
+): Promise<CoverageOut> {
+  return request<CoverageOut>(
+    `/repos/${repoId}/coverage?path=${encodeURIComponent(path)}`,
+  );
+}
+
+/* -------------------------------------------------------------------------
  * Identity (SPEC §13)
  * ---------------------------------------------------------------------- */
 

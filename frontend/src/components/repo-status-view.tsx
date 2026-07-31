@@ -28,6 +28,7 @@ import {
 import Link from "next/link";
 import { Fragment, useState } from "react";
 
+import { ArchitecturePanel } from "@/components/architecture-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -367,6 +368,12 @@ export function RepoStatusView({ repoId }: { repoId: string }) {
           </div>
         </section>
       )}
+
+      {/* The module map (§18.2). Below the CTA rather than above it: chatting is
+          still the primary action, and this is orientation for a reader who does
+          not yet know what to ask. Mounted only when ready — the rollup of a
+          half-built graph would be a map of a partial repo. */}
+      {isReady && <ArchitecturePanel repoId={repoId} />}
 
       {/* In flight — the live process. */}
       {!isReady && !isFailed && (

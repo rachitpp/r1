@@ -447,6 +447,10 @@ export function ChatView({ repoId }: { repoId: string }) {
           // disabled for the same reason, and a live button whose click does
           // nothing is the thing that reads as broken.
           onExplain={streaming ? undefined : (c) => send(explainQuestion(c))}
+          // The coverage strip navigates the viewer, which is the same action a
+          // citation click performs — one setter, so a jump to a test behaves
+          // exactly like a jump to a cited range.
+          onSelect={pick}
         />
       </section>
     </div>

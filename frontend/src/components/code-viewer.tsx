@@ -19,9 +19,11 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   Check,
+  ChevronDown,
   Copy,
   ExternalLink,
   FileCode2,
+  FlaskConical,
   Sparkles,
   WrapText,
   X,
@@ -31,7 +33,7 @@ import type { ThemedToken } from "shiki/core";
 
 import { useTheme } from "@/hooks/use-theme";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getFile } from "@/lib/api";
+import { ApiError, getCoverage, getFile } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
 import { githubBlobUrl } from "@/lib/format";
 import { DARK_THEME, LIGHT_THEME, getHighlighter } from "@/lib/highlighter";
@@ -109,6 +111,144 @@ function FilePath({ path }: { path: string }) {
       {dir && <span className="text-muted-foreground">{dir}</span>}
       <span className="font-semibold text-foreground">{file}</span>
     </span>
+  );
+}
+
+/**
+ * The §18.3 test↔code strip, under the pane header.
+ *
+ * Collapsed to one line by default: this pane exists to show code, and a
+ * permanently-open list would push the cited lines below the fold on a phone.
+ * Open, each test is a button rather than text — jumping to the test that
+ * exercises the function you are reading is the whole point, and it reuses the
+ * selection the viewer already drives.
+ *
+ * Renders nothing when there is no linkage, which is the common case for a file
+ * nothing tests and is not worth a row of chrome.
+ */
+function CoverageStrip({
+  repoId,
+  path,
+  onSelect,
+}: {
+  repoId: string;
+  path: string;
+  onSelect?: (c: Citation) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const coverage = useQuery({
+    queryKey: ["coverage", repoId, path],
+    queryFn: () => getCoverage(repoId, path),
+    // Immutable snapshot (§14.3) — the linkage cannot change for this repo id.
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  // Collapse when the reader moves to a different file, or the strip would open
+  // onto another file's tests.
+  useEffect(() => setOpen(false), [path]);
+
+  const data = coverage.data;
+  if (!data) return null;
+
+  const nTests = new Set(
+    data.covered.flatMap((s) => s.tests.map((t) => `${t.file_path}:${t.line}`)),
+  ).size;
+  const isTestFile = data.covers.length > 0;
+  if (nTests === 0 && !isTestFile) return null;
+
+  const summary = isTestFile
+    ? `Exercises ${data.covers.length} implementation symbol${data.covers.length === 1 ? "" : "s"}`
+    : `${data.covered.length} symbol${data.covered.length === 1 ? "" : "s"} covered by ${nTests} test${nTests === 1 ? "" : "s"}`;
+
+  const jump = (ref: { file_path: string; line: number }) =>
+    onSelect?.({
+      file_path: ref.file_path,
+      start_line: ref.line,
+      end_line: ref.line,
+    });
+
+  return (
+    <div className="border-b bg-secondary/20 text-xs">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <FlaskConical className="size-3.5 shrink-0 text-[hsl(var(--sage))]" />
+        <span className="truncate">{summary}</span>
+        <ChevronDown
+          className={cn(
+            "ml-auto size-3.5 shrink-0 transition-transform",
+            open && "rotate-180",
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="max-h-56 space-y-2.5 overflow-y-auto px-3 pb-3">
+          {data.covered.map((sym) => (
+            <div key={`${sym.qualname}:${sym.start_line}`}>
+              <button
+                type="button"
+                onClick={() =>
+                  jump({ file_path: path, line: sym.start_line })
+                }
+                className="rounded-sm font-mono text-[11px] font-medium transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {sym.name}
+                <span className="ml-1 font-normal text-muted-foreground">
+                  L{sym.start_line}
+                </span>
+              </button>
+              <ul className="mt-1 space-y-0.5 pl-3">
+                {sym.tests.map((t) => (
+                  <li key={`${t.file_path}:${t.line}:${t.qualname}`}>
+                    <button
+                      type="button"
+                      onClick={() => jump(t)}
+                      title={`${t.file_path}:${t.line}`}
+                      className="w-full truncate rounded-sm text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      ↳ {t.qualname}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+
+          {isTestFile && (
+            <div>
+              <p className="font-mono text-[10px] uppercase tracking-[0.1em] text-muted-foreground">
+                Exercises
+              </p>
+              <ul className="mt-1 space-y-0.5">
+                {data.covers.map((ref) => (
+                  <li key={`${ref.file_path}:${ref.line}:${ref.qualname}`}>
+                    <button
+                      type="button"
+                      onClick={() => jump(ref)}
+                      title={`${ref.file_path}:${ref.line}`}
+                      className="w-full truncate rounded-sm text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      ↳ {ref.qualname}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {data.truncated && (
+            <p className="text-[11px] text-muted-foreground/70">
+              Showing the first links only.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -198,6 +338,7 @@ export function CodeViewer({
   headSha,
   onClose,
   onExplain,
+  onSelect,
 }: {
   repoId: string;
   /** The citation to show; null renders the empty state. */
@@ -208,6 +349,9 @@ export function CodeViewer({
   onClose?: () => void;
   /** Ask about the open range. Omitted while a stream is live. */
   onExplain?: (citation: Citation) => void;
+  /** Move the viewer to another location — used by the coverage strip to jump
+   * from a function to the test that exercises it. */
+  onSelect?: (citation: Citation) => void;
 }) {
   // Wrapping defaults on where the pane is narrow — a 44% column or a phone
   // sheet otherwise makes reading any real line a horizontal scroll. Set once
@@ -337,6 +481,15 @@ export function CodeViewer({
           </span>
         )}
       </div>
+
+      {/* Test linkage for the open file, between the header and the code. */}
+      {selection && (
+        <CoverageStrip
+          repoId={repoId}
+          path={selection.file_path}
+          onSelect={onSelect}
+        />
+      )}
 
       {/* Body — empty ghost, error, loading, or the tokenised file. */}
       {!selection ? (

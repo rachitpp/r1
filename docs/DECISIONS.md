@@ -2531,3 +2531,57 @@ than the `file:///%` first proposed, which could have matched a local repo
 somebody ingested deliberately. Guarded by an assertion that it caught no
 non-test source name, and by checking the benchmark corpus immediately before
 and after: `825 | 697` both times.
+
+---
+
+## 2026-07-31 — The §18 UI, and the SQL that had never met Postgres
+
+The two graph views shipped as endpoints with no consumer. That is worse than
+not having built them: it reads as finished in SPEC and FEATURE-IDEAS and does
+nothing for a user. Both now have a surface.
+
+**Architecture panel** on `/repos/[id]`, below the chat CTA rather than above —
+chatting is still the primary action, and this is orientation for a reader who
+does not yet know what to ask. Modules ranked by fan-in with a bar relative to
+the top module, because a bare number tells you nothing without the distribution
+to compare it against; the bar *is* the distribution, and one hub with a long
+tail looks different from a flat mesh at a glance. Each module expands into both
+directions and offers a pre-filled question through the `?q=` route built the
+same day — which is what turns a map into a starting point rather than a
+diagram.
+
+**Coverage strip** under the code-viewer header, collapsed by default and
+rendered not at all when there is no linkage. The pane exists to show code, and
+a permanently-open list would push the cited lines below the fold on a phone.
+Open, every test is a button that moves the viewer to it, reusing the same
+selection setter a citation click drives — so jumping to a test behaves exactly
+like jumping to a cited range.
+
+**The gap this closed, which the test suite could not have caught.** The §18
+queries had **never been executed by Postgres.** `tests/api/test_graph_views.py`
+runs against `FakeConn`, which routes statements by substring and returns
+fixtures — it proves the route wiring, the response shaping, the caps, and the
+tenancy checks, and it proves *nothing at all* about the CTEs, the correlated
+subqueries in `module_nodes`, or the `(NOT is_test OR $2)` predicate. All four
+functions were run against the live httpx corpus before this shipped:
+
+```
+23 modules, 120 module edges (impl only) · include_tests 23 -> 57
+httpx/_exceptions.py   fan-in 80, fan-out 2     the leaf everything imports
+httpx/_models.py       fan-in 71, fan-out 108   the hub
+43x calls  _models.py -> _decoders.py           heaviest single pair
+self-edges excluded: 0 · covers on an impl file: 0
+tests/models/test_responses.py exercises 163 implementation symbols
+```
+
+The ranking being *recognisably correct* for httpx is the part worth recording.
+A rollup that runs without error but ranks `setup.py` first would pass every
+assertion in the suite; the check that it puts `_exceptions` and `_models` on
+top is a human one, and it was made.
+
+**Honest limitation, documented rather than hidden:** coverage is thin where
+symbols are reached through a re-export. `_exceptions.py` links only 2 symbols
+because tests mostly write `pytest.raises(httpx.ReadTimeout)` and the edge
+resolves through `httpx/__init__.py`. That is real linkage, honestly partial —
+these numbers are graph reachability, not coverage in the `coverage.py` sense,
+and the panel should never be read as if they were.
