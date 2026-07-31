@@ -212,6 +212,11 @@ function CoverageStrip({
                       className="w-full truncate rounded-sm text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       ↳ {t.qualname}
+                      {/* The line is what distinguishes two rows for the same
+                          test: one test function can reference a symbol at
+                          several call sites, and without it the rows read as a
+                          rendering duplicate rather than as real data. */}
+                      <span className="text-muted-foreground/60">:{t.line}</span>
                     </button>
                   </li>
                 ))}
@@ -234,6 +239,9 @@ function CoverageStrip({
                       className="w-full truncate rounded-sm text-left font-mono text-[11px] text-muted-foreground transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       ↳ {ref.qualname}
+                      <span className="text-muted-foreground/60">
+                        :{ref.line}
+                      </span>
                     </button>
                   </li>
                 ))}

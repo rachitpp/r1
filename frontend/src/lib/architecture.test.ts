@@ -4,6 +4,7 @@ import type { ModuleEdge } from "@/lib/api";
 import {
   dependenciesOf,
   dependentsOf,
+  linkLabel,
   shareOf,
   splitModulePath,
 } from "@/lib/architecture";
@@ -64,6 +65,34 @@ describe("dependentsOf", () => {
       "a.py",
       "z.py",
     ]);
+  });
+});
+
+describe("linkLabel", () => {
+  it("spells the kinds out, heaviest first", () => {
+    const [core] = dependenciesOf(EDGES, "a.py");
+    // Not "ci 5" — first-letter abbreviation saved a few pixels and made the
+    // number unreadable, which is the whole information the column carries.
+    expect(linkLabel(core)).toBe("4 calls · 1 import");
+  });
+
+  it("singularises a weight of one — `edges.kind` is plural in the schema", () => {
+    expect(
+      linkLabel({ path: "x.py", kinds: [{ kind: "calls", weight: 1 }], weight: 1 }),
+    ).toBe("1 call");
+    // `extends` is already both, and must not become "extend".
+    expect(
+      linkLabel({ path: "x.py", kinds: [{ kind: "extends", weight: 1 }], weight: 1 }),
+    ).toBe("1 extends");
+  });
+
+  it("handles a single kind without a separator", () => {
+    const [b] = dependentsOf(EDGES, "core.py");
+    expect(linkLabel(b)).toBe("9 calls");
+  });
+
+  it("falls back to the bare weight if a link somehow has no kinds", () => {
+    expect(linkLabel({ path: "x.py", kinds: [], weight: 3 })).toBe("3");
   });
 });
 

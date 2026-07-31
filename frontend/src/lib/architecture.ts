@@ -58,6 +58,28 @@ export function dependentsOf(edges: ModuleEdge[], path: string): ModuleLink[] {
 }
 
 /**
+ * `"25 calls · 2 imports"` — a link's coupling, spelled out.
+ *
+ * Kinds arrive sorted heaviest-first, so the dominant relationship leads. The
+ * first version of this concatenated first letters (`"ci 25"`) to save room;
+ * nobody can read that, and the row has space because the module path beside it
+ * truncates instead.
+ */
+export function linkLabel(link: ModuleLink): string {
+  if (link.kinds.length === 0) return String(link.weight);
+  return link.kinds
+    .map((k) => `${k.weight} ${k.weight === 1 ? singular(k.kind) : k.kind}`)
+    .join(" · ");
+}
+
+/** `edges.kind` is plural in the schema; "1 imports" reads as a bug. */
+function singular(kind: string): string {
+  if (kind === "calls") return "call";
+  if (kind === "imports") return "import";
+  return kind; // `extends` is already both
+}
+
+/**
  * Fraction of `max`, clamped to 0..1, for a bar width.
  *
  * A zero or negative max returns 0 rather than dividing — a repo whose modules

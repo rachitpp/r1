@@ -28,6 +28,7 @@ import {
   type ModuleLink,
   dependenciesOf,
   dependentsOf,
+  linkLabel,
   moduleQuestion,
   shareOf,
   splitModulePath,
@@ -82,12 +83,8 @@ function LinkList({
             >
               <ModulePath path={l.path} />
             </button>
-            <span
-              title={l.kinds.map((k) => `${k.kind} ×${k.weight}`).join(", ")}
-              className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground"
-            >
-              {l.kinds.map((k) => k.kind[0]).join("")}
-              <span className="ml-1 text-foreground/60">{l.weight}</span>
+            <span className="ml-auto shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
+              {linkLabel(l)}
             </span>
           </li>
         ))}
