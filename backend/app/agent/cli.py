@@ -3,7 +3,9 @@
     python -m app.agent.cli <repo_url_or_id> "question"  [--json] [--tool-cap N]
 
 Streams tool calls as they happen and prints the final answer with validated
-citations. ``--json`` emits one machine-readable object instead, for eval.
+citations. ``--json`` emits one machine-readable object instead, for eval — and
+emits one on failure too, carrying ``ok: false``, so a caller never has to parse
+prose to find out what happened. Exit status mirrors ``ok``.
 
 **Every run also writes its complete trace to ``var/traces/``** (gitignored).
 A model call is a metered resource — on some free tiers, one of twenty per day
@@ -77,6 +79,20 @@ def _summarize(payload: str, limit: int = 160) -> str:
     return json.dumps(data)[:limit]
 
 
+def fail(kind: str, message: str, *, as_json: bool) -> int:
+    """Report a run that never produced an answer, and return the exit code.
+
+    In ``--json`` mode this is a JSON object on **stdout**, not prose on stderr:
+    a caller piping into `jq` gets one parseable document whichever way the run
+    went, and branches on ``ok`` rather than on the exit status alone.
+    """
+    if as_json:
+        print(json.dumps({"ok": False, "error": {"type": kind, "message": message}}))
+    else:
+        print(f"error: {message}", file=sys.stderr)
+    return 1
+
+
 async def run(ref: str, question: str, *, as_json: bool, tool_cap: int) -> int:
     settings = get_settings()
     model_name = settings.AGENT_MODEL or "(unset)"
@@ -85,8 +101,11 @@ async def run(ref: str, question: str, *, as_json: bool, tool_cap: int) -> int:
         async with pool.acquire() as conn:
             snapshot_id = await resolve_snapshot_id(conn, ref)
             if snapshot_id is None:
-                print(f"error: repo {ref!r} not ingested; run the ingest CLI --db")
-                return 1
+                return fail(
+                    "RepoNotIngested",
+                    f"repo {ref!r} not ingested; run the ingest CLI --db",
+                    as_json=as_json,
+                )
 
             if not as_json:
                 print(f"model:    {model_name}  (provider={provider_for(model_name)})")
@@ -124,6 +143,7 @@ async def run(ref: str, question: str, *, as_json: bool, tool_cap: int) -> int:
             trace.append(entry)
 
     payload_obj = {
+        "ok": True,
         "model": model_name,
         "question": question,
         "answer": answer,
@@ -184,8 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         # A missing API key or an un-ingested repo is a setup problem, not a
         # crash. Twenty lines of traceback bury the one line that says what to
         # do about it. Unexpected exceptions still raise with a full trace.
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
+        return fail(type(exc).__name__, str(exc), as_json=args.json)
 
 
 if __name__ == "__main__":

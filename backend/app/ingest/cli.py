@@ -3,12 +3,20 @@ embed and store them in Postgres.
 
     python -m app.ingest.cli <github_url> [--dump PATH] [--sample N]
     python -m app.ingest.cli <github_url> --db
+    python -m app.ingest.cli <github_url> --db --json    # for scripts
 
 Without ``--db`` this is the Phase 1 inspect-only path (no model, no database).
 With ``--db`` it runs :func:`app.ingest.pipeline.run_ingest` — the same function
 the ARQ task calls (Phase 4 Reconciliation 2) — synchronously in the foreground,
 and prints the stats block. The CLI's job is argument parsing and reporting; the
 pipeline itself lives in one place so the queue and the CLI cannot diverge.
+
+**``--json`` makes stdout a contract.** Exactly one JSON object is written
+there, on success *and* on failure, always carrying ``ok``; everything humans
+read — progress lines, warnings, samples — is diverted to stderr. Without that
+split the pipeline's own progress `print`s land in the middle of the document
+and `| jq` fails on output that is otherwise correct. Exit status mirrors
+``ok``, so a shell can branch without parsing anything.
 """
 
 from __future__ import annotations
@@ -22,7 +30,9 @@ import random
 import sys
 import time
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
+from typing import TextIO
 
 from app.config import JEDI_FILE_TIMEOUT_S, get_settings
 from app.db import queries
@@ -92,6 +102,7 @@ async def ingest_to_db(
     build_graph: bool = True,
     strategy: str = "ast",
     owner: str | None = None,
+    log: Callable[[str], None] | None = None,
 ) -> IngestStats:
     """Create (or reuse) the repo row for ``url`` and run the pipeline inline.
 
@@ -104,7 +115,12 @@ async def ingest_to_db(
     same source (SPEC §14.6), so it coexists with — and cannot clobber — the AST
     corpus at the same commit. It also forces ``build_graph`` off: the symbol
     graph is an AST product and would not be a baseline.
+
+    ``log`` receives the pipeline's progress lines. It is a parameter rather
+    than a hardcoded ``print`` so ``--json`` can send them to stderr; a progress
+    line on stdout would sit inside the JSON document.
     """
+    emit = log if log is not None else (lambda m: print(f"  {m}"))
     settings = get_settings()
     name = repo_name_from_url(url)
     pool = await create_pool(settings.DATABASE_URL)
@@ -135,7 +151,7 @@ async def ingest_to_db(
             pool=pool,
             build_graph=build_graph and strategy != "naive",
             strategy=strategy,
-            log=lambda m: print(f"  {m}"),
+            log=emit,
         )
     finally:
         await close_pool(pool)
@@ -264,16 +280,128 @@ def format_stats(result: IngestResult) -> str:
     return "\n".join(lines)
 
 
-def print_sample(chunks: list[Chunk], n: int, seed: int = 1234) -> None:
+def print_sample(
+    chunks: list[Chunk], n: int, seed: int = 1234, stream: TextIO | None = None
+) -> None:
+    out = stream if stream is not None else sys.stdout
     if not chunks:
-        print("(no chunks to sample)")
+        print("(no chunks to sample)", file=out)
         return
     rng = random.Random(seed)
     picked = rng.sample(chunks, min(n, len(chunks)))
     for i, chunk in enumerate(picked, start=1):
         print(f"\n----- sample {i}/{len(picked)} "
-              f"[{chunk.file_path}:{chunk.start_line}-{chunk.end_line}] -----")
-        print(chunk.text)
+              f"[{chunk.file_path}:{chunk.start_line}-{chunk.end_line}] -----",
+              file=out)
+        print(chunk.text, file=out)
+
+
+# --- machine-readable output (--json) --------------------------------------
+
+
+def _selection_payload(sel: SelectionResult) -> dict[str, object]:
+    return {
+        "n_candidates": sel.n_candidates,
+        "n_kept": sel.n_kept,
+        "skipped": {
+            "non_python": sel.skipped_non_python,
+            "ignored_dir": sel.skipped_ignored_dir,
+            "too_large": sel.skipped_too_large,
+            "binary": sel.skipped_binary,
+            "decode_error": sel.skipped_decode_error,
+        },
+    }
+
+
+def _chunk_summary(chunks: list[Chunk]) -> dict[str, object]:
+    by_kind = Counter(c.kind for c in chunks)
+    return {
+        "total": len(chunks),
+        "by_kind": {
+            kind: by_kind[kind] for kind in ("module", "class", "function", "method")
+        },
+        "oversize": sum(1 for c in chunks if c.part == 1 and c.n_parts > 1),
+        "extra_parts": sum(c.n_parts - 1 for c in chunks if c.part == 1),
+    }
+
+
+def stats_payload(result: IngestResult) -> dict[str, object]:
+    """Inspect-only run, as one JSON-serialisable object."""
+    return {
+        "ok": True,
+        "mode": "inspect",
+        "name": result.name,
+        "head_sha": result.head_sha,
+        "default_branch": result.default_branch,
+        "selection": _selection_payload(result.selection),
+        "n_syntax_errors": result.n_syntax_errors,
+        "chunks": _chunk_summary(result.chunks),
+        "elapsed_s": round(result.elapsed_s, 3),
+    }
+
+
+def db_stats_payload(result: IngestStats) -> dict[str, object]:
+    """Stored run, as one JSON-serialisable object.
+
+    Mirrors :func:`format_db_stats` field for field — including the edge
+    outcomes, which are the numbers the §6.1 resolution budget is judged on and
+    the reason a scripted ingest is worth reading at all.
+    """
+    payload: dict[str, object] = {
+        "ok": True,
+        "mode": "db",
+        "name": result.name,
+        "snapshot_id": result.snapshot_id,
+        "head_sha": result.head_sha,
+        "default_branch": result.default_branch,
+        "selection": _selection_payload(result.selection),
+        "n_syntax_errors": result.n_syntax_errors,
+        "chunks": {
+            **_chunk_summary(result.chunks),
+            "heuristic_count": result.heuristic_chunk_count,
+        },
+        "timings_s": {
+            "parse": round(result.parse_elapsed_s, 3),
+            "embed": round(result.embed_elapsed_s, 3),
+            "graph": round(result.graph_elapsed_s, 3),
+            "db_write": round(result.db_elapsed_s, 3),
+        },
+    }
+    st = result.edge_stats
+    if st is not None:
+        payload["graph"] = {
+            "n_symbols": result.n_symbols,
+            "n_symbols_test": result.n_symbols_test,
+            "n_symbols_impl": result.n_symbols - result.n_symbols_test,
+            "n_edges": result.n_edges,
+            "n_chunks_linked": result.n_chunks_linked,
+            "sites": {
+                kind: {
+                    "seen": st.sites.get(kind, 0),
+                    "resolved": st.resolved.get(kind, 0),
+                    "external_dropped": st.out_of_repo.get(kind, 0),
+                    "unmapped": st.unmapped.get(kind, 0),
+                    "failed": st.no_target.get(kind, 0),
+                    "failure_rate": round(st.failure_rate(kind), 4),
+                }
+                for kind in ("imports", "calls", "extends")
+                if st.sites.get(kind, 0)
+            },
+            "failure_rate": round(st.failure_rate(), 4),
+            "external_dropped_rate": round(st.out_of_repo_rate(), 4),
+            "timed_out_files": len(st.timed_out_files),
+        }
+    return payload
+
+
+def _emit_json(payload: dict[str, object]) -> None:
+    """The single JSON document, on stdout, with a trailing newline."""
+    print(json.dumps(payload, indent=2))
+
+
+def _fail_json(kind: str, message: str) -> int:
+    _emit_json({"ok": False, "error": {"type": kind, "message": message}})
+    return 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -308,6 +436,12 @@ def build_parser() -> argparse.ArgumentParser:
         "ingested but belongs to nobody and stays invisible to the web app.",
     )
     parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one JSON object on stdout (success or failure) and send "
+        "every human-readable line to stderr; exit status mirrors `ok`",
+    )
+    parser.add_argument(
         "--dump", metavar="PATH", help="write all chunks as JSONL to PATH"
     )
     parser.add_argument(
@@ -322,6 +456,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     args = build_parser().parse_args(argv)
+    as_json = bool(args.json)
+    # In --json mode stdout belongs to the document; everything else is stderr.
+    human: TextIO = sys.stderr if as_json else sys.stdout
 
     if args.db:
         try:
@@ -331,39 +468,70 @@ def main(argv: list[str] | None = None) -> int:
                     build_graph=not args.no_graph,
                     strategy=args.strategy,
                     owner=args.owner,
+                    log=lambda m: print(f"  {m}", file=human),
                 )
             )
         except SnapshotSuperseded as dedup:
-            # Not an error: this commit is already stored (SPEC §14.4).
-            print(f"already ingested — reusing snapshot {dedup.kept_id}")
+            # Not an error: this commit is already stored (SPEC §14.4). Exit 0
+            # either way — a script re-running an ingest wants "the corpus is
+            # there", and a nonzero status would make that look like a failure.
+            if as_json:
+                _emit_json(
+                    {
+                        "ok": True,
+                        "mode": "db",
+                        "deduplicated": True,
+                        "snapshot_id": str(dedup.kept_id),
+                    }
+                )
+            else:
+                print(f"already ingested — reusing snapshot {dedup.kept_id}")
             return 0
         except IngestError as exc:
+            if as_json:
+                return _fail_json(type(exc).__name__, str(exc))
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        print(format_db_stats(db_result))
+
         if args.dump:
             dump_path = Path(args.dump)
             write_jsonl(db_result.chunks, dump_path)
-            print(f"\nwrote {len(db_result.chunks)} chunks to {dump_path}")
+        if as_json:
+            payload = db_stats_payload(db_result)
+            if args.dump:
+                payload["dump_path"] = str(Path(args.dump))
+            _emit_json(payload)
+        else:
+            print(format_db_stats(db_result))
+            if args.dump:
+                print(f"\nwrote {len(db_result.chunks)} chunks to {Path(args.dump)}")
         if args.sample:
-            print_sample(db_result.chunks, args.sample)
+            print_sample(db_result.chunks, args.sample, stream=human)
         return 0
 
     try:
         result = ingest(args.github_url, strategy=args.strategy)
     except IngestError as exc:
+        if as_json:
+            return _fail_json(type(exc).__name__, str(exc))
         print(f"error: {exc}", file=sys.stderr)
         return 1
-
-    print(format_stats(result))
 
     if args.dump:
         dump_path = Path(args.dump)
         write_jsonl(result.chunks, dump_path)
-        print(f"\nwrote {len(result.chunks)} chunks to {dump_path}")
+    if as_json:
+        payload = stats_payload(result)
+        if args.dump:
+            payload["dump_path"] = str(Path(args.dump))
+        _emit_json(payload)
+    else:
+        print(format_stats(result))
+        if args.dump:
+            print(f"\nwrote {len(result.chunks)} chunks to {Path(args.dump)}")
 
     if args.sample:
-        print_sample(result.chunks, args.sample)
+        print_sample(result.chunks, args.sample, stream=human)
 
     return 0
 
