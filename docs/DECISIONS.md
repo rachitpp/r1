@@ -2585,3 +2585,80 @@ because tests mostly write `pytest.raises(httpx.ReadTimeout)` and the edge
 resolves through `httpx/__init__.py`. That is real linkage, honestly partial —
 these numbers are graph reachability, not coverage in the `coverage.py` sense,
 and the panel should never be read as if they were.
+
+---
+
+## 2026-07-31 — 3.1 built: the overview is one model call, not an agent run
+
+FEATURE-IDEAS' top pick, and the first feature that spends a model call outside
+chat. SPEC §19 has the contract; this is why it is shaped the way it is.
+
+**Deterministic gather, single synthesis — not the §7.2 loop.** The loop is the
+right tool for a question nobody anticipated. An overview asks the same four
+questions of every repo, and all four have exact answers in the symbol graph. So
+SQL assembles the facts and one model call writes the prose. That buys three
+things: one request per snapshot instead of eight, an input that is a pure
+function of an immutable snapshot, and coverage of the *whole ranked graph*
+rather than whatever an eight-call loop's first search happened to surface.
+
+The cost point is not theoretical. `app/agent/model.py` records the AI Studio
+ceiling at 20 requests/day/model. A loop here would make a handful of repo pages
+a whole day.
+
+**Lazy, and claimed by the primary key.** Generation runs on first view rather
+than at the end of ingest — otherwise every ingest pays for an overview nobody
+may open, and the seven snapshots already in the database would never get one.
+Two browsers opening the same repo both attempt `INSERT … ON CONFLICT DO
+NOTHING`; exactly one wins and only that one enqueues. No lock, no lease: on a
+20-per-day budget, "exactly once" has to be a constraint rather than a
+convention. Same argument as §15.3.
+
+**Three defects found by running it, not by reading it.** All three were prompt
+or data-shape problems that every test passed.
+
+1. *2 of ~15 citations validated.* The model wrote
+   `[httpx/_models.py:382-512,515-1076,139-379]` — the comma-separated form the
+   chat prompt explicitly warns against. My overview prompt stated the same rule
+   in its own prose and omitted the worked CORRECT/INCORRECT contrast. Sharing
+   §7.5's `CITATIONS` block verbatim fixed it: **21 of 25, zero malformed**. The
+   rule was present both times. The demonstration is what does the work — and
+   one contract now lives in one place.
+2. *Invented ranges.* Entry points were the one fact group with no line range,
+   and the model did not decline to cite them — it wrote
+   `[httpx/_transports/asgi.py:1-1]`. Nothing fabricated reached a reader
+   (validation dropped them) but the claims lost their citations. Then the same
+   thing happened one group over: with no range on modules it wrote the literal
+   `[httpx/_models.py:1-?]`, which also *rendered*. **A fact you want cited has
+   to arrive with something to cite.** Both groups now ship ranges; both are
+   pinned by tests.
+3. *The public-API signal was silent on the package style that needs it most.*
+   Querying symbols *defined* in `__init__.py` returned **zero** for httpx,
+   whose `__init__.py` is nothing but re-exports. Unioning in the `imports`
+   edges out of `__init__.py` was the fix. Measured across the whole indexed
+   corpus rather than assumed: markupsafe 25, itsdangerous 17, blinker 3, httpx
+   1. httpx stays low because Jedi resolved only 2 of its re-export edges —
+   a graph limitation, now documented rather than mistaken for a bug.
+
+**What the prompt is forbidden to write, and why it is a rule rather than a
+hope.** No installation, dependencies, configuration, or how-to-run. `*.py` is
+all that is indexed, so there is no README, manifest, or CI config in the
+corpus; anything on those topics would be the model recalling how projects like
+this one usually work. That is exactly the failure this product exists to
+avoid, and leaving it to chance in a section literally titled "how to run it"
+would have been the most quotable possible own goal.
+
+**Eval not run, and it does not apply.** Nothing here touches chunking,
+retrieval, the embedder, or the agent's tool set — the loop is not involved at
+all. The retrieval path is byte-identical.
+
+**A note on cost discipline while building this.** Three live generations were
+spent: the first exposed the citation-format defect, the second the placeholder
+ranges, the third is the one stored. That is three of a twenty-a-day budget to
+build the feature, which is the right order of magnitude to state out loud given
+the whole design is about not spending them.
+
+**Known trade-off, not fixed:** a dense run of citations renders as a wall of
+near-identical chips (`httpx/_models.py:382-512` ×4 in one sentence). Honest and
+each is clickable, so it ships — but if it grates, the fix is in the prompt
+(cite the most important range per claim, not every range) rather than in the
+renderer.

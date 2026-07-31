@@ -533,6 +533,8 @@ GET  /repos/{id}/files?path=src/auth.py[&start_line=&end_line=]
   304 when If-None-Match matches the ETag
   422 end_line < start_line
   (powers the frontend code viewer and citation clicks)
+GET  /repos/{id}/overview[?retry=true]              OverviewOut  (§19.4)
+  200 ready | 202 generating | 404 unknown/unowned
 GET  /repos/{id}/architecture[?include_tests=true]   ArchitectureOut | 404  (§18.2)
 GET  /repos/{id}/coverage?path=src/auth.py          CoverageOut | 404      (§18.3)
   422 missing `path`
@@ -711,6 +713,11 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `ARCH_MAX_NODES` | 200 | §18.1 |
 | `ARCH_MAX_EDGES` | 1_000 | §18.1 |
 | `COVERAGE_MAX_LINKS` | 500 | §18.2 |
+| `OVERVIEW_MAX_MODULES` | 15 | §19.2 |
+| `OVERVIEW_MAX_ENTRY_POINTS` | 8 | §19.2 |
+| `OVERVIEW_MAX_API_SYMBOLS` | 25 | §19.2 |
+| `OVERVIEW_MAX_KEY_SYMBOLS` | 15 | §19.2 |
+| `ENTRY_POINT_FILENAMES` | `{__main__.py, cli.py, main.py, app.py, server.py, manage.py}` | §19.2 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
 | `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
@@ -1484,3 +1491,125 @@ CoverageOut {
 default, caps reaching SQL rather than being applied after the fact, grouping of
 a multi-test symbol, the empty-not-404 rule, cross-tenant 404, anonymous 401,
 and that neither response contains a code body.
+
+---
+
+## §19 Generated repo overview
+
+The "start here" page a newcomer sees the moment a repo is indexed: what the
+project does, how it is laid out, where execution starts, and what to read
+first — every claim carrying a `file:line` citation. It answers the question a
+blank chat box does not: **what do I even ask?**
+
+### 19.1 Gather deterministically, synthesise once
+
+This does **not** run the §7.2 agent loop. The loop is right for a question
+nobody anticipated; an overview is the same four questions for every repo, and
+all four have exact answers in the symbol graph. So the facts are assembled by
+SQL and handed to a **single** model call. Three consequences, each a reason
+rather than a side effect:
+
+* **Cost.** One request per snapshot, not the eight a loop would spend. The
+  tuning provider's free tier is 20 requests/day/model (`app/agent/model.py`),
+  so a loop here would make a handful of repo pages a whole day's budget.
+* **Reproducibility.** The input is a pure function of an immutable snapshot
+  (§14.3); two runs differ only by model sampling, and the stored row means
+  there is normally only ever one run.
+* **Coverage.** A loop capped at eight calls sees whatever its first search
+  surfaced. The rollup sees the whole graph, ranked, every time.
+
+### 19.2 The facts (`overview.gather_facts`)
+
+| Group | Source | Why |
+|---|---|---|
+| Repo identity, file count, top-level dirs | `repo_sources`, `files` | Orientation |
+| Modules ranked by fan-in | §18.2 `module_nodes` | What the repo leans on |
+| Entry-point candidates | `entry_point_candidates` | Where execution starts |
+| Public API surface | `public_api_symbols` | What the package exports |
+| Most-referenced definitions | `most_referenced_symbols` | What to read first |
+
+**Entry points use two signals**, unioned, because neither is reliable alone: a
+conventional filename (`ENTRY_POINT_FILENAMES`), and *shape* — nothing in the
+repo reaches it, yet it reaches plenty, which is the signature of the top of a
+call tree and catches an entry point named something the list has never heard
+of. Named matches rank first.
+
+**Public API is defined OR re-exported.** Small packages define names in
+`__init__.py`; every non-trivial one re-exports them (`from ._api import get`),
+which lives in the graph as an `imports` edge out of `__init__.py`. A
+definitions-only query returned **zero** symbols on httpx. Measured across the
+indexed corpus after unioning both: markupsafe 25, itsdangerous 17, blinker 3,
+httpx 1 — httpx stays low because Jedi resolved only 2 of its re-export edges,
+which is a graph limitation, not a query one.
+
+### 19.3 The prompt (`prompts.OVERVIEW_SYSTEM`)
+
+Four fixed `##` sections. The rules that matter, in the order breaking them
+hurts:
+
+1. **Use only the facts given.** Inference from them is wanted; new facts are
+   not.
+2. **No installation, dependencies, configuration, or how to run it.**
+   `filters.py` keeps `*.py` only, so there is no README, manifest, or CI config
+   in the corpus — anything written on those topics is recalled from other
+   projects, which is precisely the failure this product exists to avoid. The
+   prompt forbids it rather than leaving it to chance.
+3. **Say what cannot be told.** "The graph does not show a single entry point"
+   is a useful sentence; a confident guess is not.
+
+**Every fact group ships a citable range.** Learned twice, live: entry points
+had no range and the model invented `[…asgi.py:1-1]`; modules had none and it
+wrote the literal `[…_models.py:1-?]`. Neither fabrication reached a reader —
+both failed validation — but the claim lost its citation either way. *A fact you
+want cited has to arrive with something to cite.*
+
+**The citation contract is stated once**, by sharing §7.5's `CITATIONS` block
+verbatim. An earlier version restated the rule in its own prose without the
+worked CORRECT/INCORRECT contrast, and the first live run wrote
+`[httpx/_models.py:382-512,515-1076,139-379]` for nearly every claim: **2 of ~15
+citations survived**. After sharing the block: **21 of 25**, zero malformed. The
+rule was present both times; the demonstration is what does the work.
+
+### 19.4 Lifecycle — `GET /repos/{id}/overview`
+
+Generated **lazily on first view**, not at the end of ingest: generation would
+otherwise sit on the critical path of every ingest including the ones nobody
+opens, and the lazy path gives an overview to snapshots ingested before the
+feature existed.
+
+```
+200 OverviewOut {status: "ready",      body, citations, model}
+202 OverviewOut {status: "generating", body: null}
+200 OverviewOut {status: "failed",     error}    ?retry=true clears and re-runs
+404 unknown or unowned repo (§13.5, checked before anything is claimed)
+```
+
+The model call is on the **queue**, never in the handler — a request that blocks
+for tens of seconds holds a connection for all of them. The endpoint claims the
+row and returns 202; `worker.generate_overview` fills it in.
+
+**Concurrency is settled by the primary key**, not a lock. `claim_overview` is
+an `INSERT … ON CONFLICT DO NOTHING`; two browsers opening the same repo both
+attempt it, exactly one wins, and only that one enqueues. On a 20-per-day budget
+that difference is the feature. Same reasoning as §15.3: the database is already
+the source of truth and cannot drift from itself.
+
+A `failed` row is cleared by `?retry=true` and never automatically — an
+automatic retry on a model failure is a loop that drains the day's budget. It
+must also be *clearable*, or one failure blocks that snapshot forever, which is
+the bug `010` had to fix for snapshots.
+
+### 19.5 Rendering
+
+Sections are split client-side on `##` (`lib/overview.ts`) so each gets an "ask
+more" link built from its own heading — which is what turns a document into a
+set of doors, with no extra model output. Citations render as the same chips a
+chat answer uses; the repo page has no viewer, so a chip opens the chat with the
+file already in hand.
+
+### 19.6 Verification
+
+`tests/api/test_overview.py` — claim-once under concurrent first views, no
+re-enqueue while generating or when ready, failure surfaced without auto-retry,
+`?retry=true` clearing only `failed` rows, tenancy 404 *before* any claim is
+spent, and the two prompt regressions above pinned as tests.

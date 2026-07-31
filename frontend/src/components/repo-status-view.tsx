@@ -29,6 +29,7 @@ import Link from "next/link";
 import { Fragment, useState } from "react";
 
 import { ArchitecturePanel } from "@/components/architecture-panel";
+import { OverviewPanel } from "@/components/overview-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -368,6 +369,11 @@ export function RepoStatusView({ repoId }: { repoId: string }) {
           </div>
         </section>
       )}
+
+      {/* The generated guide (§19). First thing under the CTA, because it is
+          the answer to "what do I even ask?" — which is the question a blank
+          chat box does not answer. */}
+      {isReady && <OverviewPanel repoId={repoId} />}
 
       {/* The module map (§18.2). Below the CTA rather than above it: chatting is
           still the primary action, and this is orientation for a reader who does

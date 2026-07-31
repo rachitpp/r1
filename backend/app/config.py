@@ -61,6 +61,18 @@ PROGRESS_EVERY_N: int = 25
 ARCH_MAX_NODES: int = 200
 ARCH_MAX_EDGES: int = 1_000
 COVERAGE_MAX_LINKS: int = 500
+# §19 overview. These bound the *prompt*, not a response: everything gathered
+# here is pasted into one model context, so each cap is tokens somebody pays
+# for. Sized to brief a reader, not to be exhaustive.
+OVERVIEW_MAX_MODULES: int = 15
+OVERVIEW_MAX_ENTRY_POINTS: int = 8
+OVERVIEW_MAX_API_SYMBOLS: int = 25
+OVERVIEW_MAX_KEY_SYMBOLS: int = 15
+# Conventional names for "execution starts here" (§19.2). A convention is
+# evidence, not proof — the shape signal beside it catches the rest.
+ENTRY_POINT_FILENAMES: frozenset[str] = frozenset(
+    {"__main__.py", "cli.py", "main.py", "app.py", "server.py", "manage.py"}
+)
 
 # ---------------------------------------------------------------------------
 # Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.

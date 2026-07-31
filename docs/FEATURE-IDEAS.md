@@ -12,8 +12,8 @@
 > SSE stream, immutable commit-pinned snapshots, and the provider-configurable
 > model. Read `SPEC.md` for the contracts those refer to.
 
-> **Status, 2026-07-31.** Six items are **BUILT** — 2.2, 2.4, 3.5, 4.5, 6.2 and
-> 6.6 — and are marked as such below, each with what shipped *and* what it looks
+> **Status, 2026-07-31.** Seven items are **BUILT** — 2.2, 2.4, **3.1**, 3.5, 4.5,
+> 6.2 and 6.6 — and are marked as such below, each with what shipped *and* what it looks
 > like to a user. (2.2 and 2.4 landed as endpoints first and were briefly "built"
 > with no consumer; both now have a surface.) They were taken together because none of
 > them touches ingest or retrieval, so none could disturb the eval-equality
@@ -281,7 +281,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 > unfamiliar codebase in minutes"), because it removes the "what do I even ask?"
 > problem.
 
-### 3.1 Auto-generated repo overview on ingest — **the top pick**
+### 3.1 Auto-generated repo overview — **BUILT 2026-07-31** *(was the top pick)*
 
 - **What it is.** The moment indexing finishes, synthesize a **"Start here"**
   guide: what the project does, its architecture, entry points, key modules, how
@@ -304,10 +304,25 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
      enhanced) — above the "Ask" CTA, so the overview *is* the first thing seen.
   4. Each section links into chat with a pre-filled question (`?q=`), so the
      overview becomes launch-points for deeper questions.
-- **Effort.** **M.** Best value-to-effort ratio in this document.
-- **Money cost.** $0 (one agent run per repo, cached forever; Mistral free tier).
-- **Risks.** Overview quality depends on the prompt set — treat it like the
-  system prompt (`app/agent/prompts.py`), iterate against a few real repos.
+- **Effort.** **M.** Best value-to-effort ratio in this document — and it was,
+  though most of the effort went where the risk note below predicted.
+- **Money cost.** $0, and the mechanism matters: **one model call per snapshot**,
+  not one agent run. The sketch above assumed the 8-call loop; using it would
+  have made a handful of repo pages a whole day of the 20-req/day tier. The
+  facts are gathered by SQL (reusing 2.2's rollup) and synthesised once.
+- **Risks.** Exactly right, and this was the whole cost: quality is a prompt
+  problem. Three live runs to get there — the first wrote comma-separated
+  citation lists (2 of 15 validated), the second invented `:1-?` placeholders
+  for facts that shipped without line ranges, the third landed at 21 of 25 with
+  none malformed. See DECISIONS 2026-07-31.
+- **Shipped as.** `GET /repos/{id}/overview`, generated lazily on first view and
+  claimed by a primary key so concurrent viewers cannot both spend a request.
+  Four fixed sections rendered above the Architecture panel, each with an "ask
+  more" link through `?q=`.
+- **Correction to the sketch.** Step 1 lists *"how to run"* from the README.
+  There is no README — `filters.py` indexes `*.py` only. The prompt now
+  explicitly forbids that section rather than letting the model recall how
+  similar projects usually work.
 
 ### 3.2 Guided tours
 
@@ -553,12 +568,12 @@ noted.
 
 | Idea | Value | Effort | Reuses what exists? | Notes |
 |---|---|---|---|---|
-| 3.1 Auto-overview | ★★★★★ | M | Almost entirely | **Best ratio; start here** |
+| 3.1 Auto-overview | ★★★★★ | M | Almost entirely | **BUILT** — one model call, not a loop |
 | 2.1 Git-history tool | ★★★★ | M | Snapshots are commit-pinned | Answers a question nothing else does |
 | 4.1 Private repos | ★★★★ | M | OAuth token already the credential | Security-first |
-| 3.5 Explain-this quick action | ★★★ | S | Chat pipeline + viewer | Cheap delight |
-| 2.4 Test↔code linkage | ★★★ | S–M | `is_test` + edges | Cheap, high signal |
-| 2.2 Architecture overview | ★★★★ | M | Symbol graph rollup | Feeds 3.1 and 3.3 |
+| 3.5 Explain-this quick action | ★★★ | S | Chat pipeline + viewer | **BUILT** — and `?q=` fed 3.1 |
+| 2.4 Test↔code linkage | ★★★ | S–M | `is_test` + edges | **BUILT** — cheap, high signal |
+| 2.2 Architecture overview | ★★★★ | M | Symbol graph rollup | **BUILT** — and it did feed 3.1 |
 | 4.4 Multi-turn memory | ★★★ | M | SSE + agent | Feels like a colleague |
 | 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | Great for orientation |
 | 5.3 Incremental re-index | ★★★ | L | Snapshots | Freshness; saves compute |

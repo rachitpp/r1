@@ -188,6 +188,10 @@ class FakeConn:
                 "n_lines": len(FILE_CONTENT.splitlines()),
             }
         }
+        # §19. Keyed by snapshot exactly as the real primary key is, so the
+        # "claim exactly once" assertion is testing the same rule the database
+        # enforces rather than a fixture that happens to agree with it.
+        self.overviews: dict[uuid.UUID, dict[str, Any]] = {}
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
 
     # --- asyncpg surface ---------------------------------------------------
@@ -265,6 +269,23 @@ class FakeConn:
             return self.users[new_id]
         if "FROM files WHERE snapshot_id = $1 AND path = $2" in sql:
             return self.files.get(str(args[1]))
+        # --- §19 overview -------------------------------------------------
+        if "INSERT INTO snapshot_overviews" in sql:
+            snapshot_id = args[0]
+            if snapshot_id in self.overviews:
+                return None  # ON CONFLICT DO NOTHING — somebody already holds it
+            self.overviews[snapshot_id] = {
+                "snapshot_id": snapshot_id,
+                "status": "generating",
+                "body": None,
+                "citations": "[]",
+                "model": None,
+                "error": None,
+                "created_at": "2026-07-31T00:00:00+00:00",
+            }
+            return {"snapshot_id": snapshot_id}
+        if "FROM snapshot_overviews WHERE snapshot_id" in sql:
+            return self.overviews.get(args[0])
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
@@ -323,6 +344,24 @@ class FakeConn:
         if "INSERT INTO user_repos" in sql:
             self.user_repos.add((args[0], args[1]))
             return "INSERT 0 1"
+        if "DELETE FROM snapshot_overviews" in sql:
+            row = self.overviews.get(args[0])
+            if row is not None and row["status"] == "failed":
+                del self.overviews[args[0]]
+                return "DELETE 1"
+            return "DELETE 0"
+        if "UPDATE snapshot_overviews" in sql and "status = 'ready'" in sql:
+            row = self.overviews.get(args[0])
+            if row is not None:
+                row.update(
+                    status="ready", body=args[1], citations=args[2], model=args[3]
+                )
+            return "UPDATE 1"
+        if "UPDATE snapshot_overviews" in sql and "status = 'failed'" in sql:
+            row = self.overviews.get(args[0])
+            if row is not None:
+                row.update(status="failed", error=args[1])
+            return "UPDATE 1"
         if "UPDATE repo_snapshots" in sql and "status = $2" in sql:
             row = self.repos.get(args[0])
             if row is not None:

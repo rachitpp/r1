@@ -152,6 +152,46 @@ async def ingest_repo(ctx: dict[str, Any], snapshot_id: str) -> str:
     return summary
 
 
+async def generate_overview(ctx: dict[str, Any], snapshot_id: str) -> str:
+    """Write a snapshot's §19 overview. One model call; owns the row's status.
+
+    On the queue rather than in the request that triggered it, for the same
+    reason ingestion is (CLAUDE.md rule 1): a model call is seconds to tens of
+    seconds, and an HTTP handler that blocks for it holds a connection the whole
+    time. The endpoint claims the row and returns 202; this does the work.
+
+    The claim already happened — `queries.claim_overview` is what decided to
+    enqueue — so this job never races another. A failure is recorded on the row
+    and the row is left `failed`, which the endpoint clears on a retry rather
+    than blocking on forever (the `010` lesson, one table over).
+    """
+    rid = UUID(str(snapshot_id))
+    pool = ctx["pool"]
+    settings = get_settings()
+    model_name = settings.AGENT_MODEL or "(unset)"
+    try:
+        # Imported here, not at module scope: this pulls the provider package
+        # and, through it, transformers — and the worker should pay that only
+        # when it actually has an overview to write.
+        from app.agent.model import build_chat_model
+        from app.agent.overview import run_overview_job
+
+        model = build_chat_model()
+        async with pool.acquire() as conn:
+            await run_overview_job(model, conn, rid, model_name)
+    except asyncio.CancelledError:
+        logger.warning("overview cancelled for %s", snapshot_id)
+        raise
+    except Exception as exc:  # noqa: BLE001 — every failure belongs on the row
+        logger.exception("overview failed for %s", snapshot_id)
+        detail = safe_error_text(exc, include_type=True)
+        async with pool.acquire() as conn:
+            await queries.fail_overview(conn, rid, detail)
+        return f"failed: {detail}"
+    logger.info("[%s] overview written", snapshot_id)
+    return "ready"
+
+
 async def on_startup(ctx: dict[str, Any]) -> None:
     """Open the pool, warm the embedder, and sweep zombies (SPEC §4, §10)."""
     # arq's CLI configures the `arq` logger and leaves the root logger alone, so
@@ -204,7 +244,7 @@ async def on_shutdown(ctx: dict[str, Any]) -> None:
 class WorkerSettings:
     """ARQ worker configuration. ``arq`` reads these class attributes."""
 
-    functions = [ping, ingest_repo]
+    functions = [ping, ingest_repo, generate_overview]
     on_startup = on_startup
     on_shutdown = on_shutdown
     redis_settings = RedisSettings.from_dsn(get_settings().REDIS_URL)

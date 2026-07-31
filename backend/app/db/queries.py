@@ -13,7 +13,7 @@ from uuid import UUID
 
 import asyncpg
 
-from app.config import get_settings
+from app.config import ENTRY_POINT_FILENAMES, get_settings
 
 # Column order for chunk inserts — the embedding is last. ``id`` (identity),
 # ``tsv`` (generated), ``part``/``n_parts`` defaults are handled by the table.
@@ -1046,6 +1046,245 @@ async def tests_covering_file(
             limit,
         )
     )
+
+
+async def entry_point_candidates(
+    conn: asyncpg.Connection, snapshot_id: UUID, limit: int
+) -> list[asyncpg.Record]:
+    """Modules that look like where execution starts (SPEC §19.2).
+
+    Two signals, unioned, because neither alone is reliable:
+
+    * **Name.** ``__main__.py``, ``cli.py``, ``main.py``, ``app.py``,
+      ``server.py`` — convention, and conventions are evidence.
+    * **Shape.** Nothing inside the repo imports or calls it, yet it reaches
+      out to plenty. That is the signature of a top of a call tree, and it is
+      what catches an entry point named something this list has never heard of.
+
+    Ranked with named files first: a file *called* ``cli.py`` that also has zero
+    fan-in is the strongest possible candidate, and a name match with callers is
+    still worth more than an unnamed leaf.
+    """
+    return list(
+        await conn.fetch(
+            """
+            WITH scoped AS (
+                SELECT id, file_path FROM symbols
+                 WHERE snapshot_id = $1 AND NOT is_test
+            ),
+            fan AS (
+                SELECT s.file_path AS path,
+                       count(*) FILTER (
+                           WHERE EXISTS (
+                               SELECT 1 FROM edges e JOIN scoped f ON f.id = e.from_symbol
+                                WHERE e.to_symbol = s.id AND f.file_path <> s.file_path
+                           )
+                       ) AS fan_in,
+                       count(*) FILTER (
+                           WHERE EXISTS (
+                               SELECT 1 FROM edges e JOIN scoped t ON t.id = e.to_symbol
+                                WHERE e.from_symbol = s.id AND t.file_path <> s.file_path
+                           )
+                       ) AS fan_out
+                  FROM scoped s
+                 GROUP BY s.file_path
+            )
+            SELECT fan.path,
+                   fan.fan_in,
+                   fan.fan_out,
+                   (split_part(fan.path, '/', array_length(string_to_array(fan.path, '/'), 1))
+                      = ANY($3::text[])) AS named,
+                   -- The module symbol's real span, so the prompt can offer a
+                   -- citable range. Without one the model invented `:1-1` for
+                   -- every entry point and none of them validated.
+                   COALESCE(m.start_line, 1) AS start_line,
+                   COALESCE(m.end_line, 1) AS end_line
+              FROM fan
+              LEFT JOIN symbols m
+                     ON m.snapshot_id = $1
+                    AND m.file_path = fan.path
+                    AND m.kind = 'module'
+             WHERE split_part(fan.path, '/', array_length(string_to_array(fan.path, '/'), 1))
+                     = ANY($3::text[])
+                OR (fan.fan_in = 0 AND fan.fan_out > 0)
+             ORDER BY named DESC, fan.fan_out DESC, fan.path
+             LIMIT $2
+            """,
+            snapshot_id,
+            limit,
+            list(ENTRY_POINT_FILENAMES),
+        )
+    )
+
+
+async def public_api_symbols(
+    conn: asyncpg.Connection, snapshot_id: UUID, limit: int
+) -> list[asyncpg.Record]:
+    """The package's declared public surface, however it declares it.
+
+    What a package puts at its top level is the closest thing a Python repo has
+    to a public API, and a far better starting point for a newcomer than its
+    largest file. But packages declare it two ways, and an early version of this
+    query only saw one of them:
+
+    * **Defined** in ``__init__.py`` — small packages do this.
+    * **Re-exported** by it (``from ._api import get, post``) — which is what
+      every non-trivial package does, and which lives in the graph as an
+      ``imports`` edge *out of* ``__init__.py``.
+
+    Measured on httpx, the definitions-only version returned **zero symbols**:
+    its ``__init__.py`` is nothing but re-exports. A signal that goes silent on
+    the package style it matters most for is not a signal. Both are unioned
+    here, and the re-export side reports where the symbol actually lives, not
+    the ``__init__`` line it was mentioned on — that is the file a reader needs
+    to open.
+    """
+    return list(
+        await conn.fetch(
+            """
+            SELECT DISTINCT ON (qualname)
+                   name, qualname, kind, file_path, start_line, end_line
+              FROM (
+                    SELECT name, qualname, kind, file_path, start_line, end_line
+                      FROM symbols
+                     WHERE snapshot_id = $1
+                       AND NOT is_test
+                       AND file_path LIKE '%__init__.py'
+                       AND kind <> 'module'
+                    UNION
+                    SELECT t.name, t.qualname, t.kind, t.file_path,
+                           t.start_line, t.end_line
+                      FROM edges e
+                      JOIN symbols f ON f.id = e.from_symbol
+                      JOIN symbols t ON t.id = e.to_symbol
+                     WHERE e.snapshot_id = $1
+                       AND e.kind = 'imports'
+                       AND f.file_path LIKE '%__init__.py'
+                       AND NOT t.is_test
+                       AND t.kind <> 'module'
+              ) surface
+             ORDER BY qualname, file_path, start_line
+             LIMIT $2
+            """,
+            snapshot_id,
+            limit,
+        )
+    )
+
+
+async def most_referenced_symbols(
+    conn: asyncpg.Connection, snapshot_id: UUID, limit: int
+) -> list[asyncpg.Record]:
+    """The symbols the rest of the implementation leans on hardest (§19.2).
+
+    Module fan-in says *which file* matters; this says which definition inside
+    it does. Self-references are excluded on the same reasoning as the §18.2
+    rollup — a class using its own methods says nothing about importance.
+    """
+    return list(
+        await conn.fetch(
+            """
+            SELECT s.name, s.qualname, s.kind, s.file_path,
+                   s.start_line, s.end_line, count(*) AS refs
+              FROM edges e
+              JOIN symbols s ON s.id = e.to_symbol
+              JOIN symbols f ON f.id = e.from_symbol
+             WHERE e.snapshot_id = $1
+               AND NOT s.is_test AND NOT f.is_test
+               AND f.file_path <> s.file_path
+             GROUP BY s.id, s.name, s.qualname, s.kind, s.file_path,
+                      s.start_line, s.end_line
+             ORDER BY refs DESC, s.file_path, s.start_line
+             LIMIT $2
+            """,
+            snapshot_id,
+            limit,
+        )
+    )
+
+
+# --- §19 overview storage --------------------------------------------------
+
+
+async def claim_overview(conn: asyncpg.Connection, snapshot_id: UUID) -> bool:
+    """Try to become the generator for this snapshot's overview (§19.4).
+
+    ``True`` means this caller inserted the row and owns the job. ``False``
+    means somebody already holds it — generating, ready, or failed — and the
+    caller should read the row rather than start a second model call.
+
+    The primary key does the arbitration, so two simultaneous first views
+    cannot both spend a request from a 20-per-day budget. No lock, no lease:
+    the constraint is the mutual exclusion.
+    """
+    row = await conn.fetchrow(
+        """
+        INSERT INTO snapshot_overviews (snapshot_id, status)
+        VALUES ($1, 'generating')
+        ON CONFLICT (snapshot_id) DO NOTHING
+        RETURNING snapshot_id
+        """,
+        snapshot_id,
+    )
+    return row is not None
+
+
+async def get_overview(
+    conn: asyncpg.Connection, snapshot_id: UUID
+) -> asyncpg.Record | None:
+    return await conn.fetchrow(
+        """SELECT snapshot_id, status, body, citations, model, error, created_at
+             FROM snapshot_overviews WHERE snapshot_id = $1""",
+        snapshot_id,
+    )
+
+
+async def finish_overview(
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    *,
+    body: str,
+    citations: str,
+    model: str,
+) -> None:
+    """Store a completed overview. ``citations`` is pre-serialised JSON."""
+    await conn.execute(
+        """
+        UPDATE snapshot_overviews
+           SET status = 'ready', body = $2, citations = $3::jsonb,
+               model = $4, error = NULL
+         WHERE snapshot_id = $1
+        """,
+        snapshot_id,
+        body,
+        citations,
+        model,
+    )
+
+
+async def fail_overview(
+    conn: asyncpg.Connection, snapshot_id: UUID, error: str
+) -> None:
+    """Record a failed generation. Truncated — this reaches a UI."""
+    await conn.execute(
+        "UPDATE snapshot_overviews SET status = 'failed', error = $2 WHERE snapshot_id = $1",
+        snapshot_id,
+        error[:2000],
+    )
+
+
+async def clear_failed_overview(conn: asyncpg.Connection, snapshot_id: UUID) -> bool:
+    """Delete a ``failed`` row so a retry can claim it; ``True`` if one went.
+
+    Deleting rather than resetting, so `claim_overview` stays the single place
+    that decides who generates. A `failed` row that lingered would block every
+    future attempt — the shape of the bug `010` had to fix for snapshots.
+    """
+    result = await conn.execute(
+        "DELETE FROM snapshot_overviews WHERE snapshot_id = $1 AND status = 'failed'",
+        snapshot_id,
+    )
+    return str(result).split()[-1] != "0"
 
 
 async def implementation_covered_by_file(

@@ -8,6 +8,7 @@ SSE event payloads are *not* here — they are transport-level dicts built in
 from __future__ import annotations
 
 import datetime as dt
+import json
 from collections.abc import Sequence
 from uuid import UUID
 
@@ -238,6 +239,53 @@ class CoverageOut(BaseModel):
                 for r in covers_rows
             ],
             truncated=truncated,
+        )
+
+
+class Citation(BaseModel):
+    """A validated `[path:start-end]` reference (§7.5).
+
+    Same shape the §9 `citations` event carries. It gets a model here because
+    the overview stores citations rather than streaming them, and a stored
+    contract deserves to be typed.
+    """
+
+    file_path: str
+    start_line: int
+    end_line: int
+
+
+class OverviewOut(BaseModel):
+    """``GET /repos/{id}/overview`` (SPEC §19.4).
+
+    ``status`` is the whole contract: ``generating`` means come back (the
+    response is 202 and carries no body yet), ``ready`` means the markdown is
+    here for good, ``failed`` means the error is worth showing and a retry is
+    one more request away.
+
+    ``model`` is exposed because the overview is model-written prose, and a
+    reader comparing two repos deserves to know whether the same writer produced
+    both.
+    """
+
+    status: str
+    body: str | None = None
+    citations: list[Citation] = []
+    model: str | None = None
+    error: str | None = None
+
+    @classmethod
+    def from_row(cls, row: asyncpg.Record) -> OverviewOut:
+        raw = row["citations"]
+        # asyncpg hands back JSONB as a string unless a codec is registered;
+        # accept both so this does not depend on pool configuration.
+        items = json.loads(raw) if isinstance(raw, str) else (raw or [])
+        return cls(
+            status=row["status"],
+            body=row["body"],
+            citations=[Citation(**c) for c in items],
+            model=row["model"],
+            error=row["error"],
         )
 
 

@@ -195,6 +195,32 @@ export interface CoverageOut {
   truncated: boolean;
 }
 
+/**
+ * `GET /repos/{id}/overview` (SPEC §19.4).
+ *
+ * `generating` arrives with HTTP 202 and no body — the server has claimed the
+ * row and queued one model call. Poll; do not re-request in a way that could
+ * enqueue again (it cannot, the primary key prevents it, but the intent
+ * matters). `failed` carries an error and is retryable exactly once per
+ * explicit request.
+ */
+export interface OverviewOut {
+  status: "generating" | "ready" | "failed";
+  body: string | null;
+  citations: { file_path: string; start_line: number; end_line: number }[];
+  model: string | null;
+  error: string | null;
+}
+
+export function getOverview(
+  repoId: string,
+  retry = false,
+): Promise<OverviewOut> {
+  return request<OverviewOut>(
+    `/repos/${repoId}/overview${retry ? "?retry=true" : ""}`,
+  );
+}
+
 export function getArchitecture(
   repoId: string,
   includeTests = false,
