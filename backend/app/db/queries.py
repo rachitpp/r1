@@ -892,3 +892,190 @@ async def implementation_callers(
     return [(str(r["file_path"]), int(r["line"]), str(r["name"])) for r in rows], int(
         total
     )
+
+
+# --- §18 graph views: module rollup and test linkage -----------------------
+#
+# Read-only aggregations over the *existing* symbol graph. No new extraction,
+# no ingest change, and — deliberately — no new agent tool: the answers here are
+# deterministic SQL, so routing them through the model would spend from the
+# eight-call budget (§7.2) to compute something a query already knows exactly.
+#
+# In Python a file *is* a module, so `symbols.file_path` is the module key
+# directly rather than a derived package string. Nothing is parsed out of the
+# path, which means the rollup cannot disagree with the graph it summarises.
+#
+# `include_tests` follows §6.3 flag-and-filter: extraction kept every symbol,
+# the decision happens here, and the counterfactual stays one parameter away.
+
+
+async def module_nodes(
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    *,
+    include_tests: bool,
+    limit: int,
+) -> list[tuple[str, int, int, int]]:
+    """Modules ranked by fan-in: ``(path, n_symbols, fan_in, fan_out)``.
+
+    Fan-in counts edges arriving from *other* files, which is the closest thing
+    the graph has to "how much of this repo depends on this module". Same-file
+    edges are excluded on both counts: a module calling itself says nothing
+    about the architecture, and on a large file it would dominate the ranking.
+
+    Ordered by fan-in with ``file_path`` as the tiebreaker — the 2026-07-29
+    tie-ordering fix applies here too, or the truncation at ``limit`` would pick
+    a different top-N per physical row order.
+    """
+    rows = await conn.fetch(
+        """
+        WITH scoped AS (
+            SELECT id, file_path
+              FROM symbols
+             WHERE snapshot_id = $1
+               AND (NOT is_test OR $2)
+        ),
+        cross_edges AS (
+            SELECT f.file_path AS from_path, t.file_path AS to_path
+              FROM edges e
+              JOIN scoped f ON f.id = e.from_symbol
+              JOIN scoped t ON t.id = e.to_symbol
+             WHERE e.snapshot_id = $1
+               AND f.file_path <> t.file_path
+        )
+        SELECT s.file_path AS path,
+               count(*) AS n_symbols,
+               (SELECT count(*) FROM cross_edges c WHERE c.to_path = s.file_path)
+                 AS fan_in,
+               (SELECT count(*) FROM cross_edges c WHERE c.from_path = s.file_path)
+                 AS fan_out
+          FROM scoped s
+         GROUP BY s.file_path
+         ORDER BY fan_in DESC, s.file_path
+         LIMIT $3
+        """,
+        snapshot_id,
+        include_tests,
+        limit,
+    )
+    return [
+        (str(r["path"]), int(r["n_symbols"]), int(r["fan_in"]), int(r["fan_out"]))
+        for r in rows
+    ]
+
+
+async def module_edges(
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    *,
+    include_tests: bool,
+    limit: int,
+) -> list[tuple[str, str, str, int]]:
+    """Module-to-module edges: ``(from_path, to_path, kind, weight)``.
+
+    ``weight`` is how many symbol-level edges of that kind cross the pair, which
+    is what lets a renderer draw a thick line for "these two modules are deeply
+    coupled" and a thin one for a single import.
+    """
+    rows = await conn.fetch(
+        """
+        WITH scoped AS (
+            SELECT id, file_path
+              FROM symbols
+             WHERE snapshot_id = $1
+               AND (NOT is_test OR $2)
+        )
+        SELECT f.file_path AS from_path,
+               t.file_path AS to_path,
+               e.kind      AS kind,
+               count(*)    AS weight
+          FROM edges e
+          JOIN scoped f ON f.id = e.from_symbol
+          JOIN scoped t ON t.id = e.to_symbol
+         WHERE e.snapshot_id = $1
+           AND f.file_path <> t.file_path
+         GROUP BY f.file_path, t.file_path, e.kind
+         ORDER BY weight DESC, from_path, to_path, kind
+         LIMIT $3
+        """,
+        snapshot_id,
+        include_tests,
+        limit,
+    )
+    return [
+        (str(r["from_path"]), str(r["to_path"]), str(r["kind"]), int(r["weight"]))
+        for r in rows
+    ]
+
+
+async def tests_covering_file(
+    conn: asyncpg.Connection, snapshot_id: UUID, file_path: str, limit: int
+) -> list[asyncpg.Record]:
+    """Test symbols with an edge into each symbol defined in ``file_path``.
+
+    The mirror of :func:`implementation_callers`, which excludes the test side
+    precisely because it is noise when the question is "who uses this?". Here
+    the test side *is* the question, so the filter is inverted rather than
+    dropped — a caller from another implementation file is not coverage.
+
+    Flat rows, one per (symbol, test) pair; the response model groups them. Both
+    join sides are covered by ``edges_to`` and ``symbols_snapshot_name``.
+    """
+    return list(
+        await conn.fetch(
+            """
+            SELECT impl.name       AS name,
+                   impl.qualname   AS qualname,
+                   impl.kind       AS kind,
+                   impl.start_line AS start_line,
+                   impl.end_line   AS end_line,
+                   t.qualname      AS ref_qualname,
+                   t.file_path     AS ref_file_path,
+                   COALESCE(e.line, t.start_line) AS ref_line
+              FROM symbols impl
+              JOIN edges   e ON e.to_symbol = impl.id AND e.snapshot_id = $1
+              JOIN symbols t ON t.id = e.from_symbol
+             WHERE impl.snapshot_id = $1
+               AND impl.file_path = $2
+               AND t.is_test
+             ORDER BY impl.start_line, t.file_path, ref_line, t.qualname
+             LIMIT $3
+            """,
+            snapshot_id,
+            file_path,
+            limit,
+        )
+    )
+
+
+async def implementation_covered_by_file(
+    conn: asyncpg.Connection, snapshot_id: UUID, file_path: str, limit: int
+) -> list[asyncpg.Record]:
+    """What the *test* symbols in ``file_path`` reach in implementation code.
+
+    The reverse direction of :func:`tests_covering_file`. Empty for a file that
+    defines no test symbols, which is the correct answer rather than a special
+    case: an implementation file does not "cover" anything.
+    """
+    return list(
+        await conn.fetch(
+            """
+            SELECT DISTINCT
+                   impl.qualname  AS ref_qualname,
+                   impl.file_path AS ref_file_path,
+                   COALESCE(e.line, impl.start_line) AS ref_line
+              FROM symbols t
+              JOIN edges   e    ON e.from_symbol = t.id AND e.snapshot_id = $1
+              JOIN symbols impl ON impl.id = e.to_symbol
+             WHERE t.snapshot_id = $1
+               AND t.file_path = $2
+               AND t.is_test
+               AND NOT impl.is_test
+             ORDER BY ref_file_path, ref_line, ref_qualname
+             LIMIT $3
+            """,
+            snapshot_id,
+            file_path,
+            limit,
+        )
+    )

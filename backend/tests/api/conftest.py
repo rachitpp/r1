@@ -48,6 +48,63 @@ def _source_id_for(url: str) -> uuid.UUID:
 
 FILE_PATH = "pkg/auth.py"
 FILE_CONTENT = "def verify_token(token):\n    return SECRET_SENTINEL_VALUE\n"
+TEST_FILE_PATH = "tests/test_auth.py"
+
+# A three-module symbol graph for the §18 rollup views. Small enough to assert
+# on exactly, and shaped so the interesting cases are all present: one module
+# every other module depends on (`pkg/auth.py`, fan-in 2), a same-file edge that
+# must NOT appear in the rollup, and a test file whose edges are excluded unless
+# `include_tests` is set.
+MODULE_NODE_ROWS: list[dict[str, Any]] = [
+    {"path": FILE_PATH, "n_symbols": 2, "fan_in": 2, "fan_out": 0},
+    {"path": "pkg/client.py", "n_symbols": 3, "fan_in": 0, "fan_out": 1},
+    {"path": "pkg/api.py", "n_symbols": 1, "fan_in": 0, "fan_out": 1},
+]
+MODULE_EDGE_ROWS: list[dict[str, Any]] = [
+    {"from_path": "pkg/client.py", "to_path": FILE_PATH, "kind": "calls", "weight": 4},
+    {"from_path": "pkg/api.py", "to_path": FILE_PATH, "kind": "imports", "weight": 1},
+]
+# One implementation symbol reached by two tests, plus a second symbol reached
+# by none — grouping is only proven by a symbol that has more than one test.
+COVERAGE_ROWS: list[dict[str, Any]] = [
+    {
+        "name": "verify_token",
+        "qualname": "pkg.auth.verify_token",
+        "kind": "function",
+        "start_line": 1,
+        "end_line": 2,
+        "ref_qualname": "tests.test_auth.test_verify_token_ok",
+        "ref_file_path": TEST_FILE_PATH,
+        "ref_line": 11,
+    },
+    {
+        "name": "verify_token",
+        "qualname": "pkg.auth.verify_token",
+        "kind": "function",
+        "start_line": 1,
+        "end_line": 2,
+        "ref_qualname": "tests.test_auth.test_verify_token_expired",
+        "ref_file_path": TEST_FILE_PATH,
+        "ref_line": 19,
+    },
+    {
+        "name": "Signer",
+        "qualname": "pkg.auth.Signer",
+        "kind": "class",
+        "start_line": 5,
+        "end_line": 9,
+        "ref_qualname": "tests.test_auth.test_signer",
+        "ref_file_path": TEST_FILE_PATH,
+        "ref_line": 30,
+    },
+]
+COVERS_ROWS: list[dict[str, Any]] = [
+    {
+        "ref_qualname": "pkg.auth.verify_token",
+        "ref_file_path": FILE_PATH,
+        "ref_line": 1,
+    }
+]
 
 
 def _user_row(user_id: uuid.UUID, login: str) -> dict[str, Any]:
@@ -211,6 +268,31 @@ class FakeConn:
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        # --- §18 graph views ----------------------------------------------
+        # `include_tests` ($2) is honoured rather than ignored: the tests assert
+        # the flag reaches SQL, and a fake that returned the same rows either
+        # way would pass that assertion while proving nothing.
+        if "cross_edges" in sql:
+            rows = MODULE_NODE_ROWS if not args[1] else MODULE_NODE_ROWS + [
+                {"path": TEST_FILE_PATH, "n_symbols": 3, "fan_in": 0, "fan_out": 3}
+            ]
+            return [dict(r) for r in rows[: args[2]]]
+        if "GROUP BY f.file_path, t.file_path, e.kind" in sql:
+            rows = MODULE_EDGE_ROWS if not args[1] else MODULE_EDGE_ROWS + [
+                {
+                    "from_path": TEST_FILE_PATH,
+                    "to_path": FILE_PATH,
+                    "kind": "calls",
+                    "weight": 3,
+                }
+            ]
+            return [dict(r) for r in rows[: args[2]]]
+        if "AND t.is_test" in sql and "impl.file_path = $2" in sql:
+            path = str(args[1])
+            return [dict(r) for r in COVERAGE_ROWS if path == FILE_PATH][: args[2]]
+        if "AND NOT impl.is_test" in sql:
+            path = str(args[1])
+            return [dict(r) for r in COVERS_ROWS if path == TEST_FILE_PATH][: args[2]]
         if "JOIN user_repos ur" in sql and "WHERE ur.user_id = $1" in sql:
             user_id = args[0]
             return [

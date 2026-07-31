@@ -25,15 +25,25 @@ from app.api.chat_stream import chat_event_stream
 from app.api.deps import Arq, ChatModel, Conn, CurrentUser, Pool
 from app.api.ratelimit import Slots
 from app.api.schemas import (
+    ArchitectureOut,
     ChatRequest,
+    CoverageOut,
     FileOut,
+    ModuleEdge,
+    ModuleNode,
     ReadyCheck,
     ReadyOut,
     RepoCreate,
     RepoList,
     RepoOut,
 )
-from app.config import FILE_RANGE_MAX_LINES, get_settings
+from app.config import (
+    ARCH_MAX_EDGES,
+    ARCH_MAX_NODES,
+    COVERAGE_MAX_LINKS,
+    FILE_RANGE_MAX_LINES,
+    get_settings,
+)
 from app.db import queries
 from app.db.pool import acquire, sample_pool_gauges
 from app.exceptions import (
@@ -357,6 +367,74 @@ async def get_repo_file(
         n_lines=file_row["n_lines"],
         start_line=first,
         end_line=last,
+    )
+
+
+@router.get("/repos/{snapshot_id}/architecture", response_model=ArchitectureOut)
+async def get_repo_architecture(
+    snapshot_id: UUID,
+    conn: Conn,
+    user: CurrentUser,
+    include_tests: bool = Query(False),
+) -> ArchitectureOut:
+    """The module dependency rollup (§18.2).
+
+    Two aggregations over the symbol graph that already exists — no model call,
+    no tool budget, no ingest work. Deterministic, so the same snapshot always
+    answers the same map; snapshots are immutable (§14.3), so a client may cache
+    it for as long as it likes.
+
+    Ranked by fan-in and truncated at the §12 caps rather than paginated: this
+    is an overview, and page two of a module map is not an overview.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    nodes = await queries.module_nodes(
+        conn, snapshot_id, include_tests=include_tests, limit=ARCH_MAX_NODES
+    )
+    edges = await queries.module_edges(
+        conn, snapshot_id, include_tests=include_tests, limit=ARCH_MAX_EDGES
+    )
+    return ArchitectureOut(
+        nodes=[
+            ModuleNode(path=p, n_symbols=n, fan_in=fi, fan_out=fo)
+            for p, n, fi, fo in nodes
+        ],
+        edges=[
+            ModuleEdge(from_path=f, to_path=t, kind=k, weight=w)
+            for f, t, k, w in edges
+        ],
+        include_tests=include_tests,
+        truncated=len(nodes) >= ARCH_MAX_NODES or len(edges) >= ARCH_MAX_EDGES,
+    )
+
+
+@router.get("/repos/{snapshot_id}/coverage", response_model=CoverageOut)
+async def get_repo_coverage(
+    snapshot_id: UUID,
+    path: str,
+    conn: Conn,
+    user: CurrentUser,
+) -> CoverageOut:
+    """Test ↔ implementation links for one file (§18.3).
+
+    An unknown ``path`` returns empty lists, not a 404: a file with no symbols
+    and a file that is not in the index are the same answer to "what tests reach
+    this?", and distinguishing them would make the endpoint an existence oracle
+    for paths in someone else's repo — the §13.5 reasoning, one level down.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    covered = await queries.tests_covering_file(
+        conn, snapshot_id, path, COVERAGE_MAX_LINKS
+    )
+    covers = await queries.implementation_covered_by_file(
+        conn, snapshot_id, path, COVERAGE_MAX_LINKS
+    )
+    return CoverageOut.from_rows(
+        path,
+        covered,
+        covers,
+        truncated=len(covered) >= COVERAGE_MAX_LINKS
+        or len(covers) >= COVERAGE_MAX_LINKS,
     )
 
 

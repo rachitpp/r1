@@ -8,6 +8,7 @@ SSE event payloads are *not* here — they are transport-level dicts built in
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from uuid import UUID
 
 import asyncpg
@@ -123,6 +124,121 @@ class ReadyOut(BaseModel):
 
     ok: bool
     checks: dict[str, ReadyCheck]
+
+
+class ModuleNode(BaseModel):
+    """One module in the §18 rollup. In Python the file *is* the module."""
+
+    path: str
+    n_symbols: int
+    fan_in: int
+    fan_out: int
+
+
+class ModuleEdge(BaseModel):
+    """A directed module→module dependency, weighted by symbol-level edges."""
+
+    from_path: str
+    to_path: str
+    kind: str
+    weight: int
+
+
+class ArchitectureOut(BaseModel):
+    """``GET /repos/{id}/architecture`` (§18.2).
+
+    ``truncated`` is set when either list hit its cap, so a renderer can say
+    "top 200 modules" rather than presenting a clipped graph as the whole one.
+    """
+
+    nodes: list[ModuleNode]
+    edges: list[ModuleEdge]
+    include_tests: bool
+    truncated: bool
+
+
+class SymbolRef(BaseModel):
+    """A pointer at one symbol: enough to cite it, no code body."""
+
+    qualname: str
+    file_path: str
+    line: int
+
+
+class CoveredSymbol(BaseModel):
+    """One symbol defined in the requested file, plus the tests that reach it."""
+
+    name: str
+    qualname: str
+    kind: str
+    start_line: int
+    end_line: int
+    tests: list[SymbolRef]
+
+
+class CoverageOut(BaseModel):
+    """``GET /repos/{id}/coverage`` (§18.3), both directions.
+
+    ``covered`` answers "which tests exercise this file"; ``covers`` answers the
+    reverse for a test file and is empty for an implementation file — which is
+    the true answer, not a missing case.
+    """
+
+    path: str
+    covered: list[CoveredSymbol]
+    covers: list[SymbolRef]
+    truncated: bool
+
+    @classmethod
+    def from_rows(
+        cls,
+        path: str,
+        covered_rows: Sequence[asyncpg.Record],
+        covers_rows: Sequence[asyncpg.Record],
+        *,
+        truncated: bool,
+    ) -> CoverageOut:
+        """Group the flat ``(symbol, test)`` join into one entry per symbol.
+
+        The query orders by ``impl.start_line``, so equal symbols are already
+        adjacent and grouping is a single pass that preserves that order.
+        """
+        covered: list[CoveredSymbol] = []
+        by_qualname: dict[tuple[str, int], CoveredSymbol] = {}
+        for row in covered_rows:
+            key = (str(row["qualname"]), int(row["start_line"]))
+            entry = by_qualname.get(key)
+            if entry is None:
+                entry = CoveredSymbol(
+                    name=row["name"],
+                    qualname=row["qualname"],
+                    kind=row["kind"],
+                    start_line=row["start_line"],
+                    end_line=row["end_line"],
+                    tests=[],
+                )
+                by_qualname[key] = entry
+                covered.append(entry)
+            entry.tests.append(
+                SymbolRef(
+                    qualname=row["ref_qualname"],
+                    file_path=row["ref_file_path"],
+                    line=row["ref_line"],
+                )
+            )
+        return cls(
+            path=path,
+            covered=covered,
+            covers=[
+                SymbolRef(
+                    qualname=r["ref_qualname"],
+                    file_path=r["ref_file_path"],
+                    line=r["ref_line"],
+                )
+                for r in covers_rows
+            ],
+            truncated=truncated,
+        )
 
 
 class ChatRequest(BaseModel):

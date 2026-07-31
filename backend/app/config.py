@@ -54,6 +54,13 @@ CALLED_BY_MAX: int = 8  # §7.4 called-by block cap, then "+N more"
 JEDI_FILE_TIMEOUT_S: int = 10
 ZOMBIE_AFTER_S: int = 1_200
 PROGRESS_EVERY_N: int = 25
+# §18 graph views. Caps, not page sizes: both endpoints roll the whole symbol
+# graph up in one statement, and a 10_000-file repo would otherwise serialise a
+# module map nobody can read. Ranked before truncation, so what survives is the
+# top of the ranking rather than an arbitrary prefix.
+ARCH_MAX_NODES: int = 200
+ARCH_MAX_EDGES: int = 1_000
+COVERAGE_MAX_LINKS: int = 500
 
 # ---------------------------------------------------------------------------
 # Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.
