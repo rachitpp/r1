@@ -2318,3 +2318,216 @@ fts is included in the run deliberately even though it needs no embedder: it is
 the control. If the harness had been misconfigured in some way that changed the
 corpus rather than the transport, fts would have moved too.
 
+
+## 2026-07-31 — Tier 0 built: the graph answers questions without the agent
+
+**The choice.** Two new capabilities — a module dependency rollup and test↔code
+linkage — ship as **HTTP endpoints, not agent tools** (SPEC §18). Plus four
+frontend/CLI affordances that add no backend surface at all: a theme toggle, an
+"Explain" action in the code viewer, `?q=` prefill on the chat route, Markdown
+export of a conversation, and `--json` on the ingest CLI.
+
+**Why endpoints.** `AGENT_TOOL_CAP` is 8, and Phase 5's live run *hit* it —
+`search_code ×4, expand_context, read_file ×3`. FEATURE-IDEAS treats "adds a
+seventh tool" as a bookkeeping step needing a DECISIONS entry. It is not: with
+the budget unchanged, every added tool changes how the existing eight executions
+get spent, which is an unmeasured risk to answer quality on the one thing this
+project claims to be good at.
+
+Both of these questions have exact answers in SQL. Routing them through the
+model would spend a scarce budget to compute what a `GROUP BY` already knows,
+and would make a deterministic result non-reproducible. The rule this sets, and
+the reason it is worth writing down: **if the symbol graph can answer it
+exactly, it is a query; the agent is for what needs judgement.**
+
+**Why this was cheap.** Nothing new is extracted and no migration was needed.
+`symbols` already carries `file_path`/`is_test`, `edges` already carries
+`kind`/`snapshot_id`, and in Python a file *is* a module — so `symbols.file_path`
+is the module key directly, with no string surgery that could disagree with the
+graph it summarises. The whole of §18 is four SQL statements against tables that
+have existed since `004`.
+
+**Three deliberate calls inside it.**
+
+1. *Same-file edges are excluded from the rollup.* A module calling itself says
+   nothing about architecture and would dominate fan-in on any large file.
+2. *An unknown `path` on `/coverage` returns empty lists, not 404.* "Not
+   indexed" and "no test reaches it" are the same answer to the question asked,
+   and separating them turns the endpoint into an existence oracle for paths —
+   §13.5's reasoning one level down.
+3. *`covers` is empty for an implementation file.* Reporting its outgoing call
+   edges there would be a different question wearing this one's name.
+
+**`--json` is a stdout contract, not a flag.** The ingest CLI's progress lines
+went to stdout via a hardcoded `print`, so a JSON mode that only changed the
+final block would still have emitted an unparseable document. `run_ingest`'s
+`log` is now a parameter; in `--json` mode every human-readable line — progress,
+the no-owner warning, `--sample` output — goes to stderr, stdout carries exactly
+one object carrying `ok` on success *and* failure, and the exit status mirrors
+it. Both CLIs behave the same way.
+
+**Eval was not run, on purpose.** Nothing here touches `app/ingest/` chunking,
+`app/retrieval/`, the embedder, or the agent loop; the retrieval path is
+byte-identical. Re-running `scripts/eval.py` would measure the same corpus
+through the same code and prove nothing. The rule stands for anything that
+*does* touch ingest or the tool set — which is exactly why these six were built
+first.
+
+**Scope note.** This is v1/v2 feature work taken deliberately while V2.md has
+V4/V5 unstarted and one open box in V2. It touches no ingest path and no
+retrieval, so it cannot invalidate the eval-equality verification those phases
+rest on. Anything from FEATURE-IDEAS that *does* touch them stays behind those
+open boxes.
+
+---
+
+## 2026-07-31 — Three integration tests were never migrated to snapshots
+
+Found while running the full suite for the entry above, then repaired.
+`tests/worker/test_worker_integration.py` (×2) and
+`tests/retrieval/test_integration_db.py::test_db_ingest_idempotent_and_search`
+were written against the pre-V2 schema and stopped being run at some point
+after V2 landed. **V2.md's V3 entry claims "294 unit + 12 integration" clean;
+that had not been true since `007`.**
+
+Not a rename. Four separate things had rotted, and only the first was loud:
+
+1. `queries.create_repo` no longer exists — V2 split it into
+   `get_or_create_source` + `create_snapshot`, because a source is created once
+   per URL and a snapshot once per ingest attempt. `AttributeError`, so these
+   two failed immediately.
+2. `SELECT count(*) FROM symbols WHERE repo_id = $1` — `008` made the retained
+   legacy `repo_id` nullable and new rows write only `snapshot_id`, so
+   `assert n_symbols > 0` could no longer pass on a fresh ingest.
+3. **The teardown had been silently deleting nothing.** `DELETE FROM repos WHERE
+   url = $1` matches no row for a post-V2 ingest, so every run of these files
+   leaked a source, a snapshot, and its entire corpus into the live database.
+   This affected the *passing* tests too, which is why nothing surfaced it.
+   Teardown is now `DELETE FROM repo_sources`, which cascades.
+4. The idempotency assertion had quietly lost its meaning **twice over**:
+   - §14.4 dedup replaced delete-and-replace, so a second `ingest_to_db` of the
+     same commit now raises `SnapshotSuperseded` rather than rebuilding. The
+     invariant under test is unchanged — one commit, one stored corpus — so the
+     test now asserts the dedup path and, additionally, that nothing was rebuilt.
+   - §15.4's lease means a second *job* on a `ready` snapshot is never claimed.
+     The old test ran the worker twice and asserted the counts had not changed —
+     which, post-lease, passes because **the second run does nothing at all**.
+     "Nothing changed" is also what a silently broken queue looks like. The test
+     now asserts the refusal directly against `claim_snapshot`, then resets the
+     row to `queued` for a genuine retry and asserts delete-and-replace there.
+
+Also added `test_the_two_sweeps_do_not_reap_each_other_s_rows`. Both sweeps run
+back to back on every worker startup over the same statuses; what keeps them
+apart is one predicate each (`heartbeat_at IS NOT NULL` vs. the much longer
+timer). §15.4 asserts it and nothing tested it, and getting it wrong means one
+worker failing a snapshot another is actively ingesting.
+
+**One flake, diagnosed rather than retried.** The first run of the rewritten
+worker test died on a Redis connection timeout inside ARQ's own pipeline. Cause
+was mine: the restructure had taken worker spin-ups from two to three, and the
+Redis Cloud free tier's command/connection budget is already a documented
+constraint (`app/worker.py`, `POLL_DELAY_S`). Fixed by dropping back to two —
+the "already ready is not claimable" case does not need a worker at all, since
+it is a property of `claim_snapshot`. Fewer connections *and* a more precise
+assertion; a retry loop would have bought neither.
+
+**Verified:** 6 integration tests green against live Postgres + Redis
+(`3 passed` worker, `3 passed` retrieval), ruff and mypy clean.
+
+---
+
+## 2026-07-31 — Load checkpoint: NO-GO on V4, and the latency number nearly said otherwise
+
+V2.md requires the ruling and the measured numbers be recorded either way. Both
+are below. **Ruling: NO-GO.** V4 is not started and should not be.
+
+**Corpus, measured on the live instance** (after the test-debris cleanup below):
+
+```
+chunks           2,725          snapshots  8      sources  7      users  2
+chunks table     24 MB (incl. indexes)  ->  8.8 kB/chunk
+HNSW index       5.5 MB                 ->  2.1 kB/chunk
+pgvector         0.8.1
+```
+
+V2.md's own extrapolation note was written at **2,737 chunks / 21 MB**. The
+corpus has since moved by **-12 chunks**. Its stated bar — *"At 100K chunks the
+work in V4 buys nothing"* — sits **37× above** where the corpus actually is.
+
+**The latency measurement is the interesting half, because read carelessly it
+fires a false GO.** End-to-end hybrid search, 30 calls over the httpx corpus:
+
+```
+p50 1,776 ms      p95 3,090 ms
+```
+
+Three seconds at p95 looks exactly like the index problem V4 exists to solve.
+It is not. Decomposed:
+
+```
+network RTT (SELECT 1)    p50   252 ms   p95   477 ms
+query embedding (CPU)     p50    22 ms   p95    79 ms
+RRF fusion statement      p50   250 ms   p95 1,190 ms
+  ... minus one round trip  ~85 ms of actual index work
+```
+
+`search()` in hybrid mode issues **four sequential statements** — `BEGIN`,
+`SET LOCAL hnsw.ef_search`, the fusion query, then `_fetch_rows` — and each pays
+that ~250 ms round-trip from this Windows dev box to Neon in us-east. That is
+where roughly 1.3 s of the 1.8 s goes. **The index does ~85 ms of the 1,776 ms,
+or under 5%.** Partitioning, `iterative_scan`, PgBouncer and object storage
+would improve *none* of the remaining 95%: it is deployment topology, not
+architecture. Colocating the API with the database — which any real deploy does
+— collapses the RTT and the whole search with it.
+
+**So the trigger, which V4's first done-when box requires be defined before any
+of it is built:**
+
+* **Primary — `chunks` ≥ 1,000,000.** From the measured per-chunk cost that is
+  ~8.6 GB of table and ~2.0 GB of HNSW, the point where the index stops being
+  trivially resident. (The same rates reach ~129 GB / ~30 GB at 15M, which
+  reproduces V2.md's paper figure and is the check that the rates are sane.)
+* **Secondary — p95 of the *fusion statement* ≥ 250 ms, measured with the API
+  colocated with the database.** Not end-to-end latency, and never from a remote
+  dev box. Today's end-to-end p95 is 3,090 ms and means nothing about the index;
+  a trigger phrased against it would have fired now, at 2,725 chunks, and bought
+  a month of invisible waste. That is precisely the failure V2.md predicted for
+  V4 — *"a partitioned index on a small corpus looks fine and buys nothing"* —
+  arriving through the metric rather than through impatience.
+
+**Incidental finding, not acted on:** the round-trip count is itself the real
+latency lever at this scale, and it is not a V4 item. Four sequential statements
+where the transaction wrapper and the `SET LOCAL` exist for the index tuning is
+a fair trade when RTT is ~1 ms and a poor one when it is 250 ms. Worth measuring
+again from a colocated deploy before anyone optimises it — the number may simply
+disappear.
+
+**Next per this ruling:** stay on V3's shape. V5 is *half* premature by the same
+logic — per-user budgets and fairness gates for two users is V4's mistake in a
+different costume — but its **answer cache on `(snapshot_id, question_hash)` is
+valuable now**, not for load but for the provider rate limits recorded in
+`app/agent/model.py` (20 requests/day/model on AI Studio). Pull that one
+component forward when generation features start multiplying agent runs.
+
+---
+
+## 2026-07-31 — Deleted the test debris the broken teardown had been leaking
+
+Direct consequence of the teardown bug in the entry above, and the evidence that
+it was real rather than theoretical. The integration suites had been writing
+throwaway corpora and deleting them from `repos` — a table no post-V2 ingest
+touches — so every run since `007` left everything behind.
+
+Removed: **16 sources, 18 snapshots, 70 chunks, 36 files, 70 symbols, and 7
+`user_repos` rows.** The URLs date back to a Codespaces run
+(`/tmp/pytest-of-codespace/...`), so this had been accumulating across machines.
+
+The seven library rows are the part that mattered: those snapshots were in a
+real user's library, which means `test_db_ingest_idempotent_and_0/mini` was
+rendering in the signed-in repo list in the web app.
+
+Predicate was `url LIKE '%pytest-of-%' OR url LIKE '%example.invalid%'` — tighter
+than the `file:///%` first proposed, which could have matched a local repo
+somebody ingested deliberately. Guarded by an assertion that it caught no
+non-test source name, and by checking the benchmark corpus immediately before
+and after: `825 | 697` both times.

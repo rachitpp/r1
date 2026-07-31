@@ -143,9 +143,23 @@ pnpm install && pnpm dev                  # :3000
 @ `b5addb64`, 1522 chunks: 825 impl / 697 test). Re-ingest only if schema or
 chunker changes. Verify with:
 ```sql
-SELECT count(*) FILTER (WHERE NOT is_test), count(*) FILTER (WHERE is_test) FROM chunks;
+SELECT count(*) FILTER (WHERE NOT c.is_test) AS impl,
+       count(*) FILTER (WHERE c.is_test)     AS test
+  FROM chunks c
+  JOIN repo_snapshots sn ON sn.id = c.snapshot_id
+  JOIN repo_sources   s  ON s.id  = sn.source_id
+ WHERE s.url = 'https://github.com/encode/httpx'
+   AND sn.strategy = 'ast';
 ```
 Should return `825 | 697`.
+
+**The scoping is load-bearing** — do not shorten this back to a bare
+`FROM chunks`. That was the original wording and it stopped being correct the
+moment a second repo was ingested: the database now holds seven sources and two
+httpx corpora (`ast` and the §2.7 `naive` baseline, at the *same* commit), so
+unscoped it returns `1555 | 1170` and reads as a corrupted benchmark. Both the
+source and the strategy are needed; either one alone still counts the wrong
+rows (corrected 2026-07-31).
 
 ## Phase status (2026-07-28)
 

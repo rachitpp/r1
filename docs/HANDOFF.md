@@ -247,7 +247,7 @@ git clone <repo> && cd <repo>
 cp backend/.env.example backend/.env
 # paste the Neon DSN into backend/.env (needs ?sslmode=require)
 cd backend && uv sync
-uv run python scripts/migrate.py     # no-op if 001–003 are already applied
+uv run python scripts/migrate.py     # no-op if 001–010 are already applied
 uv run pytest && uv run ruff check . && uv run mypy app
 cd ../frontend && pnpm install
 ```
@@ -259,9 +259,21 @@ The Neon DB already holds the ingested benchmark corpus at the pinned SHA, so
 a re-ingest is only needed if the schema or chunker changes. Verify with:
 
 ```sql
-SELECT count(*) FILTER (WHERE NOT is_test) AS impl,
-       count(*) FILTER (WHERE is_test)     AS test FROM chunks;   -- 825 / 697
+SELECT count(*) FILTER (WHERE NOT c.is_test) AS impl,
+       count(*) FILTER (WHERE c.is_test)     AS test
+  FROM chunks c
+  JOIN repo_snapshots sn ON sn.id = c.snapshot_id
+  JOIN repo_sources   s  ON s.id  = sn.source_id
+ WHERE s.url = 'https://github.com/encode/httpx'
+   AND sn.strategy = 'ast';                                       -- 825 / 697
 ```
+
+The joins are not decoration. This used to be a bare `FROM chunks`, which was
+right when httpx was the only corpus and silently stopped being right once it
+was not: the database holds seven sources, and httpx alone has two corpora
+(`ast` and the `naive` baseline) at the *same* commit. Unscoped it now answers
+`1555 | 1170`, which reads as a corrupted benchmark to anyone following this
+page (corrected 2026-07-31).
 
 ## Immediate next steps — the one thing left in Phase 6
 

@@ -12,6 +12,26 @@
 > SSE stream, immutable commit-pinned snapshots, and the provider-configurable
 > model. Read `SPEC.md` for the contracts those refer to.
 
+> **Status, 2026-07-31.** Six items are **BUILT** — 2.2, 2.4, 3.5, 4.5, 6.2 and
+> 6.6 — and are marked as such below. They were taken together because none of
+> them touches ingest or retrieval, so none could disturb the eval-equality
+> verification V2/V3 rest on. See SPEC §18 and DECISIONS 2026-07-31.
+>
+> **The cost model below understates one thing, and it is the important one.**
+> "$0 unless noted" is true about *invoices* and misleading about *capacity*.
+> The real currency is provider rate limits: `app/agent/model.py` records that
+> the AI Studio key's actual ceiling is **20 requests/day/model — two agent
+> runs**, which is what forced the documented Mistral/Gemini/Vertex role split.
+> So 3.1 (one cached run per snapshot) is genuinely free, while 3.2, 3.4, 4.3
+> and 5.1 all *multiply* runs against a tier that has already proven too thin
+> once. Weigh those against quota, not against dollars.
+>
+> **Two corrections to the text below.** (1) "V1–V3 done" in *Relationship to
+> the existing plans* is optimistic: V2.md shows V1 at `[~]` (the auth'd chat
+> stream is unverified on this host) and V2 with an open rollback box. (2) §2.5
+> attributes the ~45% external-import figure to `SPEC §6.1`; the number is real
+> but it comes from ROADMAP Phase 3's done-when, not from that section.
+
 ---
 
 ## How to read this document
@@ -154,7 +174,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Risks.** History can be huge on old repos — cap depth (e.g. last N commits
   or since a date), same discipline as the file-size caps in `filters.py`.
 
-### 2.2 Architecture-level understanding
+### 2.2 Architecture-level understanding — **BUILT 2026-07-31**
 
 - **What it is.** Answer *global* questions, not just local ones: *"what are the
   main modules and how do they depend on each other?"*, *"what are the entry
@@ -172,10 +192,16 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
      call to get the module map as structured data.
   3. Feed that map to the model to narrate "here are the layers and how they
      relate," with citations to the key files.
-- **Effort.** **M.**
-- **Money cost.** $0.
+- **Effort.** **M.** *(Actual: hours, not a week — the estimate assumed new
+  extraction. There is none: `symbols.file_path` is the module key and the
+  rollup is two `GROUP BY`s over tables that have existed since `004`.)*
+- **Money cost.** $0 — and **zero model calls**, which is the point.
 - **Risks.** Ranking "important" modules well is heuristic; start with
   fan-in/fan-out and iterate.
+- **Shipped as.** `GET /repos/{id}/architecture` (SPEC §18.2), *not* an agent
+  capability: the answer is exact SQL, so spending from the 8-call budget on it
+  would buy nothing and cost reproducibility. Same-file edges excluded;
+  `include_tests` off by default per §6.3.
 
 ### 2.3 Call-hierarchy & data-flow tracing
 
@@ -194,7 +220,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Money cost.** $0.
 - **Risks.** Explosion on hot symbols — hard depth/breadth caps are essential.
 
-### 2.4 Test ↔ code linkage
+### 2.4 Test ↔ code linkage — **BUILT 2026-07-31**
 
 - **What it is.** *"Which tests cover this function?"* and the reverse.
 - **Why it matters.** Cheap, high-signal onboarding aid — tests are executable
@@ -204,9 +230,13 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   implementation symbols, which you can already compute.
 - **Implementation sketch.** Add a query/tool that, given an impl symbol,
   returns test symbols with an edge into it (and vice versa). Surface as chips.
-- **Effort.** **S–M.**
+- **Effort.** **S–M.** *(Actual: S. `queries.implementation_callers` already
+  had the shape; this is the same join with the `is_test` filter inverted.)*
 - **Money cost.** $0.
 - **Risks.** Minimal; relies on resolution quality you already have.
+- **Shipped as.** `GET /repos/{id}/coverage?path=` (SPEC §18.3), both
+  directions. An unknown path returns empty lists rather than 404 — a 404 would
+  make it an existence oracle for paths (§13.5 reasoning, one level down).
 
 ### 2.5 Dependency / third-party understanding *(new)*
 
@@ -305,7 +335,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Money cost.** $0.
 - **Risks.** Hallucinated docs — require citations and mark output as a *draft*.
 
-### 3.5 "Explain this symbol / file" quick action *(new)*
+### 3.5 "Explain this symbol / file" quick action — **BUILT 2026-07-31**
 
 - **What it is.** A one-click "explain" on any file or symbol in the viewer, no
   typed question needed.
@@ -313,9 +343,14 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   becomes a click.
 - **How it fits.** A pre-templated question routed through the existing chat
   pipeline; pairs perfectly with the code viewer you just enhanced.
-- **Effort.** **S.**
+- **Effort.** **S.** Confirmed — and it should have been ranked first, not
+  fourth: it is the best value-per-hour item in this document.
 - **Money cost.** $0.
 - **Risks.** None material.
+- **Shipped as.** An "Explain" button in the code viewer that sends a
+  templated question built from the open citation, plus **`?q=` prefill** on
+  `/repos/[id]/chat`. The `?q=` half is the reusable part: any future surface
+  (3.1's overview, 6.5's checklist) can now hand off into chat with one link.
 
 ---
 
@@ -387,7 +422,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   turns; still free-tier-friendly).
 - **Risks.** Context bloat inflating token use and latency — cap history window.
 
-### 4.5 CLI enhancements & scripting *(new)*
+### 4.5 CLI enhancements & scripting — **BUILT 2026-07-31**
 
 - **What it is.** Harden the existing `app.agent.cli` / `app.ingest.cli` into a
   batch/scriptable tool (`--json`, exit codes, pipe-friendly output).
@@ -398,6 +433,11 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Effort.** **S.**
 - **Money cost.** $0.
 - **Risks.** None material.
+- **Shipped as.** `--json` on the ingest CLI and a JSON *error* envelope on the
+  agent CLI. The real work was not the flag: the pipeline's progress lines were
+  printed to stdout, so they landed inside the document. `run_ingest`'s `log` is
+  now a parameter and `--json` routes every human line to stderr — stdout is one
+  object carrying `ok`, on success and on failure, and the exit code mirrors it.
 
 ### 4.6 Chat bot (Slack / Discord) *(new)*
 
@@ -472,17 +512,20 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 - **6.1 Shareable answer permalinks.** A stable URL for a specific answer +
   citations against a snapshot (safe *because* snapshots are immutable). **S–M.**
-- **6.2 Export a conversation to Markdown.** One click; great for sharing
-  onboarding notes. **S.**
+- **6.2 Export a conversation to Markdown.** **BUILT 2026-07-31.** One click;
+  citations become GitHub blob links at the pinned commit, so the note still
+  resolves for someone without this app open. **S.**
 - **6.3 Snapshot comparison.** *"What changed between this repo at commit A and
   commit B?"* — natural once history (2.1) and multiple snapshots exist. **M–L.**
 - **6.4 Cross-repo / org-wide search.** Ask across *all* your indexed repos at
   once. Builds on V2 snapshots + multi-tenant. **L.**
 - **6.5 Onboarding checklist.** Auto-generate "the first 5 things to understand
   about this repo," each a launch-point into chat. Pairs with 3.1. **S–M.**
-- **6.6 Dark-mode toggle.** The `.dark` design tokens already exist in
-  `globals.css` but there is no user-facing switch; a proper theme toggle is a
-  self-contained frontend feature. **S.**
+- **6.6 Dark-mode toggle.** **BUILT 2026-07-31.** Three-state (system / light /
+  dark), hand-rolled rather than `next-themes` (rule 11), with a pre-paint
+  inline script so dark-mode users do not get a white flash on every navigation.
+  The code viewer re-tokenises through Shiki's `vitesse-dark`, which was already
+  in the bundle and had never been used. **S.**
 
 ---
 

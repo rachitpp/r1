@@ -533,6 +533,9 @@ GET  /repos/{id}/files?path=src/auth.py[&start_line=&end_line=]
   304 when If-None-Match matches the ETag
   422 end_line < start_line
   (powers the frontend code viewer and citation clicks)
+GET  /repos/{id}/architecture[?include_tests=true]   ArchitectureOut | 404  (§18.2)
+GET  /repos/{id}/coverage?path=src/auth.py          CoverageOut | 404      (§18.3)
+  422 missing `path`
 POST /repos/{id}/chat  {"question": str}          question 1..4000 chars
   → text/event-stream (§9)
   409 {"detail": "repo not ready", "status": "<current>"} if not ready
@@ -705,6 +708,9 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `EXPAND_TOKEN_BUDGET` | 6_000 | §7.1 |
 | `AGENT_TOOL_CAP` | 8 | §7.2 |
 | `JEDI_FILE_TIMEOUT_S` | 10 | §6.1 |
+| `ARCH_MAX_NODES` | 200 | §18.1 |
+| `ARCH_MAX_EDGES` | 1_000 | §18.1 |
+| `COVERAGE_MAX_LINKS` | 500 | §18.2 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
 | `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
@@ -1377,3 +1383,104 @@ with SQL, not scraped. Metrics stay aggregate (`app/metrics.py`).
 Do not: cache across snapshots; enforce the budget in estimated dollars; label a
 metric by `user_id`; pre-charge a budget reservation; add a background job to
 expire cache rows (that is snapshot GC, and it is v3 backlog).
+
+---
+
+## §18 Graph views (read-only aggregations)
+
+Two endpoints that answer questions from the symbol graph **without a model**.
+They exist because the graph already holds the answers and nothing in the
+product had ever asked it directly: every path to the `symbols`/`edges` tables
+ran through an agent tool.
+
+### 18.1 Why these are endpoints and not agent tools
+
+The agent has a hard budget of `AGENT_TOOL_CAP` (8) tool executions per run
+(§7.2), and Phase 5's live run reached it. A seventh and eighth tool do not just
+need a DECISIONS entry — they change how the existing eight executions get
+spent, which is a measurable risk to answer quality.
+
+Both questions here have **exact, deterministic answers in SQL**. Routing them
+through the model would spend a scarce budget to compute something a `GROUP BY`
+already knows, and would make the result non-reproducible for no gain. So they
+are endpoints: the frontend calls them directly, they cost no tool calls, no
+tokens, and no quota (§17), and the agent loop is untouched.
+
+The rule this sets: **if the symbol graph can answer it exactly, it is a query;
+the agent is for what needs judgement.**
+
+### 18.2 Module rollup — `GET /repos/{id}/architecture`
+
+In Python a file *is* a module, so `symbols.file_path` is the module key
+directly. Nothing is parsed out of the path, which is what guarantees the
+rollup cannot disagree with the graph it summarises.
+
+```
+ArchitectureOut {
+  nodes: [{path, n_symbols, fan_in, fan_out}]
+  edges: [{from_path, to_path, kind, weight}]
+  include_tests: bool
+  truncated: bool
+}
+```
+
+* **Same-file edges are excluded** from both fan counts and from `edges`. A
+  module calling itself says nothing about architecture, and on a large file it
+  would dominate the ranking.
+* `weight` is the number of symbol-level edges of that `kind` crossing the pair,
+  so a renderer can distinguish "deeply coupled" from "one import".
+* Ranked by `fan_in DESC, file_path` — the tiebreaker is not optional, or the
+  truncation at `ARCH_MAX_NODES` would select a different top-N per physical row
+  order (DECISIONS 2026-07-29).
+* `include_tests` defaults to **false**, per §6.3 flag-and-filter: extraction
+  kept every symbol, the decision happens at query time, the counterfactual is
+  one parameter away.
+* `truncated` is set when either list hit its §12 cap. Caps are a SQL `LIMIT`,
+  not a slice of an already-materialised graph — the cost being avoided is
+  Postgres building the full rollup for a 10_000-file repo.
+
+### 18.3 Test ↔ code linkage — `GET /repos/{id}/coverage?path=`
+
+```
+CoverageOut {
+  path: str
+  covered: [{name, qualname, kind, start_line, end_line,
+             tests: [{qualname, file_path, line}]}]
+  covers:  [{qualname, file_path, line}]
+  truncated: bool
+}
+```
+
+* `covered` is the mirror of §7.4's called-by assembly, which excludes the test
+  side precisely because it is noise when the question is "who uses this?". Here
+  the test side *is* the question, so the filter is **inverted, not dropped**: a
+  caller from another implementation file is not coverage.
+* One entry per symbol, tests grouped under it, in definition order — so a
+  viewer can walk the open file top to bottom.
+* `covers` is the reverse direction and is empty for a non-test file. That is
+  the true answer, not a missing case: an implementation file does not cover
+  anything, and reporting its outgoing call edges here would be a different
+  question wearing this one's name.
+* **An unknown `path` returns empty lists, not 404.** "This file is not indexed"
+  and "no test reaches this file" are the same answer to the question asked, and
+  separating them would make the endpoint an existence oracle for paths inside a
+  repo — the §13.5 reasoning one level down.
+
+### 18.4 Shared properties
+
+* Ownership is enforced by `_require_owned_repo` and nowhere else (§13.5): 404
+  for an unowned repo, 401 for no session.
+* Neither view returns a **code body** — only pointers, exactly like a §9
+  `tool_result`. `/files` remains the single endpoint that serves code, which is
+  where the ETag and the line-range cap live.
+* Both fall under the default per-identity rate limit; neither is expensive
+  enough to name in `rules_for`.
+* Deterministic over an immutable snapshot (§14.3), so a client may cache the
+  response for as long as it holds the snapshot id.
+
+### 18.5 Verification
+
+`tests/api/test_graph_views.py` — ranking, edge weights, the `include_tests`
+default, caps reaching SQL rather than being applied after the fact, grouping of
+a multi-test symbol, the empty-not-404 rule, cross-tenant 404, anonymous 401,
+and that neither response contains a code body.
