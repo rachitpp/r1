@@ -29,6 +29,7 @@ import Link from "next/link";
 import { Fragment, useState } from "react";
 
 import { ArchitecturePanel } from "@/components/architecture-panel";
+import { ChecklistPanel } from "@/components/checklist-panel";
 import { OverviewPanel } from "@/components/overview-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -374,6 +375,12 @@ export function RepoStatusView({ repoId }: { repoId: string }) {
           the answer to "what do I even ask?" — which is the question a blank
           chat box does not answer. */}
       {isReady && <OverviewPanel repoId={repoId} />}
+
+      {/* The checklist (§22). Directly under the overview: that one describes
+          the repo, this one says what to do about it, and the pairing is what
+          FEATURE-IDEAS 6.5 meant by "pairs with 3.1". Costs no model call, so
+          it renders even when the overview is still generating. */}
+      {isReady && <ChecklistPanel repoId={repoId} />}
 
       {/* The module map (§18.2). Below the CTA rather than above it: chatting is
           still the primary action, and this is orientation for a reader who does

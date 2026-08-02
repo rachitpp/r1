@@ -239,6 +239,33 @@ export function getCoverage(
   );
 }
 
+/**
+ * `GET /repos/{id}/checklist` (SPEC §22.2).
+ *
+ * Derived from the symbol graph — no model call — so it is deterministic and,
+ * like the §18 views, cacheable for as long as the client holds the repo id.
+ * Fewer than five items is normal: steps that do not apply are absent rather
+ * than padded.
+ */
+export interface ChecklistItem {
+  kind: string;
+  title: string;
+  detail: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  /** Pre-filled into `/chat?q=` — the launch-point 3.5 built. */
+  question: string;
+}
+
+export interface ChecklistOut {
+  items: ChecklistItem[];
+}
+
+export function getChecklist(repoId: string): Promise<ChecklistOut> {
+  return request<ChecklistOut>(`/repos/${repoId}/checklist`);
+}
+
 export interface CommitOut {
   sha: string;
   author_name: string;
