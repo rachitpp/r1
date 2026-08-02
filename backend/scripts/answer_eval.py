@@ -61,7 +61,7 @@ from app.db.queries import resolve_snapshot_id  # noqa: E402
 from app.retrieval.hybrid import search  # noqa: E402
 
 DOCS = Path(__file__).resolve().parent.parent.parent / "docs"
-EVAL_MD = DOCS / "EVAL.md"
+EVAL_MD = DOCS / "EVAL.md"  # the default benchmark; --benchmark selects another
 DEV_QUESTIONS = DOCS / "dev-questions.yaml"
 
 AnswerMode = str  # "stuffed" | "agent"
@@ -82,14 +82,23 @@ DEFAULT_PACE_S = 1.5
 # ---------------------------------------------------------------------------
 
 
-def load_frozen() -> tuple[str, list[dict]]:
-    """The frozen 20 from EVAL.md — measurement only."""
-    text = EVAL_MD.read_text(encoding="utf-8")
+def load_frozen(benchmark: Path = EVAL_MD) -> tuple[str, list[dict]]:
+    """The frozen questions from ``benchmark`` — measurement only.
+
+    Any file in the EVAL.md format works, matching ``scripts/eval.py``: that is
+    what lets a second repo be measured without touching the first one's ground
+    truth, and it keeps each benchmark's results appended to its own file.
+    """
+    if not benchmark.is_file():
+        raise SystemExit(f"benchmark file not found: {benchmark}")
+    text = benchmark.read_text(encoding="utf-8")
     m = re.search(r"```yaml\n(.*?)\n```", text, re.DOTALL)
     if m is None:
-        raise SystemExit("EVAL.md: no ```yaml question block found")
+        raise SystemExit(f"{benchmark.name}: no ```yaml question block found")
     url_m = re.search(r"\((https://github\.com/[^)]+)\)", text)
     questions = yaml.safe_load(m.group(1))
+    if not isinstance(questions, list):
+        raise SystemExit(f"{benchmark.name}: question block did not parse to a list")
     return (url_m.group(1) if url_m else ""), questions
 
 
@@ -430,7 +439,11 @@ def grid_table(results: list[ModeResult]) -> list[str]:
 
 
 def append_block(
-    results: list[ModeResult], model_name: str, n_calls: int, label: str
+    results: list[ModeResult],
+    model_name: str,
+    n_calls: int,
+    label: str,
+    benchmark: Path = EVAL_MD,
 ) -> None:
     block = [
         "",
@@ -452,7 +465,7 @@ def append_block(
         *grid_table(results),
         "",
     ]
-    with EVAL_MD.open("a", encoding="utf-8") as fh:
+    with benchmark.open("a", encoding="utf-8") as fh:
         fh.write("\n".join(block) + "\n")
 
 
@@ -465,7 +478,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pace", type=float, default=DEFAULT_PACE_S, help="seconds between questions")
     p.add_argument("--tool-cap", type=int, default=AGENT_TOOL_CAP)
     p.add_argument("--repo", default="", help="repo url or id")
-    p.add_argument("--no-append", action="store_true", help="do not write to EVAL.md")
+    p.add_argument(
+        "--benchmark",
+        type=Path,
+        default=EVAL_MD,
+        help="benchmark file in the EVAL.md format (default: docs/EVAL.md)",
+    )
+    p.add_argument(
+        "--no-append", action="store_true", help="do not write to the benchmark file"
+    )
     args = p.parse_args(argv)
 
     modes = list(ANSWER_MODES) if args.mode == "both" else [args.mode]
@@ -473,7 +494,7 @@ def main(argv: list[str] | None = None) -> int:
         if m not in ANSWER_MODES:
             p.error(f"unknown mode {m!r}; valid: {list(ANSWER_MODES)} or 'both'")
 
-    url, questions = load_dev() if args.dev else load_frozen()
+    url, questions = load_dev() if args.dev else load_frozen(args.benchmark)
     if args.questions:
         want = {q.strip() for q in args.questions.split(",") if q.strip()}
         questions = [q for q in questions if q["id"] in want]
@@ -483,7 +504,13 @@ def main(argv: list[str] | None = None) -> int:
         p.error("no questions selected")
 
     repo_ref = args.repo or url or "https://github.com/encode/httpx"
-    label = "dev (tuning)" if args.dev else "frozen 20 (measurement)"
+    # Name the benchmark in the label: two files now carry frozen sets, and a
+    # results block that only says "frozen 20" is ambiguous about which repo.
+    label = (
+        "dev (tuning)"
+        if args.dev
+        else f"frozen 20 (measurement) — {args.benchmark.name}"
+    )
     print(f"{label}: {len(questions)} question(s), modes={modes}, pace={args.pace}s")
 
     results, model_name, n_calls = asyncio.run(
@@ -504,12 +531,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nmodel calls this run: {n_calls}   provider: {provider_for(model_name)}")
 
     if args.dev:
-        print("dev set — not appended to EVAL.md (tuning runs are not results)")
+        print("dev set — not appended (tuning runs are not results)")
     elif args.no_append:
-        print("--no-append: not written to EVAL.md")
+        print(f"--no-append: not written to {args.benchmark.name}")
     else:
-        append_block(results, model_name, n_calls, label)
-        print(f"appended results block to {EVAL_MD}")
+        append_block(results, model_name, n_calls, label, args.benchmark)
+        print(f"appended results block to {args.benchmark}")
     return 0
 
 
