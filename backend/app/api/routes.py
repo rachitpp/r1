@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -29,6 +30,11 @@ from app.api.ratelimit import Slots
 from app.api.schemas import (
     ArchitectureOut,
     ChatRequest,
+    ChecklistItemOut,
+    ChecklistOut,
+    ConversationDetail,
+    ConversationList,
+    ConversationOut,
     CoverageOut,
     FileOut,
     HistoryOut,
@@ -44,17 +50,22 @@ from app.api.schemas import (
     SharedAnswerOut,
     ShareRequest,
 )
+from app.checklist import build_checklist
 from app.config import (
     ARCH_MAX_EDGES,
     ARCH_MAX_NODES,
+    CONVERSATION_CONTEXT_TURNS,
+    CONVERSATION_PAGE_MAX,
     COVERAGE_MAX_LINKS,
     FILE_RANGE_MAX_LINES,
     HISTORY_PAGE_MAX,
+    OVERVIEW_MAX_API_SYMBOLS,
     get_settings,
 )
 from app.db import queries
 from app.db.pool import acquire, sample_pool_gauges
 from app.exceptions import (
+    ConversationNotFoundError,
     InvalidLineRangeError,
     RepoFileNotFoundError,
     RepoNotFoundError,
@@ -536,6 +547,106 @@ async def get_repo_history(
     )
 
 
+@router.get(
+    "/repos/{snapshot_id}/conversations", response_model=ConversationList
+)
+async def list_repo_conversations(
+    snapshot_id: UUID, conn: Conn, user: CurrentUser
+) -> ConversationList:
+    """This caller's conversations about this repo, most recently used first (§23.4)."""
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    rows = await queries.list_conversations(
+        conn, snapshot_id, user["id"], CONVERSATION_PAGE_MAX
+    )
+    return ConversationList(
+        conversations=[ConversationOut(**dict(r)) for r in rows]
+    )
+
+
+@router.get(
+    "/repos/{snapshot_id}/conversations/{conversation_id}",
+    response_model=ConversationDetail,
+)
+async def get_repo_conversation(
+    snapshot_id: UUID, conversation_id: UUID, conn: Conn, user: CurrentUser
+) -> ConversationDetail:
+    """Everything needed to resume one conversation (§23.4).
+
+    Every turn carries its stored, already-validated citations, so resuming
+    renders a full transcript with no model call and no re-validation — which is
+    the whole reason turns are stored rather than replayed.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    convo = await queries.owned_conversation(
+        conn, conversation_id, user["id"], snapshot_id
+    )
+    if convo is None:
+        raise ConversationNotFoundError(conversation_id)
+    turns = await queries.conversation_turns(conn, conversation_id)
+    return ConversationDetail.from_rows(convo, turns)
+
+
+@router.delete(
+    "/repos/{snapshot_id}/conversations/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_repo_conversation(
+    snapshot_id: UUID, conversation_id: UUID, conn: Conn, user: CurrentUser
+) -> Response:
+    """Forget a conversation. Scoped in the statement, like §21.4."""
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    if not await queries.delete_conversation(conn, conversation_id, user["id"]):
+        raise ConversationNotFoundError(conversation_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/repos/{snapshot_id}/checklist", response_model=ChecklistOut)
+async def get_repo_checklist(
+    snapshot_id: UUID,
+    conn: Conn,
+    user: CurrentUser,
+) -> ChecklistOut:
+    """"The first five things to understand about this repo" (§22.2).
+
+    **No model call**, which is the whole design. FEATURE-IDEAS pairs 6.5 with
+    3.1 and the obvious reading is "a second generated document" — a second
+    request per snapshot against a tier that allows twenty a day. §18.1 already
+    settled it: if the symbol graph can answer it exactly, it is a query. Which
+    module everything imports, where execution starts, what the package
+    exports, what the tests hit hardest — all `GROUP BY`s §19 was already
+    running. A model would contribute phrasing, and phrasing is a template.
+
+    Deterministic over an immutable snapshot (§14.3), so a client may cache it
+    for as long as it holds the id.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    file_rows = await conn.fetch(
+        "SELECT path, n_lines FROM files WHERE snapshot_id = $1", snapshot_id
+    )
+    items = build_checklist(
+        entry_points=await queries.entry_point_candidates(conn, snapshot_id, 1),
+        # `module_nodes` hands back positional tuples, not records — adapt
+        # here rather than teaching the builder two row shapes.
+        modules=[
+            {"path": p, "n_symbols": n, "fan_in": fi, "fan_out": fo}
+            for p, n, fi, fo in await queries.module_nodes(
+                conn, snapshot_id, include_tests=False, limit=1
+            )
+        ],
+        key_symbols=await queries.most_referenced_symbols(conn, snapshot_id, 1),
+        # More candidates than the step shows: `_package_surface` filters to
+        # this package and dedupes, and needs something to filter.
+        api_symbols=await queries.public_api_symbols(
+            conn, snapshot_id, OVERVIEW_MAX_API_SYMBOLS
+        ),
+        tested_files=await queries.most_tested_files(conn, snapshot_id, 1),
+        n_lines_of={str(r["path"]): int(r["n_lines"]) for r in file_rows},
+    )
+    return ChecklistOut(
+        items=[ChecklistItemOut(**vars(i)) for i in items],
+    )
+
+
 @router.post(
     "/repos/{snapshot_id}/share",
     response_model=ShareCreated,
@@ -643,10 +754,31 @@ async def chat(
     decided while a status code can still be sent — once ``EventSourceResponse``
     is returned, the only thing left to say is an ``error`` event.
     """
+    history: list[Any] = []
+    conversation_id = body.conversation_id
     async with acquire(pool) as conn:
         row = await _require_owned_repo(conn, user["id"], snapshot_id)
-    if row["status"] != "ready":
-        raise RepoNotReadyError(str(row["status"]))
+        if row["status"] != "ready":
+            raise RepoNotReadyError(str(row["status"]))
+        if conversation_id is not None:
+            # Ownership *and* snapshot, per §23.1 — a conversation belongs to a
+            # corpus, and replaying one against a different snapshot would let
+            # its stored citations point at lines that have moved.
+            convo = await queries.owned_conversation(
+                conn, conversation_id, user["id"], snapshot_id
+            )
+            if convo is None:
+                raise ConversationNotFoundError(conversation_id)
+            history = await queries.conversation_turns(
+                conn, conversation_id, CONVERSATION_CONTEXT_TURNS
+            )
+        else:
+            # First turn: open the conversation now so the id exists before the
+            # stream starts, and the client can resume even if it disconnects
+            # mid-answer.
+            conversation_id = await queries.create_conversation(
+                conn, snapshot_id, user["id"], title=body.question[:200]
+            )
 
     if not chat_slots.try_acquire():
         raise ServiceBusyError(
@@ -661,5 +793,13 @@ async def chat(
         metrics.chat_streams_active.set(chat_slots.used)
 
     return EventSourceResponse(
-        chat_event_stream(model, pool, snapshot_id, body.question, on_finish=release)
+        chat_event_stream(
+            model,
+            pool,
+            snapshot_id,
+            body.question,
+            on_finish=release,
+            history=history,
+            conversation_id=conversation_id,
+        )
     )

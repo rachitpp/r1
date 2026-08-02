@@ -95,6 +95,19 @@ SHARED_ANSWER_MAX_CHARS: int = 40_000
 # Citations are re-validated against the snapshot on share (§21.2), so this
 # bounds the work that validation does, not the trust placed in the input.
 SHARED_CITATIONS_MAX: int = 50
+# §23 multi-turn context. Both bound what one request *costs*, which is why
+# they are constants rather than settings: on a tier measured in requests per
+# day, an unbounded history window is an unbounded prompt, and the failure mode
+# is a run that dies mid-answer having already spent the request.
+#
+# Six turns is roughly where a follow-up chain stops referring back — "and where
+# is that called?" reaches one or two turns, not five — and 1_200 characters
+# keeps a prior answer's *conclusion* while dropping the walkthrough that
+# followed it.
+CONVERSATION_CONTEXT_TURNS: int = 6
+CONVERSATION_ANSWER_CHARS: int = 1_200
+# The resume list. A page, not a cap on how many a user may have.
+CONVERSATION_PAGE_MAX: int = 50
 
 # ---------------------------------------------------------------------------
 # Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.

@@ -306,6 +306,9 @@ class ChatRequest(BaseModel):
     """
 
     question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)
+    # §23. Absent means a one-shot run, exactly as before this existed; the
+    # frontend sends it only once a conversation has been started.
+    conversation_id: UUID | None = None
 
 
 class CommitOut(BaseModel):
@@ -437,4 +440,92 @@ class SharedAnswerOut(BaseModel):
             repo_name=row["repo_name"],
             repo_url=row["repo_url"],
             commit_sha=row["commit_sha"],
+        )
+
+
+class ChecklistItemOut(BaseModel):
+    """One step of the §22 onboarding checklist."""
+
+    kind: str
+    title: str
+    detail: str
+    file_path: str
+    start_line: int
+    end_line: int
+    question: str
+
+
+class ChecklistOut(BaseModel):
+    """``GET /repos/{id}/checklist`` (§22.2).
+
+    ``items`` is in reading order, not ranked order — see `build_checklist`.
+    Fewer than five is normal and deliberate: a library has no entry point, and
+    padding the list would teach the reader to skim it.
+    """
+
+    items: list[ChecklistItemOut]
+
+
+class ConversationOut(BaseModel):
+    """One entry in the §23.4 resume list."""
+
+    id: UUID
+    title: str
+    n_turns: int
+    created_at: dt.datetime
+    updated_at: dt.datetime
+
+
+class ConversationList(BaseModel):
+    conversations: list[ConversationOut]
+
+
+class TurnOut(BaseModel):
+    """One stored exchange. No tool timeline — §23.1 does not keep one."""
+
+    ordinal: int
+    question: str
+    answer: str
+    citations: list[Citation]
+    created_at: dt.datetime
+
+
+class ConversationDetail(BaseModel):
+    """``GET /repos/{id}/conversations/{cid}`` — everything needed to resume.
+
+    Turns oldest-first, so a client renders them in the order they happened
+    without sorting. Every turn carries its validated citations, so resuming
+    costs no model call and no re-validation.
+    """
+
+    id: UUID
+    title: str
+    created_at: dt.datetime
+    updated_at: dt.datetime
+    turns: list[TurnOut]
+
+    @classmethod
+    def from_rows(cls, convo: Any, turn_rows: Sequence[Any]) -> ConversationDetail:
+        return cls(
+            id=convo["id"],
+            title=convo["title"],
+            created_at=convo["created_at"],
+            updated_at=convo["updated_at"],
+            turns=[
+                TurnOut(
+                    ordinal=r["ordinal"],
+                    question=r["question"],
+                    answer=r["answer"],
+                    citations=[
+                        Citation(**c)
+                        for c in (
+                            json.loads(r["citations"])
+                            if isinstance(r["citations"], str)
+                            else r["citations"]
+                        )
+                    ],
+                    created_at=r["created_at"],
+                )
+                for r in turn_rows
+            ],
         )

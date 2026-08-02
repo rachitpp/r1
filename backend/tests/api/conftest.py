@@ -38,6 +38,8 @@ UNKNOWN_REPO_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
 # created in-test because publishing needs a session and reading must not have
 # one, and the two cannot be wired into the same app at once.
 SHARED_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
+# A §23 conversation that already exists, owned by USER_ID on REPO_ID.
+CONVO_ID = uuid.UUID("66666666-6666-6666-6666-666666666666")
 FAILED_REPO_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 
 # Two tenants (SPEC §13). USER_ID owns every seeded repo; OTHER_USER_ID owns
@@ -273,11 +275,74 @@ class FakeConn:
                 "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
             }
         }
+        # §23 conversations: {id: {"row":…, "turns":[…]}}. CONVO_ID is seeded
+        # for USER_ID on REPO_ID so resume/append can be tested without first
+        # driving a whole chat stream.
+        self.conversations: dict[uuid.UUID, dict[str, Any]] = {
+            CONVO_ID: {
+                "row": {
+                    "id": CONVO_ID,
+                    "snapshot_id": REPO_ID,
+                    "user_id": USER_ID,
+                    "title": "how does auth work?",
+                    "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+                    "updated_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+                },
+                "turns": [
+                    {
+                        "ordinal": 1,
+                        "question": "how does auth work?",
+                        "answer": "It verifies a token.",
+                        "citations": json.dumps(
+                            [{"file_path": FILE_PATH, "start_line": 1, "end_line": 2}]
+                        ),
+                        "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+                    }
+                ],
+            }
+        }
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
 
     # --- asyncpg surface ---------------------------------------------------
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        # --- §23 conversations --------------------------------------------
+        if "INSERT INTO conversations" in sql:
+            new_id = uuid.uuid4()
+            self.conversations[new_id] = {
+                "row": {
+                    "id": new_id,
+                    "snapshot_id": args[0],
+                    "user_id": args[1],
+                    "title": args[2],
+                    "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+                    "updated_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+                },
+                "turns": [],
+            }
+            return {"id": new_id}
+        if "FROM conversations\n         WHERE id = $1" in sql:
+            entry = self.conversations.get(args[0])
+            if entry is None:
+                return None
+            row = entry["row"]
+            # All three predicates, exactly as the real statement applies them.
+            if row["user_id"] != args[1] or row["snapshot_id"] != args[2]:
+                return None
+            return dict(row)
+        if "INSERT INTO conversation_turns" in sql:
+            entry = self.conversations[args[0]]
+            ordinal = len(entry["turns"]) + 1
+            entry["turns"].append(
+                {
+                    "ordinal": ordinal,
+                    "question": args[1],
+                    "answer": args[2],
+                    "citations": args[3],
+                    "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+                }
+            )
+            return {"ordinal": ordinal}
         # --- §21 shared answers -------------------------------------------
         if "INSERT INTO shared_answers" in sql:
             share_id = uuid.uuid4()
@@ -399,6 +464,60 @@ class FakeConn:
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        # --- §23 conversations --------------------------------------------
+        if "FROM conversation_turns WHERE conversation_id" in sql:
+            entry = self.conversations.get(args[0])
+            turns = list(entry["turns"]) if entry else []
+            # The windowed form keeps the most RECENT n, still oldest-first.
+            if "ORDER BY ordinal DESC LIMIT" in sql:
+                turns = turns[-args[1] :]
+            return [dict(t) for t in turns]
+        if "FROM conversations c" in sql:
+            out = [
+                {
+                    **e["row"],
+                    "n_turns": len(e["turns"]),
+                }
+                for e in self.conversations.values()
+                if e["row"]["snapshot_id"] == args[0] and e["row"]["user_id"] == args[1]
+            ]
+            out.sort(key=lambda r: r["updated_at"], reverse=True)
+            return out[: args[2]]
+        # --- §19/§22 fact queries -----------------------------------------
+        # Shared by the overview brief and the onboarding checklist. Each
+        # returns one row, which is all either consumer takes.
+        # `WITH scoped AS` alone is NOT a discriminator — `module_nodes` opens
+        # with it too, and matching on it silently swallowed the rollup and
+        # dropped the checklist's hub step. `fan AS (` is unique to entry points.
+        if "fan AS (" in sql:
+            return [{"path": "pkg/__main__.py"}][: args[1]]
+        if "SELECT DISTINCT ON (qualname)" in sql:
+            return [
+                {
+                    "name": "verify_token",
+                    "qualname": "pkg.auth.verify_token",
+                    "kind": "function",
+                    "file_path": FILE_PATH,
+                    "start_line": 1,
+                    "end_line": 2,
+                }
+            ][: args[1]]
+        if "count(*) AS refs" in sql:
+            return [
+                {
+                    "name": "verify_token",
+                    "qualname": "pkg.auth.verify_token",
+                    "kind": "function",
+                    "file_path": FILE_PATH,
+                    "start_line": 1,
+                    "end_line": 2,
+                    "refs": 6,
+                }
+            ][: args[1]]
+        if "count(DISTINCT t.id) AS n_tests" in sql:
+            return [
+                {"file_path": FILE_PATH, "n_tests": 3, "start_line": 1}
+            ][: args[1]]
         # --- §20 history ---------------------------------------------------
         # Both shapes honour `include_merges` and the limit, for the same
         # reason the §18 views honour `include_tests`: a fake that ignored the
@@ -480,6 +599,14 @@ class FakeConn:
         if "INSERT INTO user_repos" in sql:
             self.user_repos.add((args[0], args[1]))
             return "INSERT 0 1"
+        if "DELETE FROM conversations" in sql:
+            entry = self.conversations.get(args[0])
+            if entry is not None and entry["row"]["user_id"] == args[1]:
+                del self.conversations[args[0]]
+                return "DELETE 1"
+            return "DELETE 0"
+        if "UPDATE conversations SET updated_at" in sql:
+            return "UPDATE 1"
         if "DELETE FROM shared_answers" in sql:
             row = self.shares.get(args[0])
             if row is not None and row["created_by"] == args[1]:
