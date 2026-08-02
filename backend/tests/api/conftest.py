@@ -16,6 +16,7 @@ warms an 18-second model. State the app needs is set directly on ``app.state``.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
@@ -106,6 +107,60 @@ COVERS_ROWS: list[dict[str, Any]] = [
     }
 ]
 
+# §20 history. Shaped so every query-time decision is provable: two commits on
+# FILE_PATH at different times (ordering), one merge that also touched it
+# (excluded by default), and one commit on a different file (path scoping).
+HISTORY_ROWS: list[dict[str, Any]] = [
+    {
+        "sha": "c0ffee1",
+        "author_name": "Ada",
+        "author_email": "ada@example.com",
+        "authored_at": dt.datetime(2026, 7, 3, tzinfo=dt.UTC),
+        "subject": "auth: reject expired tokens",
+        "body": "The check was there and never ran.",
+        "is_merge": False,
+        "insertions": 12,
+        "deletions": 3,
+        "_path": FILE_PATH,
+    },
+    {
+        "sha": "beef002",
+        "author_name": "Grace",
+        "author_email": None,
+        "authored_at": dt.datetime(2026, 7, 1, tzinfo=dt.UTC),
+        "subject": "auth: first cut",
+        "body": None,
+        "is_merge": False,
+        "insertions": 40,
+        "deletions": 0,
+        "_path": FILE_PATH,
+    },
+    {
+        "sha": "merge003",
+        "author_name": "Ada",
+        "author_email": "ada@example.com",
+        "authored_at": dt.datetime(2026, 7, 2, tzinfo=dt.UTC),
+        "subject": "Merge branch 'auth'",
+        "body": None,
+        "is_merge": True,
+        "insertions": 0,
+        "deletions": 0,
+        "_path": FILE_PATH,
+    },
+    {
+        "sha": "d0cs004",
+        "author_name": "Grace",
+        "author_email": None,
+        "authored_at": dt.datetime(2026, 7, 4, tzinfo=dt.UTC),
+        "subject": "docs: unrelated",
+        "body": None,
+        "is_merge": False,
+        "insertions": 5,
+        "deletions": 1,
+        "_path": "README.md",
+    },
+]
+
 
 def _user_row(user_id: uuid.UUID, login: str) -> dict[str, Any]:
     """A `users` row as `queries.USER_COLUMNS` selects it."""
@@ -192,11 +247,20 @@ class FakeConn:
         # "claim exactly once" assertion is testing the same rule the database
         # enforces rather than a fixture that happens to agree with it.
         self.overviews: dict[uuid.UUID, dict[str, Any]] = {}
+        # §20. Keyed by snapshot and *absent* for INDEXING_REPO_ID, so the
+        # "indexed" flag has a repo to be false for — the state every snapshot
+        # ingested before §20 is actually in.
+        self.history: dict[uuid.UUID, list[dict[str, Any]]] = {
+            REPO_ID: [dict(r) for r in HISTORY_ROWS]
+        }
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
 
     # --- asyncpg surface ---------------------------------------------------
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        # §20.4: "was history indexed at all", asked only when the list is empty.
+        if "EXISTS (SELECT 1 FROM commits" in sql:
+            return {"present": bool(self.history.get(args[0]))}
         # --- §14.2 sources and snapshots ---------------------------------
         if "INSERT INTO repo_sources" in sql:
             url, name = str(args[0]), str(args[1])
@@ -289,6 +353,32 @@ class FakeConn:
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        # --- §20 history ---------------------------------------------------
+        # Both shapes honour `include_merges` and the limit, for the same
+        # reason the §18 views honour `include_tests`: a fake that ignored the
+        # flag would pass the assertion without proving it reached SQL.
+        if "FROM commit_files cf" in sql:
+            snapshot_id, path, include_merges, limit = args[0], str(args[1]), args[2], args[3]
+            if snapshot_id not in self.history:
+                return []
+            rows = [
+                r
+                for r in self.history[snapshot_id]
+                if r["_path"] == path and (include_merges or not r["is_merge"])
+            ]
+            rows.sort(key=lambda r: (r["authored_at"], r["sha"]), reverse=True)
+            return [{k: v for k, v in r.items() if k != "_path"} for r in rows][:limit]
+        if "LEFT JOIN commit_files cf" in sql:
+            snapshot_id, include_merges, limit = args[0], args[1], args[2]
+            if snapshot_id not in self.history:
+                return []
+            rows = [
+                r
+                for r in self.history[snapshot_id]
+                if include_merges or not r["is_merge"]
+            ]
+            rows.sort(key=lambda r: (r["authored_at"], r["sha"]), reverse=True)
+            return [{k: v for k, v in r.items() if k != "_path"} for r in rows][:limit]
         # --- §18 graph views ----------------------------------------------
         # `include_tests` ($2) is honoured rather than ignored: the tests assert
         # the flag reaches SQL, and a fake that returned the same rows either

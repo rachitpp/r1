@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from collections.abc import Sequence
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -300,3 +301,69 @@ class ChatRequest(BaseModel):
     """
 
     question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)
+
+
+class CommitOut(BaseModel):
+    """One commit in a §20.2 history response.
+
+    ``insertions``/``deletions`` are scoped to the requested path when the
+    query was, and commit-wide totals when it was not — see `commit_history`.
+    """
+
+    sha: str
+    author_name: str
+    author_email: str | None
+    authored_at: dt.datetime
+    subject: str
+    body: str | None
+    is_merge: bool
+    insertions: int
+    deletions: int
+
+
+class HistoryOut(BaseModel):
+    """``GET /repos/{id}/history`` (§20.2).
+
+    ``indexed`` is the field that keeps an empty ``commits`` list honest. A
+    snapshot ingested before §20 has no rows and neither does a repo with one
+    commit; without this flag both read as "nothing ever happened here". Same
+    reasoning as §18.3's empty-not-404, one level up: the response distinguishes
+    *we did not look* from *there is nothing to see*.
+    """
+
+    path: str | None
+    indexed: bool
+    include_merges: bool
+    commits: list[CommitOut]
+    truncated: bool
+
+    @classmethod
+    def from_rows(
+        cls,
+        rows: Sequence[Any],
+        *,
+        path: str | None,
+        indexed: bool,
+        include_merges: bool,
+        limit: int,
+    ) -> HistoryOut:
+        return cls(
+            path=path,
+            indexed=indexed,
+            include_merges=include_merges,
+            commits=[
+                CommitOut(
+                    sha=r["sha"],
+                    author_name=r["author_name"],
+                    author_email=r["author_email"],
+                    authored_at=r["authored_at"],
+                    subject=r["subject"],
+                    body=r["body"],
+                    is_merge=r["is_merge"],
+                    insertions=r["insertions"],
+                    deletions=r["deletions"],
+                )
+                for r in rows
+            ],
+            truncated=len(rows) >= limit,
+        )
