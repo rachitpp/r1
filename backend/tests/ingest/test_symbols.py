@@ -17,6 +17,7 @@ from app.ingest.symbols import (
     KIND_CALLS,
     KIND_EXTENDS,
     KIND_IMPORTS,
+    _import_roots,
     _SpanIndex,
     extract_edges,
     extract_symbols,
@@ -300,3 +301,66 @@ def test_edges_written_counts_both_validated_and_module_imports(make_repo) -> No
     repo = make_repo(CROSS_FILE_REPO)
     _, edges, stats = _symbols_and_edges(repo)
     assert stats.edges_written() == len(edges)
+
+
+# --- src-layout import roots (SPEC §6.1) -----------------------------------
+
+# The package lives under src/, so nothing on Jedi's default path contains it.
+# `tests/` reaches the implementation only through `import widget.*`, which is
+# exactly the edge that vanished before _import_roots existed.
+SRC_LAYOUT_REPO: dict[str, str | bytes] = {
+    "src/widget/__init__.py": "",
+    "src/widget/core.py": (
+        "class Widget:\n"
+        "    def render(self):\n"
+        "        return 'ok'\n"
+    ),
+    "tests/test_widget.py": (
+        "from widget.core import Widget\n"
+        "\n"
+        "\n"
+        "def test_render():\n"
+        "    return Widget().render()\n"
+    ),
+}
+
+
+def test_import_roots_finds_src_layout(make_repo) -> None:
+    repo = make_repo(SRC_LAYOUT_REPO)
+    assert [Path(r).name for r in _import_roots(repo)] == ["src"]
+
+
+def test_import_roots_empty_for_flat_layout(make_repo) -> None:
+    """A package at the root needs no extra path entry — and must not get one."""
+    repo = make_repo(CROSS_FILE_REPO)
+    assert _import_roots(repo) == []
+
+
+def test_import_roots_skips_ignored_directories(make_repo) -> None:
+    repo = make_repo(
+        {
+            "src/widget/__init__.py": "",
+            "node_modules/vendored/__init__.py": "",
+        }
+    )
+    assert [Path(r).name for r in _import_roots(repo)] == ["src"]
+
+
+def test_test_to_src_edge_resolves_under_src_layout(make_repo) -> None:
+    """The regression this exists for: tests -> src resolved to nothing.
+
+    Measured on flask-sqlalchemy before the fix: zero ``tests/`` -> ``src/``
+    edges out of 136 test symbols. `GET /coverage` was empty for every file in
+    the package as a direct result.
+    """
+    repo = make_repo(SRC_LAYOUT_REPO)
+    symbols, edges, _ = _symbols_and_edges(repo)
+    by_key = {(s.file_path, s.start_line): s for s in symbols}
+    crossings = {
+        (by_key[e.from_key].file_path, by_key[e.to_key].file_path)
+        for e in edges
+        if e.from_key in by_key and e.to_key in by_key
+    }
+    assert any(
+        frm.startswith("tests/") and to.startswith("src/") for frm, to in crossings
+    ), f"no tests/ -> src/ edge among {sorted(crossings)}"

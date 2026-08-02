@@ -12,8 +12,13 @@ before the workdir is deleted.
 Resolution is best-effort by design. SPEC §6.1 budgets a per-file wall-clock
 timeout (``JEDI_FILE_TIMEOUT_S``) checked between resolutions — no hard
 interrupt, no signal handlers, just "stop starting new work on this file".
-~20% unresolved overall is expected and acceptable; the rate is logged, not
-chased.
+The rate is logged, not chased. SPEC §6.1 budgets ~20% unresolved, a number
+calibrated on httpx alone and **not currently met** — flask measures 30% after
+the src-layout fix below, and the residual is undiagnosed. Read the budget as
+history, not as a threshold anything enforces.
+
+What *is* enforced is that imports can resolve at all: see :func:`_import_roots`
+for why a ``src/`` layout otherwise loses every test-to-implementation edge.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from pathlib import Path
 import jedi
 from tree_sitter import Node
 
-from app.config import JEDI_FILE_TIMEOUT_S
+from app.config import IGNORE_DIRS, JEDI_FILE_TIMEOUT_S
 from app.ingest.filters import SourceFile, is_test_path
 from app.ingest.parser import KIND_MODULE, ParsedFile, parse_tree
 
@@ -323,6 +328,43 @@ def _collect_sites(root: Node) -> list[_Site]:
 # ---------------------------------------------------------------------------
 
 
+def _import_roots(repo_dir: Path) -> list[str]:
+    """Directories to add to Jedi's path so in-repo imports resolve (SPEC §6.1).
+
+    Jedi's ``smart_sys_path`` covers the project root and each script's own
+    directory. That is enough for a *flat* layout — ``httpx/`` sitting beside
+    ``tests/``, where ``import httpx`` resolves from the root — and it is why
+    httpx measured 4% unresolved and set the original budget.
+
+    It is not enough for the ``src/`` layout, where the package lives at
+    ``src/flask/`` and nothing on the default path contains it. Every
+    ``import flask`` in ``tests/`` then resolves to nothing, and because the
+    test suite reaches implementation *only* through that import, the whole
+    test-to-implementation half of the graph disappears — silently, since an
+    unresolved edge is a miss rather than an error. Measured on flask-sqlalchemy:
+    zero ``tests/`` -> ``src/`` edges before, 173 after.
+
+    The rule is deliberately shallow: a depth-1 directory that is not itself a
+    package but contains one is an import root. That catches ``src/`` (and the
+    rarer ``lib/`` and ``python/``) without reading ``pyproject.toml``, whose
+    answer differs per build backend and would cost a parser for each.
+    """
+    roots: list[str] = []
+    for child in sorted(repo_dir.iterdir()):
+        if not child.is_dir() or child.name in IGNORE_DIRS:
+            continue
+        if (child / "__init__.py").is_file():
+            # A package itself, so the directory *above* it is the import root
+            # and is already on the path as the project root.
+            continue
+        try:
+            if any((d / "__init__.py").is_file() for d in child.iterdir() if d.is_dir()):
+                roots.append(str(child))
+        except OSError:  # unreadable directory — not a root we can use
+            continue
+    return roots
+
+
 def _rel_path(abs_path: Path, repo_dir: Path) -> str | None:
     """Repo-relative posix path, or None for targets outside the repo."""
     try:
@@ -347,7 +389,13 @@ def extract_edges(
     stats = EdgeStats()
     seen: set[tuple[tuple[str, int], tuple[str, int], str, int | None]] = set()
     edges: list[EdgeRow] = []
-    project = jedi.Project(str(repo_dir))
+    roots = _import_roots(repo_dir)
+    if roots:
+        logger.info(
+            "jedi import roots beyond the project root: %s",
+            ", ".join(Path(r).name for r in roots),
+        )
+    project = jedi.Project(str(repo_dir), added_sys_path=roots)
     run_start = time.perf_counter()
 
     for source in sources:
