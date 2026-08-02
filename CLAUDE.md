@@ -8,7 +8,9 @@ a LangGraph agent traverses the symbol graph to pull in dependent code the
 retriever missed → answers stream over SSE with file/line citations.
 
 **v1 scope:** public GitHub repos, Python code only, single user, no auth.
-Deferred to v2: TypeScript grammar, commit-history indexing, private repos.
+Deferred to v2: TypeScript grammar, private repos. (Commit-history indexing was
+deferred and is now built — SPEC §20, 2026-08-02. The clone is no longer
+depth-1.)
 
 ## Source-of-truth docs
 

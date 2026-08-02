@@ -27,8 +27,11 @@ multi-user, incremental re-indexing.
 ## §2 Ingestion pipeline
 
 ### 2.1 Clone
-- `git clone --depth 1 --single-branch <url> <workdir>/<repo_id>` via
-  GitPython. Depth 1 because commit history is out of scope for v1.
+- `git clone --depth HISTORY_MAX_COMMITS --single-branch <url>
+  <workdir>/<repo_id>` via GitPython. This read `--depth 1`, "because commit
+  history is out of scope for v1"; §20 put it in scope, and a depth-1 clone has
+  one commit to walk. Still a *shallow* clone — a bounded deepening, not a full
+  history.
 - Record `head_sha` and default branch on the repo row.
 - Workdir is deleted on completion *and* on failure (try/finally).
 
@@ -807,6 +810,8 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `OVERVIEW_MAX_API_SYMBOLS` | 25 | §19.2 |
 | `OVERVIEW_MAX_KEY_SYMBOLS` | 15 | §19.2 |
 | `ENTRY_POINT_FILENAMES` | `{__main__.py, cli.py, main.py, app.py, server.py, manage.py}` | §19.2 |
+| `HISTORY_MAX_COMMITS` | 500 | §20.1 |
+| `HISTORY_PAGE_MAX` | 100 | §20.2 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
 | `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
@@ -1764,3 +1769,139 @@ file already in hand.
 re-enqueue while generating or when ready, failure surfaced without auto-retry,
 `?retry=true` clearing only `failed` rows, tenancy 404 *before* any claim is
 spent, and the two prompt regressions above pinned as tests.
+
+---
+
+## §20 Commit history
+
+Everything above describes the code **as it is** at one commit. Nothing
+described how it got there — which is the question a newcomer asks second and
+often first: *why is this like this?* §20 indexes the log and answers it from
+SQL.
+
+### 20.1 Ingest — the walk
+
+**§2.1 changes.** It cloned `--depth 1`, and said so explicitly: "commit history
+is out of scope for v1." It is in scope now, and a depth-1 clone has exactly one
+commit to walk. The clone deepens to `HISTORY_MAX_COMMITS` (§12) and stays
+shallow — a bounded deepening, not a full history. Blobs are still fetched only
+for the checked-out tree, which is where clone time actually goes.
+
+One `git log --numstat` invocation, parsed in `app/ingest/history.py`. The
+obvious alternative — GitPython's `iter_commits()` with `commit.stats` — is a
+separate diff per commit, so 500 commits becomes 500 subprocesses.
+
+The parse exists because commit **bodies contain newlines**. Each record is
+introduced by ASCII RS and its fields separated by ASCII US, so the header is
+unambiguous; the trailing field is `body` followed by the numstat block, which
+is separated by scanning backwards from the end while lines still look like
+numstat. A body whose *final* line is exactly `<int>\t<int>\t<path>` would lose
+that line to the file list. Accepted: the alternative is two passes over the log
+to rescue a case that does not occur.
+
+Stored per commit: sha, author name and email, **author date** (not commit date
+— "when was this written" survives a rebase, which is what the question means),
+subject and body split at ingest, and `is_merge`. Per touched file: the path and
+its line deltas.
+
+* **`is_merge` is flag-and-filter** (§2.6, §6.3). A merge "touches" every file of
+  the branch it absorbs, which is noise in a per-file history and signal in a
+  release timeline. Classify at ingest, decide at query time. `--numstat` emits
+  no file rows for a merge by default, so merges cost nothing in `commit_files`.
+* **Renames resolve to the destination.** git reports `src/{old => new}.py`;
+  §20 stores `src/new.py`, because that is the path a reader has open.
+* **History never fails an ingest.** A non-repo directory, an unwalkable shallow
+  clone, a malformed record — all yield what they have. History is an
+  enrichment; failing a corpus that is otherwise complete would trade something
+  real for something optional. The pass runs *after* the graph for the same
+  reason.
+
+### 20.2 Read — `GET /repos/{id}/history`
+
+```
+HistoryOut {
+  path: str | null
+  indexed: bool
+  include_merges: bool
+  commits: [{sha, author_name, author_email, authored_at,
+             subject, body, is_merge, insertions, deletions}]
+  truncated: bool
+}
+```
+
+Query parameters: `path` (scope to one file), `include_merges` (default false),
+`limit` (default and max `HISTORY_PAGE_MAX`).
+
+**An endpoint, not a seventh agent tool.** §18.1 set this rule and §20 is the
+case it was written for. "What changed here recently", "who last touched this",
+"when was this introduced" are exact answers a `WHERE` clause already holds.
+Routing them through the model would spend from a budget of 8 (§7.2) to compute
+what SQL knows, and make the result non-reproducible in the bargain. The half
+that genuinely needs judgement — reading a diff and explaining *why* — is not
+this endpoint, and would be a different feature.
+
+`insertions`/`deletions` are the deltas **for the requested path** when scoped
+and the commit-wide totals when not: the number a reader expects in each
+context, rather than one number that is right in only one of them.
+
+### 20.3 `indexed`, and why an empty list is not enough
+
+`commits: []` has two causes that mean opposite things:
+
+* the file has no commits in the walked window — a real answer about this file;
+* **nobody walked the log** — true of every snapshot ingested before §20, which
+  is every snapshot that existed when it shipped.
+
+Rendering those identically would state "no history" about a repo with years of
+it. `indexed` separates them, and the UI reads it before it reads `commits`.
+This is §18.3's empty-not-404 reasoning one level up: there, the empty list was
+the honest answer and a 404 would have been an existence oracle; here the empty
+list is honest only once you can tell which emptiness it is.
+
+An unknown `path` still returns an empty list rather than 404, for the §18.3
+reason unchanged.
+
+### 20.4 Shared properties
+
+Identical to §18.4, and for the same reasons: ownership through
+`_require_owned_repo` and nowhere else, no code body in the response (`/files`
+remains the only endpoint that serves code), the default per-identity rate
+limit, and determinism over an immutable snapshot (§14.3) — so a client may
+cache a response for as long as it holds the snapshot id.
+
+**Nothing is backfilled.** The pass runs at ingest; a snapshot predating §20
+reports `indexed: false` until it is re-ingested. This is the same rule the
+src-layout fix established (DECISIONS 2026-08-02) and it is stated here so no
+one has to rediscover it from an empty panel.
+
+### 20.5 Storage shape
+
+`012_commits.sql`. Both tables key on **`snapshot_id`**, like `files`/`chunks`/
+`symbols`/`edges` and unlike a `source_id` design that suggested itself first.
+History up to commit C is as immutable as the tree at commit C, so it belongs to
+the snapshot under the §14.3 argument that lets the overview be cached forever.
+The cost is duplication — two snapshots of one repo store the log twice,
+including §2.7's `naive` baseline at the same commit. Accepted deliberately: the
+alternative ties a source's history to whichever snapshot fetched it deepest,
+and then *"the history of this corpus"* stops being answerable. Duplication is
+bounded by `HISTORY_MAX_COMMITS`; a wrong answer is bounded by nothing.
+
+`commit_files` carries `snapshot_id` denormalised from `commits`, because the
+hot query is "history of path P in snapshot S" and that makes it one index seek
+rather than a join filtered after the fact — the same reason `007` put
+`snapshot_id` directly on chunks and symbols.
+
+### 20.6 Verification
+
+`tests/ingest/test_history.py` drives **real git repositories built in a tmp
+dir**, not canned `git log` output: the entire risk in that module is the format
+string and the parser disagreeing, and a hand-written fixture would test the
+parser against my belief about git rather than against git. Covers ordering,
+subject/body splitting, the almost-numstat body line, line deltas, the
+`max_commits` bound, merge flagging, rename resolution, a single-commit repo,
+and a directory that is not a repo at all.
+
+`tests/api/test_history.py` — reverse-chronological ordering, merges excluded by
+default and reachable by flag, path scoping, null author email, unknown path
+empty-not-404, the `indexed: false` case, `limit` validation at both ends,
+cross-tenant 404, anonymous 401, and no code body in the response.

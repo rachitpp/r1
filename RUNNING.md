@@ -226,6 +226,7 @@ PATH` writes every chunk as JSONL, `--sample N` prints N random full chunks.
 | 409 on chat | repo isn't `ready` yet | wait for the status page |
 | Clone fails on a real repo | v1 is **public repos only** | private repos are v2 |
 | Ingest finishes with 0 chunks | repo has no Python | v1 is **Python only** |
+| The code viewer says "History not indexed for this snapshot" | the snapshot was ingested before SPEC §20 — history is written at ingest and nothing backfills | re-ingest that repo; new ingests index up to `HISTORY_MAX_COMMITS` (500) automatically |
 | OOM / swap thrash | <8 GB RAM | the embedder needs headroom |
 
 Logs worth reading: the worker terminal narrates every ingest stage; the API

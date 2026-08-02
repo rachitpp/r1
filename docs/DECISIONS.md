@@ -3034,3 +3034,70 @@ is reachable without anything being broken. Nothing reads them; left alone.
 way, and the row is left as written because this log is append-only. Flagged
 rather than corrected, since an off-by-one in a count nobody re-derived is
 exactly the kind of thing that becomes a load-bearing citation later.
+
+## 2026-08-02 — 2.1 built: history is a query, and §2.1's depth-1 had to go
+
+FEATURE-IDEAS 2.1 built as SPEC §20. Four decisions worth the ink, and the first
+one is the only place this feature touches anything that already worked.
+
+**The clone is no longer depth-1, and that is a real cost.** §2.1 said "depth 1
+because commit history is out of scope for v1" — an honest constraint that the
+feature's whole premise contradicts. A depth-1 clone has one commit to walk.
+Deepening to `HISTORY_MAX_COMMITS` (500) is a bounded fetch of commit objects,
+not a full clone: blobs still come only for the checked-out tree, which is where
+clone time actually goes. Rejected: leaving §2.1 alone and running `git fetch
+--deepen` as a second step, which is the same bytes over two round trips and a
+second failure mode for no benefit.
+
+**An endpoint, not a seventh agent tool — and the sketch assumed otherwise.**
+FEATURE-IDEAS proposed `search_commits` as a 7th tool alongside the existing six.
+§18.1 had already settled this in the other direction: the agent's budget is 8
+executions (§7.2) and Phase 5 reached it, so a new tool does not merely need a
+DECISIONS entry, it changes how the existing eight get spent. "Who last touched
+this", "what changed here recently" and "when was this introduced" are exact
+answers a `WHERE` clause holds. Spending a scarce budget to compute what SQL
+knows — and making it non-reproducible — buys nothing. The half that genuinely
+needs judgement, reading a diff and explaining *why*, is a different feature and
+is not built. The agent loop is untouched; the tool count is still six.
+
+**`indexed` exists because an empty list has two meanings.** `commits: []` is
+either "this file has no commits in the walked window" or "nobody walked the
+log" — and the second is true of every snapshot that existed when this shipped.
+Rendering them the same way states "no history" about a repo with years of it.
+This is the §18.3 empty-not-404 argument one level up: there the empty list was
+already honest and a 404 would have leaked existence; here the empty list is
+honest only once the caller can tell which emptiness it is. The UI reads the
+flag before it reads the list, and says "History not indexed for this snapshot"
+rather than inventing a fact.
+
+That distinction is not theoretical. Today's earlier entry records a shipped
+feature silently degraded because its legitimate empty state was
+indistinguishable from a broken one — `/coverage` returning `[]` for every file
+in a src-layout package. §20 is the same shape of feature; the flag is what that
+lesson cost.
+
+**Keyed on `snapshot_id`, accepting duplication.** `source_id` suggested itself
+first and is wrong: history up to commit C is as immutable as the tree at C, so
+it belongs to the snapshot under the §14.3 argument that makes the overview
+cacheable forever. Keyed on the source, history would belong to whichever
+snapshot happened to fetch it deepest, and "the history of *this* corpus" stops
+being answerable. The cost is that two snapshots of one repo store the log
+twice, including §2.7's `naive` baseline at the same commit. Duplication is
+bounded by a constant; a wrong answer is bounded by nothing.
+
+**One `git log`, and a parse that can lose a line.** GitPython's `iter_commits()`
+with `commit.stats` is a separate diff per commit — 500 subprocesses. Instead:
+one `--numstat` invocation with ASCII RS/US separators, which makes the header
+unambiguous. Bodies contain newlines, so body and numstat block are separated by
+scanning backwards from the end while lines still parse as numstat. **A body
+whose final line is exactly `<int>\t<int>\t<path>` loses that line to the file
+list.** Recorded rather than fixed: the alternative is a second pass over the
+log, and the tests build real repositories — including a body containing such a
+line in a non-final position — rather than asserting against canned output,
+because a hand-written fixture would test the parser against my belief about git
+instead of against git.
+
+**Not backfilled, like everything else that reads ingest output.** A snapshot
+predating §20 reports `indexed: false` until re-ingested. Same rule as the
+src-layout fix, and stated in §20.4 so nobody has to infer it from an empty
+panel.

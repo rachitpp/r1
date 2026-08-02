@@ -19,6 +19,13 @@
 > them touches ingest or retrieval, so none could disturb the eval-equality
 > verification V2/V3 rest on. See SPEC §18 and DECISIONS 2026-07-31.
 >
+> **Status, 2026-08-02 (later).** **2.1** built as SPEC §20, bringing the total
+> to **nine**. Notable as the first item since the §18 batch to touch ingest: it
+> needed a migration, a `git log` pass, and a change to §2.1's depth-1 clone,
+> which existed *because* history was out of scope. The catalogue's sketch called
+> for a 7th agent tool; §18.1's rule said endpoint, and endpoint is what shipped.
+> See DECISIONS 2026-08-02.
+>
 > **Status, 2026-08-02.** **3.3** built, bringing the total to eight. It is the
 > second view of 2.2's rollup rather than anything new — no endpoint, no request,
 > no model call — which is why it was the right thing to take next and why it took
@@ -168,7 +175,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ## 2. Depth — what it understands
 
-### 2.1 Git-history awareness (`search_commits`, blame)
+### 2.1 Git-history awareness (`search_commits`, blame) — **BUILT 2026-08-02**
 
 - **What it is.** A new agent tool (and ingest pass) that makes commit history
   queryable: *"when was this introduced and why?"*, *"what changed here
@@ -184,15 +191,50 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   v2 backlog ("Commit-history indexing").
 - **Implementation sketch.**
   1. During clone (`SPEC §2.1`), walk `git log` and store commits + file/line
-     touch ranges in a new `commits` / `commit_files` table.
-  2. Optionally embed commit messages for semantic search over "why."
-  3. Add `search_commits(query | path | symbol)` as a 7th tool; register it in
-     the agent and the SPEC (DECISIONS entry per the tool-cap rule).
-  4. Add a "blame" affordance in the code viewer (who/when for a line range).
-- **Effort.** **M.**
-- **Money cost.** $0.
-- **Risks.** History can be huge on old repos — cap depth (e.g. last N commits
-  or since a date), same discipline as the file-size caps in `filters.py`.
+     touch ranges in a new `commits` / `commit_files` table. *(Built as written,
+     with one thing the sketch missed: §2.1 cloned `--depth 1` **because**
+     history was out of scope, so there was nothing to walk. The clone had to
+     deepen first — the one place this feature touches something that worked.)*
+  2. Optionally embed commit messages for semantic search over "why." *(Not
+     built. It is the only half that needs a model, and it is a separate
+     feature — see the note under step 3.)*
+  3. ~~Add `search_commits(query | path | symbol)` as a 7th tool~~ — **rejected,
+     and this was the significant call.** §18.1 had already settled it the other
+     way: the agent's budget is 8 executions and Phase 5 reached it, so a 7th
+     tool changes how the existing eight get spent. "Who last touched this" is
+     a `WHERE` clause. Shipped as `GET /repos/{id}/history` instead; the tool
+     count is still six and the agent loop is untouched.
+  4. ~~Add a "blame" affordance in the code viewer~~ — shipped as per-file
+     history rather than per-line blame: the strip answers "how did this file
+     get here", which is the question a reader of a file actually has.
+- **Effort.** **M.** *(Actual: M — genuinely, unlike 2.2 and 3.3. This one adds
+  a migration, an ingest pass, an endpoint and a surface, and is the first item
+  since the §18 batch that touches ingest at all.)*
+- **Money cost.** $0, and **zero model calls** — the property that made it the
+  right pick over 3.2/3.4/5.1, all of which multiply runs against the 20/day
+  tier.
+- **Risks.** Correctly identified: `HISTORY_MAX_COMMITS` (500) is both the clone
+  depth and the row cap, deliberately one number — fetching 500 and storing 200
+  pays the network cost without the benefit.
+- **Shipped as.** `GET /repos/{id}/history?path=&include_merges=&limit=`
+  (SPEC §20.2), plus `012_commits.sql` and a `git log --numstat` pass that
+  **never fails an ingest** — history is an enrichment, and a corpus that is
+  otherwise complete should not be lost to it.
+- **Surfaced as.** A collapsed strip in the code viewer under the coverage one:
+  subject, short sha, author, relative time, and the line deltas *for that
+  file*. Merges are excluded by default (`is_merge` is stored, so it stays a
+  query-time decision, per §2.6's flag-and-filter).
+- **The part worth stealing.** The response carries an `indexed` flag, because
+  `commits: []` means either "no commits in the window" or "nobody walked the
+  log" — and the second is true of every snapshot that existed when this
+  shipped. Rendering both as "no history" would state a falsehood about a repo
+  with years of it. That is the §18.3 empty-not-404 reasoning one level up, and
+  it is the direct lesson of `/coverage` being silently degraded by the
+  src-layout bug earlier the same day.
+- **Honest limitation.** The body parser can lose a line: a commit message whose
+  *final* line is exactly `<int>\t<int>\t<path>` is indistinguishable from the
+  numstat block it precedes. Recorded rather than fixed — the alternative is a
+  second pass over the log for a case that does not occur.
 
 ### 2.2 Architecture-level understanding — **BUILT 2026-07-31**
 
@@ -605,7 +647,7 @@ noted.
 | Idea | Value | Effort | Reuses what exists? | Notes |
 |---|---|---|---|---|
 | 3.1 Auto-overview | ★★★★★ | M | Almost entirely | **BUILT** — one model call, not a loop |
-| 2.1 Git-history tool | ★★★★ | M | Snapshots are commit-pinned | Answers a question nothing else does |
+| 2.1 Git-history tool | ★★★★ | M | Snapshots are commit-pinned | **BUILT** — as an endpoint; the 7th tool was rejected |
 | 4.1 Private repos | ★★★★ | M | OAuth token already the credential | Security-first |
 | 3.5 Explain-this quick action | ★★★ | S | Chat pipeline + viewer | **BUILT** — and `?q=` fed 3.1 |
 | 2.4 Test↔code linkage | ★★★ | S–M | `is_test` + edges | **BUILT** — cheap, high signal |
@@ -628,12 +670,9 @@ standing on the last:
    repo page (which you just enhanced) *the* onboarding surface.
 2. ~~**2.2 Architecture rollup** + **3.3 diagrams**~~ — **done.** Both fell out of
    the graph, as predicted; 3.3 turned out to need no query at all.
-3. **2.1 Git-history tool** — adds the "why / when" dimension nothing else covers.
-   **Next up.** One note for whoever picks it up: the sketch below assumes a 7th
-   agent tool, but §18.1's rule argues against that for most of it. Blame, "what
-   changed here recently" and "who last touched this" are exact SQL and belong as
-   endpoints; only semantic search over commit *messages* needs the model. That
-   split also keeps the ingest-side work at zero model calls.
+3. ~~**2.1 Git-history tool**~~ — **done.** The endpoint/tool split above was the
+   right call and is now the built shape; the semantic-search-over-messages half
+   remains unbuilt and is the only part that would need a model.
 4. **3.5 explain-this** + **2.4 test↔code** + **6.x product polish** — a cluster of
    cheap wins that make it feel finished.
 5. **4.4 multi-turn memory** — the interaction upgrade from "search box" to

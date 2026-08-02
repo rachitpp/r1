@@ -484,7 +484,9 @@ Do not: add features. Anything tempting goes to the backlog below.
 ## v2 backlog (explicitly deferred)
 
 - TypeScript grammar + import resolution
-- Commit-history indexing (`search_commits` tool)
+- ~~Commit-history indexing (`search_commits` tool)~~ — **done 2026-08-02**, as
+  `GET /repos/{id}/history` rather than a tool. §18.1's rule: an exact SQL answer
+  should not spend from the agent's budget of 8. SPEC §20, DECISIONS 2026-08-02.
 - Private repos (GitHub tokens) and auth/multi-user
 - Symbol-graph mini-map (react-force-graph)
 - Embedding model upgrade pass (code-specific model A/B via eval.py)
