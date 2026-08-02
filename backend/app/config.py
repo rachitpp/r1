@@ -10,7 +10,11 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from arq.connections import RedisSettings
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from redis.asyncio.retry import Retry  # async variant: sync Retry's
+from redis.backoff import ExponentialBackoff  # call_with_retry is not awaitable
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 # ---------------------------------------------------------------------------
 # Constants — SPEC §12 (single source of truth). Do not scatter these values.
@@ -264,6 +268,25 @@ class Settings(BaseSettings):
     # Per-request provider timeout, passed to whichever client model.py builds.
     AGENT_REQUEST_TIMEOUT_S: float = 60.0
 
+    # ARQ's own default is 1 second, which is a LAN number. A managed Redis is
+    # a TLS handshake across a region: this instance measures 1.08-1.20s to
+    # connect, so every attempt sat on the wrong side of the default and the
+    # worker died twice in one session on a `TimeoutError` raised inside
+    # `run_job` — outside the startup retry envelope, so nothing caught it.
+    # Ingest then stalls at 0% with no error, which RUNNING.md §6 lists as the
+    # most common broken-looking setup.
+    REDIS_CONN_TIMEOUT_S: int = 10
+    # redis-py does not retry a timeout unless told to, and a dropped
+    # connection mid-job is exactly the case worth retrying rather than
+    # crashing the process.
+    REDIS_RETRY_ON_TIMEOUT: bool = True
+    # How many times a *command* is retried before the error reaches ARQ. This
+    # is separate from `conn_retries`, which only covers pool creation at
+    # startup: the crashes that killed this worker happened mid-run, where
+    # nothing was retrying at all. 3 with exponential backoff rides out a
+    # server-side reset without papering over a Redis that is genuinely gone.
+    REDIS_COMMAND_RETRIES: int = 3
+
     # Concurrent ingests (queued or in flight). Each is minutes of CPU and
     # hundreds of MB of disk on a box that is also serving chat.
     MAX_ACTIVE_INGESTS: int = 3
@@ -302,3 +325,39 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Return a cached `Settings` instance."""
     return Settings()  # type: ignore[call-arg]  # values sourced from env/.env
+
+
+def redis_settings() -> RedisSettings:
+    """Queue connection settings, sized for a *managed* Redis.
+
+    Both the worker and the API build an ARQ pool, so this lives here rather
+    than in either — ``from_dsn`` on its own silently keeps ARQ's 1-second
+    ``conn_timeout``, and getting that wrong in one of the two places is the
+    kind of split-brain that only shows up under load.
+
+    **Two different failures killed this worker, and one setting only fixed
+    one of them.** ``conn_timeout`` addressed ``TimeoutError`` on connect.
+    ``retry_on_timeout`` does *not* cover ``ConnectionError`` — a peer reset
+    mid-command — and redis-py builds a retry policy only for the errors named
+    in ``retry_on_error``, so an unlisted one propagates and ARQ dies. Both are
+    listed here on purpose; see ``REDIS_CONN_TIMEOUT_S`` for the measurements.
+    """
+    settings = get_settings()
+    rs = RedisSettings.from_dsn(settings.REDIS_URL)
+    rs.conn_timeout = settings.REDIS_CONN_TIMEOUT_S
+    rs.retry_on_timeout = settings.REDIS_RETRY_ON_TIMEOUT
+    # `retry_on_timeout` appends TimeoutError to this list at connection time;
+    # ConnectionError has to be asked for by name.
+    rs.retry_on_error = [RedisConnectionError]
+    # Without a Retry object redis-py falls back to `Retry(NoBackoff(), 1)` —
+    # one immediate retry, which is the wrong shape for a server that just
+    # dropped the connection and needs a moment.
+    #
+    # This must be `redis.asyncio.retry.Retry`, not the sync class of the same
+    # name: only the async one's `call_with_retry` is awaitable, so the sync
+    # class connects fine and then fails at the moment a retry actually fires —
+    # i.e. exactly when it is needed and never in a smoke test. mypy caught it.
+    rs.retry = Retry(
+        ExponentialBackoff(cap=5.0, base=0.1), settings.REDIS_COMMAND_RETRIES
+    )
+    return rs

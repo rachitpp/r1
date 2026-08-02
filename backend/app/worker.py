@@ -20,13 +20,14 @@ import socket
 from typing import Any
 from uuid import UUID
 
-from arq.connections import RedisSettings
-
 from app.config import (
     HEARTBEAT_EVERY_S,
     LEASE_EXPIRY_S,
     ZOMBIE_AFTER_S,
     get_settings,
+)
+from app.config import (
+    redis_settings as build_redis_settings,
 )
 from app.db import queries
 from app.db.pool import close_pool, create_pool
@@ -247,7 +248,7 @@ class WorkerSettings:
     functions = [ping, ingest_repo, generate_overview]
     on_startup = on_startup
     on_shutdown = on_shutdown
-    redis_settings = RedisSettings.from_dsn(get_settings().REDIS_URL)
+    redis_settings = build_redis_settings()
     job_timeout = JOB_TIMEOUT_S
     max_tries = MAX_TRIES
     poll_delay = POLL_DELAY_S

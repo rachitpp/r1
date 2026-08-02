@@ -18,7 +18,6 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from arq.connections import RedisSettings
 from arq.connections import create_pool as create_arq_pool
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +33,7 @@ from app.api.middleware import (
 )
 from app.api.routes import router
 from app.config import get_settings
+from app.config import redis_settings as build_redis_settings
 from app.db.pool import close_pool, create_pool
 from app.ingest.embedder import get_embedder, shutdown_inference
 from app.logging_setup import configure_logging
@@ -62,9 +62,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:  # noqa: BLE001 — tolerate any connection failure
         logger.warning("could not create asyncpg pool at startup: %s", exc)
     try:
-        app.state.arq = await create_arq_pool(
-            RedisSettings.from_dsn(settings.REDIS_URL)
-        )
+        app.state.arq = await create_arq_pool(build_redis_settings())
         logger.info("arq queue connected")
     except Exception as exc:  # noqa: BLE001 — /health must not need Redis
         logger.warning("could not connect to redis at startup: %s", exc)
