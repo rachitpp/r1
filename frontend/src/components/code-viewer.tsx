@@ -24,6 +24,7 @@ import {
   ExternalLink,
   FileCode2,
   FlaskConical,
+  History,
   Sparkles,
   WrapText,
   X,
@@ -33,9 +34,9 @@ import type { ThemedToken } from "shiki/core";
 
 import { useTheme } from "@/hooks/use-theme";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getCoverage, getFile } from "@/lib/api";
+import { ApiError, getCoverage, getFile, getHistory } from "@/lib/api";
 import type { Citation } from "@/lib/citations";
-import { githubBlobUrl } from "@/lib/format";
+import { githubBlobUrl, shortSha, timeAgo } from "@/lib/format";
 import { DARK_THEME, LIGHT_THEME, getHighlighter } from "@/lib/highlighter";
 import { cn } from "@/lib/utils";
 
@@ -255,6 +256,107 @@ function CoverageStrip({
             </p>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Commit history for the open file (SPEC §20.2).
+ *
+ * Same collapsed shape as the coverage strip above, and for the same reason:
+ * this pane is for reading code, and history is context you reach for rather
+ * than context you want permanently on screen.
+ *
+ * **The empty states are not the same state**, which is the whole design of
+ * this component. `indexed: false` means nobody walked the log — true of every
+ * snapshot ingested before §20 — and it says so, because rendering it as "no
+ * commits" would be a confident lie about a repo with years of history. An
+ * *indexed* file with no commits genuinely has none in the walked window, and
+ * renders nothing at all rather than a row of chrome saying so.
+ */
+function HistoryStrip({ repoId, path }: { repoId: string; path: string }) {
+  const [open, setOpen] = useState(false);
+  const history = useQuery({
+    queryKey: ["history", repoId, path],
+    queryFn: () => getHistory(repoId, { path, limit: 25 }),
+    // Immutable snapshot (§14.3): the log up to this commit cannot change.
+    staleTime: Infinity,
+    retry: false,
+  });
+
+  useEffect(() => setOpen(false), [path]);
+
+  const data = history.data;
+  if (!data) return null;
+  // Indexed and empty is a real answer about this file — say nothing.
+  if (data.indexed && data.commits.length === 0) return null;
+
+  const summary = !data.indexed
+    ? "History not indexed for this snapshot"
+    : `${data.commits.length}${data.truncated ? "+" : ""} commit${
+        data.commits.length === 1 ? "" : "s"
+      } · last ${timeAgo(data.commits[0].authored_at)}`;
+
+  return (
+    <div className="border-b bg-secondary/20 text-xs">
+      <button
+        type="button"
+        onClick={() => data.indexed && setOpen((v) => !v)}
+        aria-expanded={data.indexed ? open : undefined}
+        disabled={!data.indexed}
+        className={cn(
+          "flex w-full items-center gap-2 px-3 py-1.5 text-left text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          data.indexed ? "hover:text-foreground" : "cursor-default",
+        )}
+      >
+        <History className="size-3.5 shrink-0 text-[hsl(var(--sage))]" />
+        <span className="truncate">{summary}</span>
+        {data.indexed && (
+          <ChevronDown
+            className={cn(
+              "ml-auto size-3.5 shrink-0 transition-transform",
+              open && "rotate-180",
+            )}
+          />
+        )}
+      </button>
+
+      {open && (
+        <ul className="max-h-56 space-y-2 overflow-y-auto px-3 pb-3">
+          {data.commits.map((c) => (
+            <li key={c.sha} className="leading-snug">
+              <div className="flex items-baseline gap-2">
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground/70">
+                  {shortSha(c.sha)}
+                </span>
+                <span className="truncate font-medium" title={c.subject}>
+                  {c.subject}
+                </span>
+              </div>
+              <div className="pl-[3.25rem] text-[11px] text-muted-foreground">
+                {c.author_name} · {timeAgo(c.authored_at)}
+                {/* Deltas are for this file, not the commit — the number a
+                    reader of this file expects. */}
+                {(c.insertions > 0 || c.deletions > 0) && (
+                  <span className="ml-1.5 font-mono">
+                    <span className="text-[hsl(var(--sage))]">
+                      +{c.insertions}
+                    </span>{" "}
+                    <span className="text-[hsl(var(--clay))]">
+                      −{c.deletions}
+                    </span>
+                  </span>
+                )}
+              </div>
+            </li>
+          ))}
+          {data.truncated && (
+            <li className="text-[11px] text-muted-foreground/70">
+              Showing the most recent commits only.
+            </li>
+          )}
+        </ul>
       )}
     </div>
   );
@@ -498,6 +600,11 @@ export function CodeViewer({
           onSelect={onSelect}
         />
       )}
+
+      {/* ...and how it got that way. Below coverage deliberately: "what tests
+          this" is a question about the code as it is, which is what the reader
+          came for; "how did this change" is the second question. */}
+      {selection && <HistoryStrip repoId={repoId} path={selection.file_path} />}
 
       {/* Body — empty ghost, error, loading, or the tokenised file. */}
       {!selection ? (

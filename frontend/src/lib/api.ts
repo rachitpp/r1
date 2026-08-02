@@ -239,6 +239,48 @@ export function getCoverage(
   );
 }
 
+export interface CommitOut {
+  sha: string;
+  author_name: string;
+  author_email: string | null;
+  authored_at: string;
+  subject: string;
+  body: string | null;
+  is_merge: boolean;
+  /** Scoped to the requested path when one was given; commit-wide otherwise. */
+  insertions: number;
+  deletions: number;
+}
+
+/**
+ * `GET /repos/{id}/history` (SPEC §20.2).
+ *
+ * `indexed` is the field to read before `commits`. Every snapshot ingested
+ * before §20 returns an empty list with `indexed: false`, which means "nobody
+ * walked the log", not "this file has no history" — rendering those the same
+ * way is the bug the flag exists to prevent.
+ */
+export interface HistoryOut {
+  path: string | null;
+  indexed: boolean;
+  include_merges: boolean;
+  commits: CommitOut[];
+  truncated: boolean;
+}
+
+export function getHistory(
+  repoId: string,
+  opts: { path?: string; limit?: number } = {},
+): Promise<HistoryOut> {
+  const params = new URLSearchParams();
+  if (opts.path) params.set("path", opts.path);
+  if (opts.limit) params.set("limit", String(opts.limit));
+  const query = params.toString();
+  return request<HistoryOut>(
+    `/repos/${repoId}/history${query ? `?${query}` : ""}`,
+  );
+}
+
 /* -------------------------------------------------------------------------
  * Identity (SPEC §13)
  * ---------------------------------------------------------------------- */
