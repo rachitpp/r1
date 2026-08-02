@@ -17,6 +17,7 @@ warms an 18-second model. State the app needs is set directly on ``app.state``.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
@@ -33,6 +34,10 @@ from tests.agent.test_graph import FakeChatModel
 REPO_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 INDEXING_REPO_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 UNKNOWN_REPO_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
+# A §21 permalink that already exists, published by USER_ID. Seeded rather than
+# created in-test because publishing needs a session and reading must not have
+# one, and the two cannot be wired into the same app at once.
+SHARED_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
 FAILED_REPO_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 
 # Two tenants (SPEC §13). USER_ID owns every seeded repo; OTHER_USER_ID owns
@@ -253,11 +258,52 @@ class FakeConn:
         self.history: dict[uuid.UUID, list[dict[str, Any]]] = {
             REPO_ID: [dict(r) for r in HISTORY_ROWS]
         }
+        # §21 permalinks, keyed by share id exactly as the table is.
+        self.shares: dict[uuid.UUID, dict[str, Any]] = {
+            SHARED_ID: {
+                "id": SHARED_ID,
+                "snapshot_id": REPO_ID,
+                "created_by": USER_ID,
+                "question": "how does auth work?",
+                "answer": "It verifies the token in `pkg/auth.py`.",
+                "citations": json.dumps(
+                    [{"file_path": FILE_PATH, "start_line": 1, "end_line": 2}]
+                ),
+                "model": "mistral-medium-latest",
+                "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+            }
+        }
         self.executed: list[tuple[str, tuple[Any, ...]]] = []
 
     # --- asyncpg surface ---------------------------------------------------
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+        # --- §21 shared answers -------------------------------------------
+        if "INSERT INTO shared_answers" in sql:
+            share_id = uuid.uuid4()
+            self.shares[share_id] = {
+                "id": share_id,
+                "snapshot_id": args[0],
+                "created_by": args[1],
+                "question": args[2],
+                "answer": args[3],
+                "citations": args[4],
+                "model": args[5],
+                "created_at": dt.datetime(2026, 8, 2, tzinfo=dt.UTC),
+            }
+            return {"id": share_id}
+        if "FROM shared_answers sa" in sql:
+            row = self.shares.get(args[0])
+            if row is None:
+                return None
+            repo = self.repos[row["snapshot_id"]]
+            return {
+                **row,
+                "repo_name": repo["name"],
+                "repo_url": repo["url"],
+                "commit_sha": repo["head_sha"],
+                "strategy": repo["strategy"],
+            }
         # §20.4: "was history indexed at all", asked only when the list is empty.
         if "EXISTS (SELECT 1 FROM commits" in sql:
             return {"present": bool(self.history.get(args[0]))}
@@ -434,6 +480,12 @@ class FakeConn:
         if "INSERT INTO user_repos" in sql:
             self.user_repos.add((args[0], args[1]))
             return "INSERT 0 1"
+        if "DELETE FROM shared_answers" in sql:
+            row = self.shares.get(args[0])
+            if row is not None and row["created_by"] == args[1]:
+                del self.shares[args[0]]
+                return "DELETE 1"
+            return "DELETE 0"
         if "DELETE FROM snapshot_overviews" in sql:
             row = self.overviews.get(args[0])
             if row is not None and row["status"] == "failed":
@@ -580,8 +632,17 @@ def _wire(
     """Point the app's dependencies at the fakes.
 
     ``as_user`` overrides ``get_current_user`` so route tests do not each have
-    to mint a session. ``None`` leaves the real dependency in place, which is
-    how the unauthenticated cases reach a genuine 401 instead of a faked one.
+    to mint a session. ``None`` restores the real dependency, which is how the
+    unauthenticated cases reach a genuine 401 instead of a faked one.
+
+    The ``pop`` matters. These overrides are global to ``app``, so a test that
+    requests two client fixtures wires the app twice and the last call wins. It
+    used to only ever *add* the user override, which meant an ``anon_client``
+    set up after a signed-in one silently inherited its session — an
+    unauthenticated assertion that passes for the wrong reason. It now clears,
+    so the two fixtures cannot be combined without the failure being obvious.
+    (They still should not be combined: one app, one wiring. Seed the row
+    instead, the way ``shares`` below is seeded.)
     """
 
     async def _get_conn() -> AsyncIterator[FakeConn]:
@@ -593,6 +654,8 @@ def _wire(
     app.dependency_overrides[deps.get_chat_model] = lambda: model
     if as_user is not None:
         app.dependency_overrides[deps.get_current_user] = lambda: conn.users[as_user]
+    else:
+        app.dependency_overrides.pop(deps.get_current_user, None)
     app.state.pool = conn
     app.state.arq = arq
     app.state.embedder_ready = False

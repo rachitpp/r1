@@ -37,6 +37,7 @@ from app.exceptions import (
     RepoFileNotFoundError,
     RepoNotFoundError,
     RepoNotReadyError,
+    SharedAnswerNotFoundError,
     TooManyRequestsError,
     UnauthorizedError,
 )
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 # so ServiceBusyError lands on TooManyRequestsError's 429 without repeating it.
 _STATUS: dict[type[Exception], int] = {
     RepoNotFoundError: status.HTTP_404_NOT_FOUND,
+    SharedAnswerNotFoundError: status.HTTP_404_NOT_FOUND,
     RepoFileNotFoundError: status.HTTP_404_NOT_FOUND,
     # 422, matching FastAPI's own validation failures: the URL is the wrong
     # shape, which is a body problem, not a missing resource.

@@ -43,6 +43,19 @@ class RepoNotFoundError(AppError):
         super().__init__(f"no repo {repo_id}")
 
 
+class SharedAnswerNotFoundError(AppError):
+    """No permalink for that id (§21.3, 404).
+
+    Raised identically for "never existed", "belongs to someone else" and
+    "retracted". Collapsing the three is the point: a distinguishable response
+    would let anyone probe which share ids are real.
+    """
+
+    def __init__(self, share_id: object) -> None:
+        self.share_id = share_id
+        super().__init__(f"no shared answer {share_id}")
+
+
 class RepoFileNotFoundError(AppError):
     """The repo exists but holds no file at that path (§8, 404).
 

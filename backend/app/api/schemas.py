@@ -16,7 +16,12 @@ from uuid import UUID
 import asyncpg
 from pydantic import BaseModel, Field
 
-from app.config import QUESTION_MAX_CHARS, REPO_URL_MAX_CHARS
+from app.config import (
+    QUESTION_MAX_CHARS,
+    REPO_URL_MAX_CHARS,
+    SHARED_ANSWER_MAX_CHARS,
+    SHARED_CITATIONS_MAX,
+)
 
 
 class RepoCreate(BaseModel):
@@ -366,4 +371,70 @@ class HistoryOut(BaseModel):
                 for r in rows
             ],
             truncated=len(rows) >= limit,
+        )
+
+
+class CitationIn(BaseModel):
+    """A citation as the client claims it. Re-validated before storage (§21.2)."""
+
+    file_path: str = Field(min_length=1, max_length=1_000)
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
+
+
+class ShareRequest(BaseModel):
+    """``POST /repos/{id}/share`` — publish one answer.
+
+    Every field is client-supplied, so every field is bounded. The citations
+    are checked against the snapshot server-side; the caps here bound the work
+    that check does, not the trust placed in the input.
+    """
+
+    question: str = Field(min_length=1, max_length=QUESTION_MAX_CHARS)
+    answer: str = Field(min_length=1, max_length=SHARED_ANSWER_MAX_CHARS)
+    citations: list[CitationIn] = Field(default_factory=list, max_length=SHARED_CITATIONS_MAX)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class ShareCreated(BaseModel):
+    """The permalink id. The URL is the frontend's to build (§21.3)."""
+
+    id: UUID
+
+
+class SharedAnswerOut(BaseModel):
+    """``GET /shared/{id}`` — the public read.
+
+    Carries the repo's name, URL and pinned commit so a reader with no account
+    can still resolve citations, as GitHub blob links at that commit. That is
+    what makes a permalink useful off this app, and it is sound only because a
+    snapshot is frozen (§14.3).
+
+    ``created_by`` is absent by design: who published an answer is the owner's
+    business, not the reader's.
+    """
+
+    id: UUID
+    question: str
+    answer: str
+    citations: list[Citation]
+    model: str | None
+    created_at: dt.datetime
+    repo_name: str
+    repo_url: str
+    commit_sha: str | None
+
+    @classmethod
+    def from_row(cls, row: Any) -> SharedAnswerOut:
+        raw = row["citations"]
+        return cls(
+            id=row["id"],
+            question=row["question"],
+            answer=row["answer"],
+            citations=json.loads(raw) if isinstance(raw, str) else raw,
+            model=row["model"],
+            created_at=row["created_at"],
+            repo_name=row["repo_name"],
+            repo_url=row["repo_url"],
+            commit_sha=row["commit_sha"],
         )

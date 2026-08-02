@@ -87,6 +87,14 @@ HISTORY_MAX_COMMITS: int = 500
 # and a single file's history have very different natural lengths, and the
 # response is read by a human either way.
 HISTORY_PAGE_MAX: int = 100
+# §21 shared answers. The body arrives from the *client*, which is the reason
+# this is a hard cap rather than a guideline: an unbounded field on a route that
+# writes a row is a storage DoS with extra steps. Sized well above any answer
+# the 8-call loop has produced.
+SHARED_ANSWER_MAX_CHARS: int = 40_000
+# Citations are re-validated against the snapshot on share (§21.2), so this
+# bounds the work that validation does, not the trust placed in the input.
+SHARED_CITATIONS_MAX: int = 50
 
 # ---------------------------------------------------------------------------
 # Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.
