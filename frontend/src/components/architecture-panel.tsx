@@ -22,6 +22,7 @@ import { ArrowRight, ChevronRight, Network } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
+import { ArchitectureDiagram } from "@/components/architecture-diagram";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ApiError, getArchitecture, type ModuleNode } from "@/lib/api";
 import {
@@ -97,6 +98,9 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
   const [includeTests, setIncludeTests] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  // List first, deliberately: it needs no extra bundle and answers the common
+  // question. The diagram is the second look, for shape rather than detail.
+  const [view, setView] = useState<"list" | "diagram">("list");
 
   const arch = useQuery({
     queryKey: ["architecture", repoId, includeTests],
@@ -149,20 +153,63 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
         <Network className="mt-1 hidden size-5 shrink-0 text-primary sm:block" />
       </div>
 
-      <label className="flex w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-        <input
-          type="checkbox"
-          checked={includeTests}
-          onChange={(e) => {
-            setIncludeTests(e.target.checked);
-            setOpen(null);
-          }}
-          className="size-3.5 accent-[hsl(var(--primary))]"
-        />
-        Include test files
-      </label>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <label className="flex w-fit cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={includeTests}
+            onChange={(e) => {
+              setIncludeTests(e.target.checked);
+              setOpen(null);
+            }}
+            className="size-3.5 accent-[hsl(var(--primary))]"
+          />
+          Include test files
+        </label>
 
-      <ol className="divide-y border-y">
+        {/* Only offered when there is a graph to draw: with no cross-module
+            edges the picture is a row of disconnected boxes, which is worse
+            than the list at saying the same thing. */}
+        {linked && (
+          <div
+            role="tablist"
+            aria-label="Architecture view"
+            className="flex items-center gap-0.5 rounded-md border p-0.5"
+          >
+            {(["list", "diagram"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                role="tab"
+                aria-selected={view === v}
+                onClick={() => setView(v)}
+                className={cn(
+                  "rounded-sm px-2.5 py-1 text-xs font-medium capitalize transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  view === v
+                    ? "bg-secondary text-secondary-foreground"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {v}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {view === "diagram" && linked && (
+        <ArchitectureDiagram
+          nodes={nodes}
+          edges={edges}
+          onPick={(path) => {
+            setOpen(path);
+            setView("list");
+            setShowAll(true);
+          }}
+        />
+      )}
+
+      <ol className={cn("divide-y border-y", view === "diagram" && "hidden")}>
         {shown.map((n) => {
           const isOpen = open === n.path;
           return (
@@ -238,7 +285,12 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
         })}
       </ol>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+      <div
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground",
+          view === "diagram" && "hidden",
+        )}
+      >
         {nodes.length > PREVIEW ? (
           <button
             type="button"
@@ -253,9 +305,10 @@ export function ArchitecturePanel({ repoId }: { repoId: string }) {
         {truncated && <span>Top {nodes.length} modules shown.</span>}
       </div>
 
-      {/* Not an error state. Jedi resolves ~96% of sites but drops everything
-          outside the repo (§6.1), so a thin repo legitimately has no
-          cross-module edges at all — say so rather than showing empty lists. */}
+      {/* Not an error state. Jedi drops everything outside the repo (§6.1), and
+          resolution varies a lot by repo — 4% unresolved on httpx, 15% on
+          flask's `src/` — so a thin repo legitimately has no cross-module edges
+          at all. Say so rather than showing empty lists. */}
       {!linked && (
         <p className="text-xs text-muted-foreground">
           No cross-module edges resolved for this repo — every module here
