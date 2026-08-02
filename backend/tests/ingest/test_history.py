@@ -78,14 +78,48 @@ def test_splits_subject_from_body(repo: Path) -> None:
 
 
 def test_body_keeps_a_line_that_looks_like_numstat(repo: Path) -> None:
-    """The documented edge of the backwards scan — it must survive a *middle* one.
-
-    Only a body whose *final* line parses as numstat is lost. This one has such
-    a line followed by nothing, so the scan stops at the real file block.
-    """
     commits, _ = walk_history(repo)
     assert commits[0].body is not None
     assert "not-a-path" in commits[0].body
+
+
+def test_body_ending_in_a_numstat_line_is_kept_whole(tmp_path: Path) -> None:
+    """The case the first parser lost.
+
+    Scanning backwards for the file block cannot tell a body's last line from
+    the block's first. The `%b` terminator can, and this is the regression that
+    proves it: the numstat-shaped line is the *final* line of the body, and it
+    must stay in the body while the real file list stays out of it.
+    """
+    root = tmp_path / "trap"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "a@b.c")
+    _git(root, "config", "user.name", "A")
+    (root / "real.py").write_text("v = 1\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "subj\n\nchangelog:\n12\t3\tsrc/fake.py")
+
+    commits, touches = walk_history(root)
+    assert commits[0].body == "changelog:\n12\t3\tsrc/fake.py"
+    # The decoy never became a file row; only the file actually committed did.
+    assert [t.file_path for t in touches] == ["real.py"]
+
+
+def test_a_unit_separator_in_the_body_does_not_truncate_it(tmp_path: Path) -> None:
+    """Fields are US-delimited, and only the body may legitimately contain one."""
+    root = tmp_path / "us"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "a@b.c")
+    _git(root, "config", "user.name", "A")
+    (root / "f.py").write_text("v = 1\n")
+    _git(root, "add", ".")
+    _git(root, "commit", "-q", "-m", "subj\n\nbefore\x1fafter")
+
+    commits, _ = walk_history(root)
+    assert commits[0].body is not None
+    assert "after" in commits[0].body
 
 
 def test_file_touches_carry_line_deltas(repo: Path) -> None:

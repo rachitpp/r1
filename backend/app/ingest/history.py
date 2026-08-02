@@ -5,13 +5,17 @@ One ``git log`` invocation, parsed. The obvious alternative — GitPython's
 so 500 commits is 500 subprocesses on top of the object reads. This is one.
 
 The parse is the only interesting part, and it exists because commit *bodies*
-contain newlines. Each record is introduced by a record separator and its
-fields are unit-separated, so the header is unambiguous; the trailing field is
-``body`` followed by the ``--numstat`` block, which is disambiguated by
-scanning from the end while lines still look like numstat. A body whose final
-line is exactly ``<int>\\t<int>\\t<path>`` would lose that line to the file
-list — accepted, because the alternative is two passes over the log to save a
-case that does not occur in practice.
+contain newlines. Three control characters make it unambiguous rather than
+heuristic: a record separator introduces each commit, unit separators delimit
+the header fields, and — the one that matters — an **explicit terminator after
+``%b``** ends the body. git's ``--format`` passes literal characters through, so
+the body is everything up to that byte and the ``--numstat`` block is everything
+after it.
+
+The first version instead scanned backwards from the end of the record while
+lines still looked like numstat, which lost a body whose *final* line was
+exactly ``<int>\\t<int>\\t<path>``. That was written up as an accepted
+limitation before the terminator turned out to cost one character.
 """
 
 from __future__ import annotations
@@ -32,8 +36,14 @@ logger = logging.getLogger(__name__)
 # field, which is what keeps this from needing an escaping scheme.
 _REC = "\x1e"
 _FIELD = "\x1f"
+# ETX, closing the body. Without it the body and the numstat block that follows
+# are separated only by a guess, because `%b` is the one field that can contain
+# newlines. With it the split is exact.
+_BODY_END = "\x03"
 
-_FORMAT = _REC + _FIELD.join(["%H", "%an", "%ae", "%aI", "%P", "%s", "%b"])
+_FORMAT = (
+    _REC + _FIELD.join(["%H", "%an", "%ae", "%aI", "%P", "%s", "%b"]) + _BODY_END
+)
 
 # `<insertions>\t<deletions>\t<path>`, where a binary file reports `-` for both.
 _NUMSTAT = re.compile(r"^(\d+|-)\t(\d+|-)\t(.+)$")
@@ -83,34 +93,30 @@ def normalise_path(raw: str) -> str:
 
 def _parse_record(record: str) -> tuple[CommitRow, list[CommitFileRow]] | None:
     """Turn one separator-delimited record into rows, or None if malformed."""
-    parts = record.split(_FIELD)
+    # The terminator splits header+body from the file block exactly. A record
+    # without one is truncated output, not something to guess at.
+    head, sep, numstat_block = record.partition(_BODY_END)
+    if not sep:
+        return None
+
+    parts = head.split(_FIELD)
     if len(parts) < 7:
         return None
     sha, author_name, author_email, authored, parents, subject = parts[:6]
-    tail = parts[6]
+    # Re-join rather than take parts[6]: a US byte in a commit body would
+    # otherwise silently truncate it. Nothing after the subject is delimited.
+    body = _FIELD.join(parts[6:]).strip() or None
 
     try:
         when = datetime.fromisoformat(authored.strip())
     except ValueError:
         return None
 
-    # Split the trailing field into body and numstat by walking backwards: the
-    # file block is always last and always contiguous.
-    lines = tail.split("\n")
     files: list[CommitFileRow] = []
-    cut = len(lines)
-    for i in range(len(lines) - 1, -1, -1):
-        line = lines[i]
-        if not line.strip():
-            # A blank line inside the file block cannot happen, but one between
-            # body and block can — keep scanning without consuming it.
-            if i == len(lines) - 1 or files:
-                cut = i
-                continue
-            break
+    for line in numstat_block.split("\n"):
         m = _NUMSTAT.match(line)
         if not m:
-            break
+            continue
         ins, dels, raw_path = m.groups()
         files.append(
             CommitFileRow(
@@ -121,10 +127,7 @@ def _parse_record(record: str) -> tuple[CommitRow, list[CommitFileRow]] | None:
                 deletions=0 if dels == "-" else int(dels),
             )
         )
-        cut = i
-    files.reverse()
 
-    body = "\n".join(lines[:cut]).strip() or None
     return (
         CommitRow(
             sha=sha,
@@ -143,9 +146,17 @@ def _parse_record(record: str) -> tuple[CommitRow, list[CommitFileRow]] | None:
 
 
 def walk_history(
-    repo_path: Path, max_commits: int = HISTORY_MAX_COMMITS
+    repo_path: Path,
+    max_commits: int = HISTORY_MAX_COMMITS,
+    rev: str | None = None,
 ) -> tuple[list[CommitRow], list[CommitFileRow]]:
     """Read up to ``max_commits`` commits from the clone at ``repo_path``.
+
+    ``rev`` walks from a specific commit instead of HEAD. Ingest does not need
+    it — it walks the clone it just made — but backfilling an existing snapshot
+    does: that snapshot is pinned to `commit_sha` (§14), and the repo's HEAD has
+    moved on since. Walking HEAD there would file another commit's history under
+    this snapshot's id, which is worse than having none.
 
     Never raises for history reasons. A repo with one commit, a shallow clone
     that cannot walk further, an empty log — all return what they have. History
@@ -160,6 +171,7 @@ def walk_history(
             f"--max-count={max_commits}",
             # Dates as authored, not normalised to the ingesting machine's zone.
             "--date=iso-strict",
+            *([rev] if rev else []),
         )
     except Exception as exc:  # noqa: BLE001 - deliberately total; see docstring
         # GitCommandError is the expected one, but "not a repo", a corrupt
