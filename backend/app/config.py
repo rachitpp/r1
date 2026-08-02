@@ -77,6 +77,16 @@ OVERVIEW_MAX_KEY_SYMBOLS: int = 15
 ENTRY_POINT_FILENAMES: frozenset[str] = frozenset(
     {"__main__.py", "cli.py", "main.py", "app.py", "server.py", "manage.py"}
 )
+# §20 commit history. This is the clone depth *and* the row cap, deliberately
+# one number: fetching 500 commits and storing 200 would pay the network cost
+# without the benefit, and storing 500 from a depth-1 clone is impossible. It
+# bounds an unbounded input the way MAX_FILE_BYTES does — Linux has ~1.3M
+# commits and no per-file history needs them.
+HISTORY_MAX_COMMITS: int = 500
+# One page of §20.2. Separate from the cap above because a repo-wide timeline
+# and a single file's history have very different natural lengths, and the
+# response is read by a human either way.
+HISTORY_PAGE_MAX: int = 100
 
 # ---------------------------------------------------------------------------
 # Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.

@@ -47,6 +47,7 @@ from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo
 from app.ingest.embedder import get_embedder
 from app.ingest.filters import SelectionResult, is_test_path, select_files
+from app.ingest.history import walk_history
 from app.ingest.naive import naive_chunk_file
 from app.ingest.parser import ParsedFile, parse_file
 from app.ingest.symbols import EdgeStats, extract_edges, extract_symbols
@@ -157,6 +158,41 @@ async def _store_graph(
     return len(symbols), n_test, len(edge_rows), stats
 
 
+async def _store_history(
+    conn: asyncpg.Connection, snapshot_id: UUID, repo_dir: Path
+) -> tuple[int, int]:
+    """Read and store the commit log (SPEC §20.1). Returns ``(commits, touches)``.
+
+    Must run **inside** the clone context — it reads `.git`, which the workdir
+    cleanup removes.
+
+    Touch rows are keyed to commits by sha, and a sha absent from the insert
+    map means ``ON CONFLICT DO NOTHING`` skipped it because history for this
+    snapshot was already stored. Dropping those touches is correct: the rows
+    they would duplicate are already there.
+    """
+    commits, touches = walk_history(repo_dir)
+    if not commits:
+        return 0, 0
+
+    id_of = await queries.insert_commits(
+        conn,
+        snapshot_id,
+        [
+            (c.sha, c.author_name, c.author_email, c.authored_at,
+             c.subject, c.body, c.is_merge)
+            for c in commits
+        ],
+    )
+    file_rows: list[queries.CommitFileRowT] = [
+        (id_of[t.sha], t.file_path, t.insertions, t.deletions)
+        for t in touches
+        if t.sha in id_of
+    ]
+    await queries.insert_commit_files(conn, snapshot_id, file_rows)
+    return len(id_of), len(file_rows)
+
+
 async def run_ingest(
     snapshot_id: UUID,
     *,
@@ -251,6 +287,7 @@ async def _run(
         # snapshot is not servable), so clearing them races with no reader,
         # which is exactly what was untrue before the split.
         await queries.clear_repo_graph(conn, snapshot_id)
+        await queries.clear_repo_history(conn, snapshot_id)
         await queries.clear_repo_content(conn, snapshot_id)
         file_rows = [(f.path, f.text, f.n_lines) for f in selection.files]
         await queries.insert_files(conn, snapshot_id, file_rows)
@@ -311,6 +348,22 @@ async def _run(
                 f"symbols {n_symbols} ({n_symbols - n_symbols_test} impl / "
                 f"{n_symbols_test} test), edges {n_edges} ({graph_elapsed:.0f}s)"
             )
+
+        # --- history -------------------------------------------------------
+        # Inside the clone context, and after the graph so a history failure
+        # cannot cost a corpus that is otherwise complete. `walk_history`
+        # already swallows its own errors (§20.1); this is belt and braces
+        # about the storage half.
+        #
+        # Deliberately outside `if build_graph`: history describes the *repo*,
+        # not the chunking strategy, and §2.7's naive baseline sits at the same
+        # commit. Storing it twice is the duplication `012` accepts on purpose.
+        try:
+            n_commits, n_touches = await _store_history(conn, snapshot_id, info.path)
+            if n_commits:
+                say(f"history {n_commits} commits, {n_touches} file touches")
+        except Exception as exc:  # noqa: BLE001 - enrichment must not fail ingest
+            logger.warning("history pass failed for %s: %s", snapshot_id, exc)
 
         # --- embedding -----------------------------------------------------
         # The clone is no longer needed from here on, but staying inside the

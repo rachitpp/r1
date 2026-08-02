@@ -23,6 +23,7 @@ from typing import Any
 
 from git import GitCommandError, Repo
 
+from app.config import HISTORY_MAX_COMMITS
 from app.exceptions import CloneError
 
 logger = logging.getLogger(__name__)
@@ -95,13 +96,24 @@ def clone_repo(url: str) -> CloneInfo:
 
     The caller owns the returned directory and must delete it; prefer the
     :func:`cloned_repo` context manager, which guarantees cleanup.
+
+    **Depth is ``HISTORY_MAX_COMMITS``, not 1.** §2.1 cloned depth-1 because
+    history was out of v1 scope; §20 puts it back in, and a depth-1 clone has
+    exactly one commit to walk. The clone stays *shallow* — this is a bounded
+    deepening, not a full history — so the cost is one number's worth of commit
+    objects, not a repo's entire past. Blobs are still fetched only for the
+    checked-out tree, which is where clone time actually goes.
     """
     workdir = Path(tempfile.mkdtemp(prefix="onboarding-clone-"))
     try:
         repo = Repo.clone_from(
             url,
             workdir,
-            multi_options=["--depth", "1", "--single-branch"],
+            multi_options=[
+                "--depth",
+                str(HISTORY_MAX_COMMITS),
+                "--single-branch",
+            ],
         )
         head_sha = repo.head.commit.hexsha
         try:
