@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Annotated, Any, TypedDict
 from uuid import UUID
 
@@ -45,7 +45,7 @@ from langgraph.graph.message import add_messages
 from app.agent import tools as t
 from app.agent.citations import Citation, parse_citations, validate_citations
 from app.agent.prompts import FORCED_ANSWER, system_prompt
-from app.config import AGENT_TOOL_CAP
+from app.config import AGENT_TOOL_CAP, CONVERSATION_ANSWER_CHARS
 from app.db.pool import ConnSource, acquire
 
 logger = logging.getLogger(__name__)
@@ -252,6 +252,36 @@ async def repo_facts(
     return name, len(paths), tops
 
 
+def prior_turns_as_messages(
+    turns: Sequence[Mapping[str, Any]],
+    *,
+    answer_chars: int = CONVERSATION_ANSWER_CHARS,
+) -> list[AnyMessage]:
+    """Prior turns rendered as alternating Human/AI messages (SPEC §23.2).
+
+    **Questions in full, answers truncated.** A question is short and is the
+    thing a follow-up refers back to ("where is *that* called?"); an answer can
+    be a page of walkthrough whose conclusion is in the first paragraph. Keeping
+    whole answers is how a history window silently becomes the largest part of
+    every prompt.
+
+    **The tool timeline is not here at all.** It is streamed live (§9) and
+    stored nowhere, because what a follow-up needs is what was concluded, not
+    which searches produced it.
+
+    Truncation is marked, not silent: a model that cannot see where an answer
+    was cut will happily treat a half-sentence as the whole claim.
+    """
+    out: list[AnyMessage] = []
+    for turn in turns:
+        answer = str(turn["answer"])
+        if len(answer) > answer_chars:
+            answer = answer[:answer_chars].rstrip() + "\n\n[…earlier answer truncated]"
+        out.append(HumanMessage(content=str(turn["question"])))
+        out.append(AIMessage(content=answer))
+    return out
+
+
 async def answer_question(
     model: BaseChatModel,
     source: ConnSource,
@@ -259,11 +289,17 @@ async def answer_question(
     question: str,
     *,
     tool_cap: int = AGENT_TOOL_CAP,
+    history: Sequence[Mapping[str, Any]] | None = None,
 ) -> AgentState:
     """Run the loop end to end and return the final state.
 
     Citations are parsed from the final answer and validated against the
     ``files`` table, so a fabricated path never reaches the caller (§7.5).
+
+    ``history`` is prior turns of the same conversation (§23.2), inserted
+    between the system prompt and this question so the model reads them as what
+    they are — earlier exchanges — rather than as instructions. Absent, the run
+    is exactly the single-shot run it has always been.
     """
     name, n_files, tops = await repo_facts(source, snapshot_id)
     app = build_graph(model, source, snapshot_id, tool_cap=tool_cap)
@@ -272,6 +308,7 @@ async def answer_question(
         "question": question,
         "messages": [
             SystemMessage(content=system_prompt(name, n_files, tops)),
+            *prior_turns_as_messages(history or []),
             HumanMessage(content=question),
         ],
         "tool_calls_used": 0,

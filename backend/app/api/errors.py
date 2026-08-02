@@ -29,6 +29,7 @@ from fastapi.responses import JSONResponse
 from app.exceptions import (
     AppError,
     AuthNotConfiguredError,
+    ConversationNotFoundError,
     InvalidLineRangeError,
     InvalidRepoUrlError,
     OAuthError,
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
 _STATUS: dict[type[Exception], int] = {
     RepoNotFoundError: status.HTTP_404_NOT_FOUND,
     SharedAnswerNotFoundError: status.HTTP_404_NOT_FOUND,
+    ConversationNotFoundError: status.HTTP_404_NOT_FOUND,
     RepoFileNotFoundError: status.HTTP_404_NOT_FOUND,
     # 422, matching FastAPI's own validation failures: the URL is the wrong
     # shape, which is a body problem, not a missing resource.

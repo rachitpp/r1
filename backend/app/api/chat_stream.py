@@ -50,7 +50,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from typing import Any
 from uuid import UUID
 
@@ -58,10 +58,16 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from app import metrics
 from app.agent.citations import parse_citations, validate_citations
-from app.agent.graph import AgentState, build_graph, repo_facts
+from app.agent.graph import (
+    AgentState,
+    build_graph,
+    prior_turns_as_messages,
+    repo_facts,
+)
 from app.agent.prompts import system_prompt
 from app.api.tool_events import summarize_tool_result
 from app.config import AGENT_TOOL_CAP, get_settings
+from app.db import queries
 from app.db.pool import ConnSource, acquire
 from app.exceptions import AgentTimeoutError
 from app.logging_setup import get_request_id
@@ -124,6 +130,8 @@ async def chat_event_stream(
     tool_cap: int = AGENT_TOOL_CAP,
     timeout_s: float | None = None,
     on_finish: Callable[[], None] | None = None,
+    history: Sequence[Mapping[str, Any]] | None = None,
+    conversation_id: UUID | None = None,
 ) -> AsyncIterator[SSEEvent]:
     """Run the agent for ``question`` and yield §9 events as they happen.
 
@@ -159,6 +167,10 @@ async def chat_event_stream(
                 "question": question,
                 "messages": [
                     SystemMessage(content=system_prompt(name, n_files, tops)),
+                    # Prior turns of this conversation (§23.2), between the
+                    # system prompt and the question so the model reads them as
+                    # earlier exchanges rather than as instructions.
+                    *prior_turns_as_messages(history or []),
                     HumanMessage(content=question),
                 ],
                 "tool_calls_used": 0,
@@ -227,7 +239,40 @@ async def chat_event_stream(
                 )
 
         yield _event("citations", {"citations": citations})
-        yield _event("done", {"tool_calls_used": n_calls})
+
+        # Store the completed turn (§23.3). **After the answer is whole and
+        # inside the success path only** — a cancelled or timed-out run has no
+        # conclusion, and persisting a half-answer would poison the context of
+        # every later turn with a sentence that stops mid-clause.
+        if conversation_id is not None and answer:
+            try:
+                async with acquire(source) as conn:
+                    await queries.append_turn(
+                        conn,
+                        conversation_id,
+                        question=question,
+                        answer=answer,
+                        citations=json.dumps([dict(c) for c in citations]),
+                    )
+            except Exception:  # noqa: BLE001 — memory is an enrichment
+                # The user has their answer; failing the stream now would take
+                # a good response away to protect a stored copy of it.
+                logger.exception(
+                    "could not store turn for conversation %s", conversation_id
+                )
+
+        # `conversation_id` joins the §9 `done` payload so the client learns
+        # which conversation this turn landed in. It cannot be sent earlier:
+        # a run that fails or is cancelled stores nothing, and handing out an
+        # id for a conversation with no turns would have the next question
+        # append to a phantom.
+        yield _event(
+            "done",
+            {
+                "tool_calls_used": n_calls,
+                "conversation_id": str(conversation_id) if conversation_id else None,
+            },
+        )
         outcome = "done"
 
     except (asyncio.CancelledError, GeneratorExit):

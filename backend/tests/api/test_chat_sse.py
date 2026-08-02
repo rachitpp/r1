@@ -8,10 +8,11 @@ and the §9 adapter shapes every event. Only the provider call is scripted.
 from __future__ import annotations
 
 import json
+import uuid
 
 import httpx
 
-from tests.api.conftest import FILE_CONTENT, FILE_PATH, REPO_ID
+from tests.api.conftest import FILE_CONTENT, FILE_PATH, REPO_ID, FakeConn
 
 
 async def collect_events(
@@ -86,8 +87,25 @@ async def test_citations_are_validated_against_the_files_table(
 
 
 async def test_done_reports_tool_calls_used(client: httpx.AsyncClient) -> None:
+    """Exact equality on purpose: §9 is a frozen contract, so a field appearing
+    here should have to be intended. `conversation_id` was added by §23.3."""
     events = dict(await collect_events(client))
-    assert events["done"] == {"tool_calls_used": 1}
+    assert set(events["done"]) == {"tool_calls_used", "conversation_id"}
+    assert events["done"]["tool_calls_used"] == 1
+
+
+async def test_done_carries_the_conversation_it_landed_in(
+    client: httpx.AsyncClient, conn: FakeConn
+) -> None:
+    """§23.3 — the client captures this on turn one and sends it thereafter.
+
+    It names a conversation that really exists: handing back an id for a thread
+    with no turns would make the next question append to a phantom.
+    """
+    events = dict(await collect_events(client))
+    convo_id = events["done"]["conversation_id"]
+    assert convo_id
+    assert uuid.UUID(convo_id) in conn.conversations
 
 
 async def test_text_events_deliver_the_answer(client: httpx.AsyncClient) -> None:

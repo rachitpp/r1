@@ -43,6 +43,19 @@ class RepoNotFoundError(AppError):
         super().__init__(f"no repo {repo_id}")
 
 
+class ConversationNotFoundError(AppError):
+    """No conversation for that id, for this caller, on this snapshot (§23, 404).
+
+    One status for "never existed", "someone else's" and "a different repo's" —
+    §13.5's reasoning, and here it also stops the id being a probe for which
+    conversations exist.
+    """
+
+    def __init__(self, conversation_id: object) -> None:
+        self.conversation_id = conversation_id
+        super().__init__(f"no conversation {conversation_id}")
+
+
 class SharedAnswerNotFoundError(AppError):
     """No permalink for that id (§21.3, 404).
 
