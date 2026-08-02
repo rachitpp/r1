@@ -268,6 +268,44 @@ export interface HistoryOut {
   truncated: boolean;
 }
 
+/**
+ * `GET /shared/{id}` (SPEC §21.3) — the one read in this API with no session.
+ *
+ * Carries the repo's URL and pinned commit alongside the answer, so a reader
+ * with no account can still resolve every citation to a GitHub blob link at the
+ * exact commit the answer was written against.
+ */
+export interface SharedAnswerOut {
+  id: string;
+  question: string;
+  answer: string;
+  citations: { file_path: string; start_line: number; end_line: number }[];
+  model: string | null;
+  created_at: string;
+  repo_name: string;
+  repo_url: string;
+  commit_sha: string | null;
+}
+
+export function shareAnswer(
+  repoId: string,
+  body: {
+    question: string;
+    answer: string;
+    citations: { file_path: string; start_line: number; end_line: number }[];
+    model?: string | null;
+  },
+): Promise<{ id: string }> {
+  return request<{ id: string }>(`/repos/${repoId}/share`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getSharedAnswer(shareId: string): Promise<SharedAnswerOut> {
+  return request<SharedAnswerOut>(`/shared/${shareId}`);
+}
+
 export function getHistory(
   repoId: string,
   opts: { path?: string; limit?: number } = {},

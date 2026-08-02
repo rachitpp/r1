@@ -11,10 +11,11 @@
  * tool for reading code, not a messaging app.
  */
 
-import { Check, Copy, RotateCcw } from "lucide-react";
+import { Check, Copy, Link2, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { AnswerBody } from "@/components/chat/answer-body";
+import { ApiError, shareAnswer } from "@/lib/api";
 import { CitationChip } from "@/components/chat/citation-chip";
 import { StepTimeline } from "@/components/chat/step-timeline";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -50,6 +51,7 @@ export function ExchangeView({
   onCiteClick,
   activeKey,
   onRegenerate,
+  repoId,
 }: {
   exchange: ChatExchange;
   /** True while this exchange is still streaming. */
@@ -58,8 +60,13 @@ export function ExchangeView({
   onCiteClick: (c: Citation) => void;
   activeKey: string | null;
   onRegenerate?: (question: string) => void;
+  /** Enables Share. Omitted where there is nothing to publish against. */
+  repoId?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const [share, setShare] = useState<
+    { state: "idle" | "working" | "done" } | { state: "error"; message: string }
+  >({ state: "idle" });
 
   const blocks = useMemo(
     () => parseMarkdown(exchange.answer),
@@ -83,6 +90,37 @@ export function ExchangeView({
       })
       .catch(() => {
         // Clipboard unavailable (insecure origin) or permission denied: no-op.
+      });
+  };
+
+  /**
+   * Publish this answer and put its URL on the clipboard (SPEC §21.2).
+   *
+   * The link is built here, from the browser's own origin, because the API
+   * returns an id and has no business knowing what host the frontend is served
+   * from — the same reason §21.3 hands back facts rather than rendered HTML.
+   */
+  const publish = () => {
+    if (!repoId || share.state === "working") return;
+    setShare({ state: "working" });
+    shareAnswer(repoId, {
+      question: exchange.question,
+      answer: exchange.answer,
+      citations: exchange.citations,
+    })
+      .then(({ id }) => {
+        const url = `${window.location.origin}/a/${id}`;
+        setShare({ state: "done" });
+        setTimeout(() => setShare({ state: "idle" }), 2400);
+        return navigator.clipboard?.writeText(url);
+      })
+      .catch((err: unknown) => {
+        setShare({
+          state: "error",
+          message:
+            err instanceof ApiError ? err.message : "Could not create a link",
+        });
+        setTimeout(() => setShare({ state: "idle" }), 3200);
       });
   };
 
@@ -168,6 +206,20 @@ export function ExchangeView({
                   icon={RotateCcw}
                 >
                   Ask again
+                </ActionButton>
+              )}
+              {repoId && exchange.answer && (
+                <ActionButton
+                  onClick={publish}
+                  icon={share.state === "done" ? Check : Link2}
+                >
+                  {share.state === "working"
+                    ? "Linking…"
+                    : share.state === "done"
+                      ? "Link copied"
+                      : share.state === "error"
+                        ? share.message
+                        : "Share"}
                 </ActionButton>
               )}
               {exchange.toolCallsUsed != null && (

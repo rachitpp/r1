@@ -350,6 +350,9 @@ export function ChatView({ repoId }: { repoId: string }) {
               onCiteClick={pick}
               activeKey={activeKey}
               onRegenerate={streaming ? undefined : send}
+              // Only completed exchanges get Share: a half-streamed answer
+              // published under a permanent URL is a promise you cannot keep.
+              repoId={repoId}
             />
           ))}
           {chat.current && (
