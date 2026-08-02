@@ -75,7 +75,7 @@ retrieval code existed — with its own 20 questions written blind
 |---|---|
 | "naive does not lose on hit@k, and edges ahead on MRR" | **Reversed.** AST 0.95 vs naive 0.90 at hit@10; 0.767 vs 0.720 at MRR |
 | hybrid fusion ≥ every single signal | **Fails.** Plain vector beats hybrid — MRR 0.837 vs 0.767 on AST, and at every k on naive |
-| ~4% unresolved edges (SPEC §6.1 budgets ~20%) | **52%** — 13× httpx, 2.6× the budget |
+| ~4% unresolved edges (SPEC §6.1 budgets ~20%) | **52%** — 13× httpx, 2.6× the budget *(cause found and fixed 2026-08-02; now 30% overall, 15% on `src/` — see below)* |
 
 So the correct statement is weaker than the one this table originally supported,
 and weaker in a useful way: **at hit@k, AST chunking and fixed windows are not
@@ -86,9 +86,38 @@ tell, which only a second benchmark could show.
 
 The hybrid finding is the more consequential one and is written up in
 `docs/EVAL-FLASK.md` with the mechanism as an explicit hypothesis rather than a
-conclusion. Answer-level eval was **not** re-run on flask — it needs ~40 model
-calls against a 20/day tier — so the agent column above remains a single-repo
-result and is not corroborated here.
+conclusion.
+
+The third row has since been diagnosed and fixed (2026-08-02): Jedi was never
+given the `src/` directory as an import root, so on a `src/`-layout repo
+**every** `import flask` in `tests/` resolved to nothing and the entire
+test-to-implementation half of the graph was missing. flask now measures 30%
+unresolved with 1605 edges rather than 52% with 537. httpx is a flat layout and
+is unchanged, so nothing in the table above moves.
+
+Splitting that 30% by directory shows the budget is met where it matters:
+**`src/` resolves at 15%**, inside the ~20% budget, while `tests/` sits at 38%
+and is 58% of all call sites. The test-side gap is not a defect to fix — pytest
+injects fixtures as unannotated parameters, so `def test_login(client):` leaves
+Jedi nothing to infer and every `client.get(...)` under it is unresolvable by
+construction. Static analysis does not follow dependency injection.
+
+Two claims made earlier in this project's own docs did not survive that check
+and have been retracted in `DECISIONS.md`: that **httpx was an outlier** at 1.92
+edges/symbol (after the fix: blinker 2.76, httpx 1.92, itsdangerous 1.71, flask
+1.61 — the spread was the bug), and that **low density implied bad resolution**
+(markupsafe sits at 0.24 density with a 4% unresolved rate; it is a small
+C-accelerated library whose calls correctly leave the repo).
+
+**Answer-level eval has now been run on flask** (2026-08-02), which the earlier
+version of this section said was still outstanding: **agent 1.00 (20/20) vs
+stuffed 0.90 (18/20)**, at both file and symbol level. The agent column above is
+therefore corroborated on a second repo — the sign is stable across two repos
+and two model families, in seven runs. Two caveats travel with it: the agent hit
+a **perfect score**, so the measurable margin was capped at the baseline's two
+misses, and the agent reached for a graph tool in only **10% of its calls**,
+which means most of its advantage here came from reading files iteratively
+rather than from graph traversal.
 
 ---
 

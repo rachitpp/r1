@@ -359,6 +359,34 @@ three of the four other src-layout repos also sit low, but the two small flat
 repos sit low too, so layout is not established. It is a real open question, not
 a footnote.
 
+> **Diagnosed 2026-08-02 — the suspect was right, and cross-repo comparison
+> could not have shown it.** `src/` → `src/` resolution was never broken (a
+> script's own directory is always on Jedi's path); only entry from *outside*
+> the package root failed, so repos read as "low but not zero" in proportion to
+> how intra-package their edges were — repo shape, not the bug. A within-repo
+> control settled it: flask-sqlalchemy resolves **0** `tests/` → `src/` edges
+> and **29** `examples/flaskr/tests/` → `examples/flaskr/` edges in the same
+> run, the difference being that the real suite imports the installed package
+> name while the flaskr tests import relative paths.
+>
+> With `added_sys_path` set to the detected import roots, flask goes **52% →
+> 30%** unresolved and 0.54 → **1.61** edges/symbol, with **948** `tests/` →
+> `src/` edges where there were none. httpx is unchanged (flat layout, no root
+> detected), so this benchmark's retrieval numbers above stand as measured.
+>
+> **The residual 30% is also now diagnosed, and it is test code.** By directory:
+> `src/` **15%** (1742 sites), `tests/` 38% (2876), `examples/` 33%, `docs/`
+> 91%. Tests are 58% of all sites, so they set the headline; the library is
+> inside the ~20% budget. The test-side cause is pytest fixture injection —
+> unannotated parameters (`app` 379 failures, `client` 214, `monkeypatch` 48)
+> that Jedi cannot type, making every call on them unresolvable by
+> construction. Not a defect, and not fixable by this route.
+>
+> Two claims in the paragraph above this one did not survive the recheck and are
+> retracted in `DECISIONS.md` 2026-08-02: httpx being a density outlier (after
+> the fix blinker leads at 2.76), and low density implying poor resolution
+> (markupsafe: 0.24 density, 4% unresolved). See SPEC §6.1.
+
 ### What this run does NOT cover
 
 - **Answer-level eval (agent vs stuffed) was not run on flask.** It needs ~40
@@ -370,3 +398,103 @@ a footnote.
 - **n = 20 per repo.** Every difference discussed above is one or two questions.
   The value of this benchmark is that it changes *sign* on two of three claims,
   which no amount of precision on a single repo could have revealed.
+
+### Answer-level results — 2026-08-02
+
+**Model:** `mistral-medium-latest` · **Set:** frozen 20 (measurement) — EVAL-FLASK.md · **Model calls:** 114 · Metric: answer-hit (≥1 validated citation whose file ∈ truth.files).
+
+| Mode | answer-hit (file) | symbol-hit | cited | tool calls (mean/max) | errors |
+|---|---|---|---|---|---|
+| stuffed | 0.90 (18/20) | 0.90 (18/20) | 1.00 (20/20) | 0.0 / 0 | 0 |
+| agent | 1.00 (20/20) | 1.00 (20/20) | 1.00 (20/20) | 3.7 / 8 | 0 |
+
+Agent tool usage:
+
+| Tool | calls | share |
+|---|---|---|
+| read_file | 38 | 49% |
+| search_code | 31 | 40% |
+| get_definition | 6 | 8% |
+| expand_context | 2 | 3% |
+| list_directory | 1 | 1% |
+
+Graph-tool use vs correctness (agent):
+
+| Agent run | symbol-hit | symbol-miss |
+|---|---|---|
+| used a graph tool | 6 | 0 |
+| no graph tool | 14 | 0 |
+
+Per-question:
+
+| q | stuffed | agent |
+|---|---|---|
+| q01 | ✓s | ✓s |
+| q02 | ✓s | ✓s |
+| q03 | ✓s | ✓s |
+| q04 | ✓s | ✓s |
+| q05 | ✓s | ✓s |
+| q06 | ✓s | ✓s |
+| q07 | ✓s | ✓s |
+| q08 | ✓s | ✓s |
+| q09 | ✓s | ✓s |
+| q10 | ✓s | ✓s |
+| q11 | ✓s | ✓s |
+| q12 | ✓s | ✓s |
+| q13 | ✓s | ✓s |
+| q14 | · | ✓s |
+| q15 | ✓s | ✓s |
+| q16 | ✓s | ✓s |
+| q17 | ✓s | ✓s |
+| q18 | ✓s | ✓s |
+| q19 | ✓s | ✓s |
+| q20 | · | ✓s |
+
+`✓s` = file + symbol · `✓` = file only · `·` = miss
+
+
+## Answer-level replication — 2026-08-02
+
+The 2026-08-01 run left this explicitly uncovered: *"Answer-level eval (agent vs
+stuffed) was not run on flask… the Phase 3 findings (a)/(b)/(c) therefore remain
+measured on httpx only."* It has now been run, on the block above — 114 model
+calls, `mistral-medium-latest`, both modes, the frozen 20.
+
+**Finding (b) — "the agent leads at symbol level" — REPLICATES, directionally.**
+
+| | httpx (Mistral) | httpx (Vertex) | flask (Mistral) |
+|---|---|---|---|
+| stuffed baseline, symbol | 0.75 | 0.80 | **0.90** |
+| agent margin | +5 / +4 / +2 | +1 / +1 / +2 | **+2** |
+
+Agent 1.00 (20/20) vs stuffed 0.90 (18/20), at *both* file and symbol level, 0
+errors, mean 3.7 tool calls. The sign is now stable across two repos and two
+model families — seven runs, agent ahead or level in every one. The magnitude
+stays what it was called before: noisy, and small in absolute questions.
+
+**Read the margin with the ceiling in mind.** The agent scored 20/20, so the
+measurable gap was capped at the two questions the baseline missed (q14, q20).
+A perfect score does not mean the ceiling is far away; it means this benchmark
+can no longer measure how far.
+
+**Finding (c) — graph-tool use does not predict correctness — is untestable on
+this run, not confirmed.** The cross-tab has 6 agent runs using a graph tool and
+14 not, and **zero misses in either row**. With no variance in the outcome
+column there is nothing to correlate against. This neither supports nor
+undermines the httpx inversion; it is a degenerate table and should not be
+quoted as agreement.
+
+**The graph did less work here than expected, which qualifies the fix above.**
+Tool mix across 78 calls: `read_file` 49%, `search_code` 40%, and the three
+graph tools **10% combined** (`get_definition` 6, `expand_context` 2,
+`find_references` 0), used in only 6 of 20 runs. This run happened *after* the
+src-layout resolution fix, when flask's graph had 1605 edges rather than 537 —
+but a pipeline the agent consults in a tenth of its calls cannot have been the
+main driver of a +2 margin. The honest reading is that **the agent's advantage
+here comes mostly from being able to read files iteratively, not from graph
+traversal.** That is a weaker claim for the thesis than the httpx q10 result
+suggested, and it is what the numbers say.
+
+**Not covered by this run.** One model family (Mistral) and one temperature
+setting; the Vertex cross-check that produced the httpx (a)/(c) findings was not
+repeated. n is still 20.

@@ -2735,3 +2735,265 @@ tier — so Phase 3's findings (a)/(b)/(c) remain httpx-only and are neither
 confirmed nor disconfirmed. `hybrid+rerank` was not measured on flask either.
 And n is still 20 per repo: the value here is that the *sign* flipped on two
 claims, which no additional precision on a single repo could ever have revealed.
+
+## 2026-08-02 — The src-layout resolution bug: half the graph was never built
+
+`EVAL-FLASK.md` finding 3 left the 52% unresolved-edge rate explicitly
+undiagnosed, naming `src/`-layout packaging as "the obvious suspect" while
+noting that layout was **not established** — three of four src-layout repos sat
+low, but so did two small flat ones. The suspect was right, and the reason the
+cross-repo comparison could not show it is worth recording.
+
+**Cross-repo correlation was the wrong instrument.** `src/` → `src/` resolution
+was never broken: a script's own directory is on Jedi's `smart_sys_path`, so a
+module inside the package always found its siblings. Only *entry from outside
+the package root* failed. Repos therefore looked "low but not zero" in
+proportion to how much of their edge mass was intra-package, which is a property
+of repo shape, not of the bug.
+
+**The within-repo control settled it.** flask-sqlalchemy contains two test
+suites. In one ingest run, same config, same commit:
+
+- `tests/` → `src/`: **0** edges, across 136 test symbols
+- `examples/flaskr/tests/` → `examples/flaskr/`: **29** edges
+
+The difference is the import statement. The flaskr tests import relative in-repo
+paths; the real suite imports the installed package name `flask_sqlalchemy`,
+which lives at `src/flask_sqlalchemy/` and is on no path Jedi knows about. Every
+such import resolved to nothing — and because an unresolved edge is a *miss*
+rather than an error (§6.1, by design), the entire test-to-implementation half
+of the graph was absent without one log line.
+
+**Fix.** `jedi.Project(workdir)` → `jedi.Project(workdir, added_sys_path=
+_import_roots(workdir))`, where `_import_roots` returns each depth-1 directory
+that is not itself a package but contains one. That is `src/` (and the rarer
+`lib/`, `python/`) and is empty for a flat layout. Rejected: parsing
+`pyproject.toml` for the package dir — the answer differs per build backend
+(setuptools `package-dir`, hatch `packages`, poetry `packages`) and would cost a
+parser each, to learn what one `is_dir()` check already tells us.
+
+| repo | edges | density | unresolved | `tests/`→`src/` |
+|---|---|---|---|---|
+| flask | 537 → **1605** | 0.54 → **1.61** | 52% → **30%** | 0 → **948** |
+| flask-sqlalchemy | 128 → **311** | 0.41 → **1.00** | 64% → **49%** | 0 → **173** |
+| httpx (flat) | 2303 → 2303 | 1.92 → 1.92 | 4% → 4% | no root detected |
+
+**httpx is untouched by construction**, which matters because it is the frozen
+benchmark corpus: a flat layout yields no import root and the call is identical
+to what shipped. Retrieval numbers are unaffected either way — this pass writes
+`symbols` and `edges`, and `hit@k` is measured over `chunks`, which no part of
+this touches.
+
+**What this does not fix.** flask still measures 30% unresolved against a ~20%
+budget. What is retired is the belief that the graph is structurally half as
+dense on src-layout repos; the residual is a separate, still-undiagnosed
+question. The budget itself stays wrong-as-written and should not be
+re-calibrated to whatever the next repo happens to measure — that is exactly how
+it came to be a one-repo number.
+
+**A shipped feature was silently degraded by this.** FEATURE-IDEAS 2.4
+(`GET /coverage`) returned empty lists for every file in a src-layout package —
+correct behaviour over an empty graph, indistinguishable from "this file has no
+tests". It was noticed only by running the app against a freshly ingested repo
+and disbelieving the empty result. The endpoint's own §13.5-derived choice to
+return `[]` rather than 404 for unknown paths is what made the failure mode
+invisible; that choice is still right, and the lesson is that a feature whose
+empty state is legitimate needs a non-empty case exercised on a real repo.
+
+**Corpora ingested before today carry the old edges.** The fix applies at ingest;
+nothing backfills. Every snapshot in the database except httpx has a graph built
+without import roots and must be re-ingested before its `architecture`,
+`coverage`, or `overview` output means anything.
+
+## 2026-08-02 — Answer-level eval on flask: (b) replicates, and the graph did less than expected
+
+`answer_eval.py` hardcoded `EVAL_MD = DOCS / "EVAL.md"`, so the second benchmark
+could be measured for *retrieval* (`eval.py --benchmark`, added 2026-08-01) but
+not for *answers*. Ported the same `--benchmark` flag across; each benchmark now
+owns its own appended results, so the append-only rule stays per-file. The run
+label carries the filename, because "frozen 20" alone no longer identifies a
+repo.
+
+**Result: agent 1.00 (20/20) vs stuffed 0.90 (18/20)**, file and symbol level,
+0 errors, 114 model calls. Finding (b) — "the agent leads at symbol level" —
+now holds across two repos and two model families, seven runs, ahead or level in
+every one. The wording in CLAUDE.md ("MODERATE, directionally stable — sign
+stable, magnitude noisy") survives contact with a second repo and does not need
+changing.
+
+**Two things keep this from being a stronger claim than it is.**
+
+1. **Ceiling.** The agent scored 20/20, so the measurable margin was bounded by
+   the two questions the baseline missed. A perfect score means the benchmark
+   stopped measuring, not that the gap is large.
+2. **The graph was barely used.** Across 78 tool calls: `read_file` 49%,
+   `search_code` 40%, all three graph tools **10% combined**, and
+   `find_references` never once. The agent's edge here came from reading files
+   iteratively, not from traversing the symbol graph.
+
+Point 2 also **corrects the reasoning that ordered this work**. The argument for
+fixing src-layout resolution first was partly that running the eval on a graph
+missing two-thirds of its edges would understate the agent and "disprove the
+thesis for the wrong reason". The tool mix says that was overstated: a subsystem
+consulted in a tenth of calls could not have swung a 2-question margin either
+way. The fix was still worth doing — `GET /coverage` was genuinely broken and is
+now genuinely working — but it was a correctness fix, not a prerequisite for a
+valid measurement, and the ordering argument should not be repeated as if the
+eval had depended on it.
+
+Finding (c) is **untestable on this run rather than confirmed**: the graph-tool
+cross-tab has zero misses in both rows, so there is no variance to correlate
+against. A degenerate table is not agreement and is not quoted as such.
+
+## 2026-08-02 — Redis resilience: two different failures, and the first fix only caught one
+
+The worker died **three times in one session**, taking the whole process with it
+each time. The symptom is the worst kind: ingest sits at 0% with no error, which
+RUNNING.md §6 already names as the most common broken-looking setup and had no
+row for this cause.
+
+The first two were `redis.exceptions.TimeoutError` inside ARQ's `run_job` →
+`pipe.execute()`. The third, *after* the timeout fix was in and verified, was
+`redis.exceptions.ConnectionError: [Errno 54] Connection reset by peer` — a
+different exception on a different code path, and a reminder that "the worker
+came up clean" is evidence about startup and nothing else. Recorded because the
+premature confidence is the more reusable lesson: one clean start is not a fix.
+
+**Cause was a default, not a fluke.** `RedisSettings.conn_timeout` is **1
+second** — a LAN number. This deployment's Redis Cloud instance measures
+**1.08-1.20s** to connect (four consecutive pings), so every attempt sat on the
+wrong side of the default. Startup survived because `conn_retries=5` wraps it;
+`run_job` acquires from the pool outside that envelope, gets one 1-second
+attempt, and raises. `retry_on_timeout` also defaults to `False`, so redis-py
+did not retry either.
+
+**The second cause was a redis-py contract, not a number.** `retry_on_timeout`
+appends `TimeoutError` to `retry_on_error` — and redis-py builds a retry policy
+*only* for the errors named in that list (`AbstractConnection.__init__`:
+`if retry or retry_on_error:`). `ConnectionError` was never in it, so nothing
+retried and the exception propagated into ARQ's loop. Worse, when a policy is
+built without an explicit `Retry`, the fallback is `Retry(NoBackoff(), 1)` —
+one *immediate* retry, which is the wrong shape for a server that has just
+dropped the connection.
+
+Final settings, all through config: `REDIS_CONN_TIMEOUT_S=10`,
+`REDIS_RETRY_ON_TIMEOUT=True`, `retry_on_error=[ConnectionError]`, and an
+explicit `Retry(ExponentialBackoff(cap=5.0, base=0.1), REDIS_COMMAND_RETRIES=3)`.
+Verified against a live connection rather than inferred: the pooled connection
+reports `_supported_errors = {ConnectionError, TimeoutError}` and
+`_retries = 3`. Note this is separate from `conn_retries`, which only wraps pool
+creation at startup — every crash here happened mid-run, where nothing was
+retrying at all.
+
+The builder lives in `app/config.py` rather than in either caller: the API and
+the worker each construct an ARQ pool, and `from_dsn` in two places is exactly
+the split-brain that only shows up under load. Not raised further than 10s or 3
+retries deliberately — a genuinely unreachable Redis should still fail fast
+enough to be obvious.
+
+**A caveat kept deliberately, because it is not proven.** The reset arrived
+while the full pytest suite was running against the same free-tier Redis
+alongside a live worker and API, so connection-count pressure is at least as
+plausible a trigger as an idle-connection reap. Retries make either survivable,
+which is why the fix is retries rather than a diagnosis of the trigger — but the
+trigger is not established, and a recurrence under a quiet system would mean
+this explanation is wrong.
+
+## 2026-08-02 — The residual 30% is test code, and two claims of my own that did not hold
+
+Chasing the residual left by the src-layout fix. Three findings, two of which
+correct things written earlier the same day.
+
+**1. The budget is met on implementation code.** flask's 4988 sites, split by
+directory: `src/` **15%** unresolved (1742 sites), `tests/` 38% (2876),
+`examples/` 33% (348), `docs/` 91% (22). The headline 30% is a weighted average
+in which test code is 58% of all sites. The library — the thing the symbol graph
+exists to describe, and the thing §6.3 retrieval scopes to by default — sits
+inside the ~20% budget.
+
+The test-side cause is structural and will not be fixed: pytest injects fixtures
+as unannotated parameters, so `def test_login(client):` hands Jedi a parameter
+with no inferable type and every `client.get(...)` beneath it is unresolvable by
+construction. The top unresolved roots are precisely fixtures and untyped
+locals — `app` 379, `client` 214, `monkeypatch` 48, then `runner`, `auth`, `db`,
+`rv`, `ctx`. No import-root change reaches a dependency-injection framework.
+
+**2. "httpx is the outlier" — retired, and it was my sentence.** The 2026-08-01
+entry and SPEC both argued from edge density that httpx alone sat at 1.92 and
+everything else at ≤1.07. After re-ingesting: blinker **2.76**, httpx 1.92,
+itsdangerous **1.71**, flask **1.61**. The spread was mostly the bug, not the
+repos.
+
+**3. Density is not a proxy for resolution quality — also mine, also wrong.**
+markupsafe sits at 0.24 edges/symbol and I grouped it with the src-layout
+victims. Measured directly, its unresolved rate is **4%**, identical to httpx:
+re-ingesting changed its edge count by zero. Its density is low because it is a
+small C-accelerated library whose Python calls mostly land in stdlib and are
+correctly dropped. Two different quantities were being read as one.
+
+**Left undone on purpose.** 154 of flask's 205 import failures are
+`from werkzeug …` — third-party packages absent from the ingest environment.
+§6.1 counts an import resolved *into* site-packages as `out_of_repo` (a correct
+drop) but an unresolvable one as `no_target` (a failure), so the rate is partly a
+property of what happens to be installed. Recategorising these is defensible and
+would lower the number — which is why it is not being done as a side effect of
+investigating it. It needs its own decision, on its own day, not a metric change
+made by the person who just found the metric unflattering.
+
+**Corpora.** blinker 70 → 193 edges, itsdangerous 165 → 264, markupsafe 26 → 26
+(unaffected, per 3). Ownership is many-to-many and `--owner` sets only one, so
+the full owner set was captured before each delete and restored after; blinker
+had two owners and kept both.
+
+## 2026-08-02 — 3.3 drawn: a second view of one rollup, and mermaid earns rule 11
+
+FEATURE-IDEAS 3.3 (diagrams) built. It is the cheapest item in the catalogue for
+a reason worth stating: **the data was already on the page.** `GET
+/architecture` returns `nodes` and `edges`; the panel was enumerating them. The
+diagram is a second rendering of one response — no endpoint, no request, no
+model call. SPEC §18.6.
+
+**A dependency, therefore a decision (rule 11).** `mermaid@11` is the first
+frontend dependency added since the theme work, and the first that is large:
+~500 KB, bigger than the rest of the repo page put together. Three things made
+it acceptable rather than assumed:
+
+* It is `import()`ed inside the diagram component, which mounts only when the
+  diagram tab is chosen. A reader who never opens it pays nothing.
+* The alternative was hand-rolled SVG layout. Directed-graph layout is a real
+  algorithm (rank assignment, crossing reduction) and writing a bad one is
+  easy — this is not the `next-themes` case from rule 11, where the library
+  wrapped about forty lines we wanted to own.
+* Mermaid is already the diagram primitive in the docs tooling, so the source it
+  emits is inspectable and portable out of this app.
+
+**The pure/impure split is where the tests live.** `lib/mermaid-graph.ts`
+computes the `graph LR` source and holds no DOM; `components/architecture-
+diagram.tsx` renders it. That boundary was not tidiness — it is what let 16
+assertions cover top-N selection, label collisions, escaping and the edge cap
+without a headless browser, and it leaves untested only the part that is a thin
+call into a third-party layout engine.
+
+**`securityLevel` stays `strict`, so click-through is done the hard way.**
+Mermaid's `click` directive would have been three lines, and it requires
+`securityLevel: "loose"`, which makes diagram text executable. The diagram text
+here is built from repo file paths — attacker-influenced, on a product whose
+whole job is ingesting other people's repositories. Instead the node id is
+recovered from the rendered SVG element id (`flowchart-m3-7` → `m3`) and the
+handler attached in our own code. Positional ids (`m0`, `m1`) mean no path
+reaches the grammar in the first place; the quote-escaping beneath that is
+belt-and-braces for a path that cannot occur on POSIX.
+
+**Twelve nodes, eighteen edges — and the first version had neither.** Drawn in
+full, twelve modules carried 45 edges and the result was a ball of string in
+which no structure was visible at all, which is precisely the hairball 3.3
+predicted. The caps are presentation-only and live in the TS module, *not* §12:
+that table is `app/config.py`, and putting a client drawing limit in it would
+imply a server counterpart that does not exist. Everything cut is counted in the
+caption, and the list beside it remains complete and exact.
+
+**What this does not do.** It draws the rollup, so it inherits the rollup's
+truth: on a snapshot ingested before today's src-layout fix the picture is as
+wrong as the panel is, and more persuasively so — a confident diagram of half a
+graph is worse than a list of the same. Re-ingest is still the precondition for
+`architecture`, `coverage` and `overview` alike.

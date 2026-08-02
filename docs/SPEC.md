@@ -389,9 +389,12 @@ SearchHit = {
   insert into `symbols`, backfill `chunks.symbol_id`.
 - Edges:
   - `imports`: for each import statement, resolve the target with Jedi
-    (`jedi.Script(...).goto(line, col)` under a `jedi.Project(workdir)`);
-    map the resolved path+line onto a symbol row. Targets outside the
-    repo (stdlib, site-packages) are dropped.
+    (`jedi.Script(...).goto(line, col)` under a `jedi.Project(workdir,
+    added_sys_path=_import_roots(workdir))`); map the resolved path+line
+    onto a symbol row. Targets outside the repo (stdlib, site-packages)
+    are dropped. `_import_roots` returns each depth-1 directory that is
+    not itself a package but contains one — `src/` and nothing else on a
+    flat layout — without which no `src/`-layout import resolves at all.
   - `calls`: for each call expression inside a def (call sites located
     via tree-sitter), Jedi-resolve the callee; edge from enclosing symbol
     to callee symbol.
@@ -414,6 +417,78 @@ SearchHit = {
 > breaking Jedi's project root is the obvious suspect, but two flat small repos
 > also sit low, so layout is not established. Numbers and the open question:
 > `docs/EVAL-FLASK.md`.
+
+> **Diagnosed and largely fixed (2026-08-02).** The suspect was right. Jedi's
+> `smart_sys_path` puts the project root and each script's own directory on the
+> path — sufficient for a flat layout, where `httpx/` sits beside `tests/` and
+> `import httpx` resolves from the root. Under a `src/` layout nothing on that
+> path contains the package, so **every** `import flask` in `tests/` resolved to
+> nothing. Because an unresolved edge is a miss and not an error, the entire
+> test-to-implementation half of the graph was absent without a single log line.
+>
+> The evidence is a within-repo control, not a cross-repo correlation:
+> flask-sqlalchemy resolved **0** `tests/` → `src/` edges while resolving **29**
+> `examples/flaskr/tests/` → `examples/flaskr/` edges in the same run, same
+> config, same commit — the flaskr tests import relative in-repo paths, the real
+> suite imports the installed package name. That is why cross-repo layout
+> comparison looked inconclusive: `src/` → `src/` resolution was never broken,
+> only entry from outside the package root.
+>
+> Measured before → after (`added_sys_path=_import_roots(...)`):
+>
+> | repo | edges | density | unresolved | `tests/`→`src/` |
+> |---|---|---|---|---|
+> | flask | 537 → **1605** | 0.54 → **1.61** | 52% → **30%** | 0 → **948** |
+> | flask-sqlalchemy | 128 → **311** | 0.41 → **1.00** | 64% → **49%** | 0 → **173** |
+> | httpx (flat) | 2303 → 2303 | 1.92 → 1.92 | 4% → 4% | n/a — no root detected |
+>
+> httpx is unchanged by construction: a flat layout yields no import root, so
+> the frozen benchmark corpus is not perturbed. (Run-to-run the unresolved *site*
+> count moves by ±1 on httpx; `JEDI_FILE_TIMEOUT_S` is wall-clock, so how many
+> sites a slow file gets through is timing-dependent. Edge counts are stable.)
+>
+> **The budget is still not met and is still wrong as written.** flask sits at
+> 30% against a ~20% budget. What the fix retires is the claim that the graph is
+> structurally half as dense on src-layout repos; what remains open is the
+> residual 30%, which this does not explain. Do not re-calibrate the number to
+> whatever the next repo measures — that is how it got wrong the first time.
+
+> **Residual diagnosed (2026-08-02): the budget is met on implementation code,
+> and the overage is test code.** Splitting flask's 4988 sites by directory:
+>
+> | area | sites | unresolved | rate |
+> |---|---|---|---|
+> | `src/` (the library) | 1742 | 255 | **15%** |
+> | `tests/` | 2876 | 1099 | 38% |
+> | `examples/` | 348 | 114 | 33% |
+> | `docs/` | 22 | 20 | 91% |
+>
+> The headline 30% is a weighted average in which `tests/` is **58% of all
+> sites**. The library itself resolves at 15%, inside the ~20% budget.
+>
+> The cause in test code is not fixable and should not be chased: pytest injects
+> fixtures as unannotated parameters, so `def test_login(client):` gives Jedi a
+> parameter with no inferable type, and every `client.get(...)` in the body is
+> unresolvable *by construction*. The unresolved roots are exactly that —
+> `app` (379), `client` (214), `monkeypatch` (48), `runner`, `auth`, `db` — plus
+> untyped locals (`rv`, `ctx`, `c`). Static analysis cannot follow a
+> dependency-injection framework, and no import-root fix reaches this.
+>
+> One genuinely miscounted category remains, deliberately left alone: 154 of the
+> 205 import failures are `from werkzeug …`, third-party packages that are not
+> installed in the ingest environment. §6.1 counts a resolved-to-site-packages
+> import as `out_of_repo` (a correct drop) but an *unresolvable* one as
+> `no_target` (a failure), so the measured rate is partly a property of the
+> environment rather than the code. Recategorising it would lower the number,
+> which is exactly why it has not been done here without a decision — see
+> DECISIONS 2026-08-02.
+>
+> **Also retired: "httpx is the outlier".** After the fix, edge density reads
+> blinker 2.76, httpx 1.92, itsdangerous 1.71, flask 1.61. httpx is no longer
+> unusual, and the sentence above claiming every other repo sits at ≤1.07 is
+> true only of the pre-fix measurement. And density is not a proxy for
+> resolution quality: markupsafe sits at 0.24 with a **4%** unresolved rate —
+> it simply has few in-repo call sites, most of its calls going to stdlib.
 
 ### 6.2 Traversal semantics
 `out` = edges where symbol is `from_symbol` (its callees/imports/bases);
@@ -1505,6 +1580,68 @@ CoverageOut {
 default, caps reaching SQL rather than being applied after the fact, grouping of
 a multi-test symbol, the empty-not-404 rule, cross-tenant 404, anonymous 401,
 and that neither response contains a code body.
+
+### 18.6 The rollup drawn — module diagram (client-side)
+
+The Architecture panel offers 18.2's `nodes`/`edges` two ways, behind a
+list/diagram toggle. **This adds no endpoint and no request.** The diagram is a
+pure function of a response the panel already holds, so the picture costs one
+dynamic `import()` and nothing else — no model call, no tokens, no quota, in
+keeping with 18.1.
+
+Both views exist because they answer different questions. The list answers
+*"what does this module touch"* exactly, in one click, with the per-kind
+breakdown. The diagram answers *"what shape is this codebase"* — one hub with a
+long tail looks nothing like a flat mesh, and no careful reading of a ranked
+list makes that difference visible.
+
+**The caps bound a drawing, not a query.** `DIAGRAM_MAX_NODES` (12) and
+`DIAGRAM_MAX_EDGES` (18) live in `frontend/src/lib/mermaid-graph.ts` and are
+deliberately **not** in §12: that table is `app/config.py`, and these are
+presentation limits with no server counterpart. The endpoint still returns up to
+`ARCH_MAX_NODES`, and the list still shows every one of them. FEATURE-IDEAS 3.3
+names the failure mode — "big graphs render into hairballs" — and 12×18 is where
+httpx reads as a hub with a tail rather than a ball of string. Everything cut is
+counted in the caption, so the picture never quietly under-reports.
+
+**Ranking matches the panel** (`fan_in DESC, path`), so the two views cannot
+disagree about what matters, and the tie-break keeps a repo from redrawing
+differently between two requests that returned rows in another order. Per-kind
+rows are merged into one arrow per ordered pair with summed weight: three
+parallel arrows labelled calls/imports/extends between the same two boxes is
+noise, and the breakdown is what the list is for. Weight labels are dropped past
+14 arrows, where they stop being readable.
+
+**Labels are the shortest unambiguous suffix.** The filename alone by default;
+any filename claimed by more than one kept module grows a directory until
+distinct — all colliding paths together, so the labels stay comparable rather
+than one growing and the others not. flask has `src/flask/app.py` *and*
+`src/flask/sansio/app.py`; two boxes both reading `app.py` is not merely ugly,
+it is wrong. `__init__.py` is always qualified, since alone it names no module.
+
+**Two choices made on the security side.** Mermaid node ids are positional
+(`m0`, `m1`), so no repo path ever reaches the diagram grammar, and labels are
+`["…"]`-quoted with `"` mapped to mermaid's `#quot;`. Click-through then reads
+the id back out of the rendered SVG (`nodeIdFromElement`) instead of using
+mermaid's `click` directive, which requires `securityLevel: "loose"` — that
+makes diagram text executable, and this diagram's text is built from repo file
+paths. `securityLevel` stays `strict`; the navigation affordance was not worth
+the trade.
+
+**Degradation is one-directional.** The toggle appears only when the rollup has
+at least one cross-module edge: with none, the picture is a row of disconnected
+boxes and says strictly less than the list. If mermaid fails to load or render,
+the panel says so in one line and the list is untouched. The diagram is never
+the only copy of the information.
+
+**Verification.** `frontend/src/lib/mermaid-graph.test.ts` — top-N selection and
+its tie-break, per-pair merging, self-loop exclusion, the edge cap with the
+hidden/omitted counts, dropping weight labels past the limit, label
+disambiguation including `__init__.py`, quote escaping, the no-edges and empty
+rollups, and `nodeIdFromElement` against mermaid's real `flowchart-m3-7` id
+shape. The renderer itself is not unit tested: it is a DOM effect over a
+third-party layout engine, and everything worth asserting was extracted into the
+pure module precisely so it could be.
 
 ---
 

@@ -218,6 +218,7 @@ PATH` writes every chunk as JSONL, `--sample N` prints N random full chunks.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Progress stuck at 0%, no error | **the worker isn't running** | start terminal 2 |
+| Progress stuck at 0%, and the worker terminal shows `redis.exceptions.TimeoutError` or `ConnectionError: Connection reset by peer` then exits | a managed Redis is slower to connect than ARQ's 1s default, and a mid-command reset was not retried at all | defaults now cover both (`REDIS_CONN_TIMEOUT_S=10`, `REDIS_COMMAND_RETRIES=3`); if it still happens, raise them in `backend/.env` and restart the worker |
 | `curl localhost:8000/health` refuses connection for ~30 s | embedder loading | wait; it's normal |
 | Every request fails with a CORS error | browser is on an origin the API doesn't allow — common when an editor forwards `:3000` elsewhere | set `FRONTEND_ORIGIN` in `backend/.env` to the exact origin in your address bar, or use `FRONTEND_ORIGIN_REGEX` |
 | 503 from `/repos` | Redis unreachable | `docker compose up -d --wait` |

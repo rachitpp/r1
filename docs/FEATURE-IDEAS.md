@@ -19,6 +19,17 @@
 > them touches ingest or retrieval, so none could disturb the eval-equality
 > verification V2/V3 rest on. See SPEC §18 and DECISIONS 2026-07-31.
 >
+> **Status, 2026-08-02.** **3.3** built, bringing the total to eight. It is the
+> second view of 2.2's rollup rather than anything new — no endpoint, no request,
+> no model call — which is why it was the right thing to take next and why it took
+> an afternoon. See SPEC §18.6 and DECISIONS 2026-08-02. It was also built in the
+> right order by luck rather than judgement: the src-layout resolution fix landed
+> the same day, and a module diagram drawn over the previous graph would have been
+> a confident picture of half a repo. **Anything that reads the symbol graph now
+> carries a precondition** — snapshots ingested before 2026-08-02 must be
+> re-ingested before `architecture`, `coverage`, `overview` *or* the diagram mean
+> anything.
+>
 > **The cost model below understates one thing, and it is the important one.**
 > "$0 unless noted" is true about *invoices* and misleading about *capacity*.
 > The real currency is provider rate limits: `app/agent/model.py` records that
@@ -338,7 +349,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Money cost.** $0.
 - **Risks.** Keeping tours coherent and bounded — cap the number of stops.
 
-### 3.3 Diagram generation (mermaid)
+### 3.3 Diagram generation (mermaid) — **BUILT 2026-08-02**
 
 - **What it is.** Auto-generate architecture / call / module diagrams from the
   symbol graph, rendered as mermaid.
@@ -348,11 +359,29 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   serialization of the module-level rollup from 2.2. Mermaid renders natively in
   the docs tooling already, so the primitive is familiar.
 - **Implementation sketch.** Module rollup query → mermaid string → render in a
-  diagram tab; make nodes click-through to the file.
-- **Effort.** **M.**
-- **Money cost.** $0.
-- **Risks.** Big graphs render into hairballs — collapse to top-N modules by
-  fan-in, allow drill-down.
+  diagram tab; make nodes click-through to the file. *(Accurate, with one
+  correction: there is no query. 2.2's response was already on the page, so the
+  first arrow in that chain does not exist and the feature adds no endpoint and
+  no request.)*
+- **Effort.** **M.** *(Actual: an afternoon — for the same reason 2.2 came in
+  under its estimate. Nothing was computed that did not already exist.)*
+- **Money cost.** $0, and **zero model calls** — same property as 2.2, inherited
+  rather than re-earned.
+- **Risks.** Exactly right, and it bit on the first try: twelve modules drawn
+  with all 45 of their edges was a ball of string with no visible structure.
+  Fixed by the top-N the risk note prescribed — `DIAGRAM_MAX_NODES` 12,
+  `DIAGRAM_MAX_EDGES` 18, everything cut counted in the caption.
+- **Shipped as.** A list/diagram toggle on the existing Architecture panel
+  (SPEC §18.6), *not* a separate tab: same data, same ranking, one click apart.
+  `mermaid@11` is dynamically imported (~500 KB, larger than the rest of the
+  page) so a reader who never opens the diagram pays nothing for it. Clicking a
+  box opens that module in the list — done by reading the node id back out of
+  the rendered SVG, because mermaid's `click` directive needs
+  `securityLevel: "loose"` and the diagram text is built from repo paths.
+- **Honest limitation.** The toggle is hidden entirely when the rollup has no
+  cross-module edges, because a row of disconnected boxes says less than the
+  list does. On a repo whose graph is thin, the feature correctly declines to
+  appear — which also means its absence is not a bug report.
 
 ### 3.4 Docstring / README / comment generation *(new)*
 
@@ -575,7 +604,7 @@ noted.
 | 2.4 Test↔code linkage | ★★★ | S–M | `is_test` + edges | **BUILT** — cheap, high signal |
 | 2.2 Architecture overview | ★★★★ | M | Symbol graph rollup | **BUILT** — and it did feed 3.1 |
 | 4.4 Multi-turn memory | ★★★ | M | SSE + agent | Feels like a colleague |
-| 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | Great for orientation |
+| 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | **BUILT** — a second view of 2.2, not a second query |
 | 5.3 Incremental re-index | ★★★ | L | Snapshots | Freshness; saves compute |
 | 4.2 IDE extension | ★★★★★ | L | The whole API | Adoption, but a new surface |
 | 1.1 TypeScript | ★★★★★ | L–XL | Chunking only; resolution is new | Highest ceiling, biggest investment |
@@ -590,9 +619,14 @@ standing on the last:
 
 1. **3.1 Auto-generated overview** — biggest promise-delivery per hour; makes the
    repo page (which you just enhanced) *the* onboarding surface.
-2. **2.2 Architecture rollup** + **3.3 diagrams** — the overview gets a module map
-   and a picture; both fall out of the graph you already have.
+2. ~~**2.2 Architecture rollup** + **3.3 diagrams**~~ — **done.** Both fell out of
+   the graph, as predicted; 3.3 turned out to need no query at all.
 3. **2.1 Git-history tool** — adds the "why / when" dimension nothing else covers.
+   **Next up.** One note for whoever picks it up: the sketch below assumes a 7th
+   agent tool, but §18.1's rule argues against that for most of it. Blame, "what
+   changed here recently" and "who last touched this" are exact SQL and belong as
+   endpoints; only semantic search over commit *messages* needs the model. That
+   split also keeps the ingest-side work at zero model calls.
 4. **3.5 explain-this** + **2.4 test↔code** + **6.x product polish** — a cluster of
    cheap wins that make it feel finished.
 5. **4.4 multi-turn memory** — the interaction upgrade from "search box" to

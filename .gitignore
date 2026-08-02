@@ -38,6 +38,9 @@ credentials*.json
 .DS_Store
 Thumbs.db
 
+# Local agent settings — per-machine tool permissions, not repo content.
+.claude/
+
 # Agent run traces — every model call is metered; traces are kept locally
 # for debugging but are not repo content.
 backend/var/
