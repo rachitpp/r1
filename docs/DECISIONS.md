@@ -3101,3 +3101,45 @@ instead of against git.
 predating §20 reports `indexed: false` until re-ingested. Same rule as the
 src-layout fix, and stated in §20.4 so nobody has to infer it from an empty
 panel.
+
+## 2026-08-02 — Two §20 limitations retired within the hour, one of them cheaply
+
+Both were written up in the entry above as accepted costs. Reviewing them
+immediately afterwards, one was not a cost at all and the other had a remedy the
+src-layout precedent had hidden.
+
+**The parser limitation was a design error, not a trade-off.** The entry above
+says a body whose final line is exactly `<int>\t<int>\t<path>` is lost to the
+file list, "the alternative being a second pass over the log". That framing was
+wrong: there is no second pass. `git log --format` passes literal characters
+through, so **appending one ETX byte after `%b`** terminates the body exactly and
+the numstat block is whatever follows. The backwards scan disappears, and with
+it a second latent bug nobody had noticed — a US byte in a commit body would
+have silently truncated the body at that point, because the old code took
+`parts[6]` rather than re-joining the tail.
+
+Recorded as a mistake rather than quietly fixed: the limitation was stated
+confidently, in a SPEC section and a commit message, on the strength of an
+alternative I had not actually looked for. Both cases are now regression tests
+against real repositories.
+
+**Backfill: history is not the src-layout bug, and I reasoned from the wrong
+precedent.** The entry above says a pre-§20 snapshot reports `indexed: false`
+until re-ingested, "the same rule the src-layout fix established". The rule is
+not the same. That fix changed the *symbol graph*, which is downstream of
+parsing, so re-ingest was genuinely the only remedy. History depends on no
+chunking, no parsing and no embedding — it is `git log` and two tables.
+
+`scripts/backfill_history.py` therefore fills it in without touching `chunks`,
+`symbols`, `edges` or a single vector, which is what makes it safe to run
+against the frozen benchmark corpus: retrieval numbers cannot move because
+nothing retrieval reads is written.
+
+**It walks the pinned commit, not HEAD** — the detail that makes the script
+correct rather than merely convenient. A snapshot is frozen at `commit_sha`
+(§14.3) and its repo has moved on since; `walk_history` grew a `rev` parameter
+for it. Verified on blinker: 314 commits, 597 touches, and the newest stored
+commit is `c3364059` — the snapshot's pin, not the branch tip. A snapshot whose
+commit is unreachable in the deepened clone is skipped and reported rather than
+approximated, because a plausible-looking wrong history is worse than an empty
+one that says so.

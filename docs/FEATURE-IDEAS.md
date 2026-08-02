@@ -231,10 +231,20 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   with years of it. That is the §18.3 empty-not-404 reasoning one level up, and
   it is the direct lesson of `/coverage` being silently degraded by the
   src-layout bug earlier the same day.
-- **Honest limitation.** The body parser can lose a line: a commit message whose
-  *final* line is exactly `<int>\t<int>\t<path>` is indistinguishable from the
-  numstat block it precedes. Recorded rather than fixed — the alternative is a
-  second pass over the log for a case that does not occur.
+- **Backfilled, not just built.** History needs no embedding and no chunking, so
+  `scripts/backfill_history.py` fills in snapshots that predate §20 without
+  touching `chunks`, `symbols`, `edges` or a vector — which is what makes it
+  safe on the frozen benchmark. It walks each snapshot's **pinned commit**, not
+  HEAD. All 11 ready snapshots now carry history; httpx still verifies at
+  `825 | 697` with 2304 edges, unchanged.
+- **A limitation claimed here and then retired.** The first version of this
+  entry recorded that a commit body whose final line is exactly
+  `<int>\t<int>\t<path>` was lost to the file list, "the alternative being a
+  second pass over the log". There is no second pass: one ETX byte after `%b`
+  terminates the body exactly. The claim was made on the strength of an
+  alternative I had not looked for, and it hid a second bug beside it (a US byte
+  in a body truncated it). Both are regression tests now. See DECISIONS
+  2026-08-02.
 
 ### 2.2 Architecture-level understanding — **BUILT 2026-07-31**
 

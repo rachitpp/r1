@@ -1791,13 +1791,17 @@ One `git log --numstat` invocation, parsed in `app/ingest/history.py`. The
 obvious alternative — GitPython's `iter_commits()` with `commit.stats` — is a
 separate diff per commit, so 500 commits becomes 500 subprocesses.
 
-The parse exists because commit **bodies contain newlines**. Each record is
-introduced by ASCII RS and its fields separated by ASCII US, so the header is
-unambiguous; the trailing field is `body` followed by the numstat block, which
-is separated by scanning backwards from the end while lines still look like
-numstat. A body whose *final* line is exactly `<int>\t<int>\t<path>` would lose
-that line to the file list. Accepted: the alternative is two passes over the log
-to rescue a case that does not occur.
+The parse exists because commit **bodies contain newlines**. Three control
+characters make it exact rather than heuristic: ASCII RS introduces each record,
+ASCII US delimits the header fields, and **ASCII ETX terminates `%b`**. git's
+`--format` passes literal characters through, so the body is everything up to
+the terminator and the numstat block is everything after it — no guessing.
+
+An earlier version scanned backwards from the end of the record while lines
+still parsed as numstat, and lost a body whose *final* line was exactly
+`<int>\t<int>\t<path>`. That was written up as an accepted limitation before the
+terminator turned out to cost one character; `tests/ingest/test_history.py` pins
+the case as a regression.
 
 Stored per commit: sha, author name and email, **author date** (not commit date
 — "when was this written" survives a rebase, which is what the question means),
@@ -1848,9 +1852,15 @@ context, rather than one number that is right in only one of them.
 
 `commits: []` has two causes that mean opposite things:
 
-* the file has no commits in the walked window — a real answer about this file;
-* **nobody walked the log** — true of every snapshot ingested before §20, which
-  is every snapshot that existed when it shipped.
+* the file has no commits **in the walked window** — a real answer, though a
+  narrower one than it looks: `HISTORY_MAX_COMMITS` is a window, not a full
+  history, so this means "untouched in the last 500 commits", not "never
+  changed". Measured on the backfilled corpora, the share of indexed files with
+  at least one touch is 100% on httpx, blinker and markupsafe, ~93% on
+  itsdangerous and flask-sqlalchemy, and **64% on flask** — an old repo where
+  a third of the tree has not moved in 500 commits. The strip renders nothing in
+  that case, which is the right amount of chrome for "nothing to say here";
+* **nobody walked the log** — true of every snapshot ingested before §20.
 
 Rendering those identically would state "no history" about a repo with years of
 it. `indexed` separates them, and the UI reads it before it reads `commits`.
@@ -1869,10 +1879,19 @@ remains the only endpoint that serves code), the default per-identity rate
 limit, and determinism over an immutable snapshot (§14.3) — so a client may
 cache a response for as long as it holds the snapshot id.
 
-**Nothing is backfilled.** The pass runs at ingest; a snapshot predating §20
-reports `indexed: false` until it is re-ingested. This is the same rule the
-src-layout fix established (DECISIONS 2026-08-02) and it is stated here so no
-one has to rediscover it from an empty panel.
+**Ingest does not backfill, but a script does.** The pass runs at ingest, so a
+snapshot predating §20 reports `indexed: false`. Unlike the src-layout fix —
+where the only remedy was a full re-ingest, because that bug was in the graph —
+history depends on no embedding and no chunking, so
+`scripts/backfill_history.py` can fill it in without touching `chunks`,
+`symbols`, `edges` or a single vector. Retrieval numbers cannot move as a result
+of running it, which is the property that makes it safe on the frozen benchmark
+corpus.
+
+It walks **the snapshot's pinned `commit_sha`, not HEAD**. A snapshot is frozen
+(§14.3) and its repo has moved on; filing today's history under a months-old
+snapshot would be worse than leaving it empty. A snapshot whose commit is not
+reachable in the deepened clone is skipped and reported, never approximated.
 
 ### 20.5 Storage shape
 
@@ -1897,7 +1916,8 @@ rather than a join filtered after the fact — the same reason `007` put
 dir**, not canned `git log` output: the entire risk in that module is the format
 string and the parser disagreeing, and a hand-written fixture would test the
 parser against my belief about git rather than against git. Covers ordering,
-subject/body splitting, the almost-numstat body line, line deltas, the
+subject/body splitting, a body whose final line is numstat-shaped *and* one
+containing a US byte (both regressions of the first parser), line deltas, the
 `max_commits` bound, merge flagging, rename resolution, a single-commit repo,
 and a directory that is not a repo at all.
 
