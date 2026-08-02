@@ -103,6 +103,11 @@ export function useRepoChat(repoId: string): RepoChat {
     [repoId],
   );
 
+  // §23: the conversation this transcript belongs to. Null until the first
+  // answer establishes one; sent on every later turn so the agent gets the
+  // prior exchange as context and the server appends rather than forking.
+  const conversationRef = useRef<string | null>(null);
+
   const ask = useCallback(
     (question: string) => {
       if (abortRef.current) abortRef.current.abort();
@@ -122,7 +127,9 @@ export function useRepoChat(repoId: string): RepoChat {
         try {
           for await (const { event, data } of streamSse(
             apiUrl(`/repos/${repoId}/chat`),
-            { question },
+            conversationRef.current
+              ? { question, conversation_id: conversationRef.current }
+              : { question },
             controller.signal,
           )) {
             const payload = JSON.parse(data);
@@ -165,6 +172,10 @@ export function useRepoChat(repoId: string): RepoChat {
                 break;
               case "done":
                 exchange.toolCallsUsed = payload.tool_calls_used ?? null;
+                // Captured on the first turn and sent on every later one, so
+                // the agent reads the prior exchange as context (§23.2).
+                if (payload.conversation_id)
+                  conversationRef.current = payload.conversation_id;
                 finish({ ...exchange }, "done");
                 return;
               case "error":
@@ -227,7 +238,11 @@ export function useRepoChat(repoId: string): RepoChat {
     abortRef.current.abort();
   }, []);
 
+  // "New chat" must start a new conversation, not append to the old one — the
+  // transcript is cleared on screen, and the server-side thread it belonged to
+  // has to be let go with it.
   const clear = useCallback(() => {
+    conversationRef.current = null;
     stoppedRef.current = false;
     abortRef.current?.abort();
     setTranscript([]);
