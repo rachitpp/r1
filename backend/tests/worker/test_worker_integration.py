@@ -19,10 +19,11 @@ from uuid import UUID
 
 import asyncpg
 import pytest
-from arq.connections import RedisSettings, create_pool
+from arq.connections import create_pool
 from arq.worker import Worker
 
 from app.config import LEASE_EXPIRY_S, ZOMBIE_AFTER_S, get_settings
+from app.config import redis_settings as build_redis_settings
 from app.db import queries
 from app.db.pool import close_pool
 from app.db.pool import create_pool as create_pg_pool
@@ -38,7 +39,7 @@ async def _reachable() -> bool:
     try:
         conn = await asyncpg.connect(settings.DATABASE_URL, timeout=5)
         await conn.close()
-        redis = await create_pool(RedisSettings.from_dsn(settings.REDIS_URL))
+        redis = await create_pool(build_redis_settings())
         await redis.ping()
         await redis.aclose()
     except Exception:
@@ -88,9 +89,15 @@ def _make_git_repo(root: Path) -> Path:
 
 async def _run_queue_once(repo_id: UUID) -> None:
     """Enqueue an ingest and drain the queue with an inline burst worker."""
-    settings = get_settings()
-    redis_settings = RedisSettings.from_dsn(settings.REDIS_URL)
-    redis = await create_pool(redis_settings, default_queue_name=TEST_QUEUE)
+    # `build_redis_settings()`, not `RedisSettings.from_dsn()`. The bare
+    # constructor keeps ARQ's 1-second `conn_timeout` and no retry policy —
+    # config.py says so in as many words — which is a LAN number. Against the
+    # managed Redis this suite actually points at, connecting can exceed it
+    # whenever anything else is contending, and the test dies with
+    # `TimeoutError: Timeout connecting to server` having proved nothing about
+    # the worker. Using the app's own settings also means this test exercises
+    # the configuration the app ships, which is the point of an integration test.
+    redis = await create_pool(build_redis_settings(), default_queue_name=TEST_QUEUE)
     try:
         job = await redis.enqueue_job("ingest_repo", str(repo_id))
         assert job is not None
@@ -101,7 +108,7 @@ async def _run_queue_once(repo_id: UUID) -> None:
         functions=[ingest_repo],
         on_startup=on_startup,
         on_shutdown=on_shutdown,
-        redis_settings=redis_settings,
+        redis_settings=build_redis_settings(),
         queue_name=TEST_QUEUE,
         burst=True,
         poll_delay=0.1,
