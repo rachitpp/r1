@@ -799,9 +799,9 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `EXPAND_TOKEN_BUDGET` | 6_000 | §7.1 |
 | `AGENT_TOOL_CAP` | 8 | §7.2 |
 | `JEDI_FILE_TIMEOUT_S` | 10 | §6.1 |
-| `ARCH_MAX_NODES` | 200 | §18.1 |
-| `ARCH_MAX_EDGES` | 1_000 | §18.1 |
-| `COVERAGE_MAX_LINKS` | 500 | §18.2 |
+| `ARCH_MAX_NODES` | 200 | §18.2 |
+| `ARCH_MAX_EDGES` | 1_000 | §18.2 |
+| `COVERAGE_MAX_LINKS` | 500 | §18.3 |
 | `OVERVIEW_MAX_MODULES` | 15 | §19.2 |
 | `OVERVIEW_MAX_ENTRY_POINTS` | 8 | §19.2 |
 | `OVERVIEW_MAX_API_SYMBOLS` | 25 | §19.2 |

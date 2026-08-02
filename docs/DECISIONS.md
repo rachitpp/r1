@@ -2997,3 +2997,40 @@ truth: on a snapshot ingested before today's src-layout fix the picture is as
 wrong as the panel is, and more persuasively so — a confident diagram of half a
 graph is worse than a list of the same. Re-ingest is still the precondition for
 `architecture`, `coverage` and `overview` alike.
+
+## 2026-08-02 — The re-ingest precondition, audited against the database
+
+The entry above states a precondition — pre-fix snapshots must be re-ingested
+before any graph view means anything — and the FEATURE-IDEAS note restated it as
+outstanding work. Queried rather than assumed, it was **already satisfied**, and
+the rule as written was wrong in three separate ways. Recording it because the
+failure mode is the same one that produced the "httpx is an outlier" retraction:
+a plausible rule applied to rows nobody looked at.
+
+**"Ingested before 2026-08-02" is the wrong test.** flask and flask-sqlalchemy
+were re-ingested at 19:41 and 19:27 on **08-01** — the fix predates the entry
+that documents it. Both carry the post-fix counts exactly (1605 and 311 edges),
+so a date cutoff would have condemned two correct corpora. Every library corpus
+matches its post-fix number: blinker 193, itsdangerous 264, markupsafe 26.
+
+**httpx is exempt by construction, not by luck, and must not be re-ingested.**
+A flat layout yields no import root, so the Jedi call is byte-identical to what
+shipped. CLAUDE.md permits re-ingest only on a schema or chunker change, and the
+frozen benchmark verifies: **825 impl / 697 test**, unchanged.
+
+**A `naive` snapshot has no symbol graph at all** — httpx and flask both hold
+one, each with 0 symbols and 0 edges, because §2.7 chunks fixed windows and
+never runs the symbol pass. "Stale graph" is not a property they can have, and
+any sweep keyed on edge counts would have queued them forever.
+
+What is genuinely pre-fix: three `rachitpp/*` test submissions from 07-28, one
+of which is a non-Python repo sitting at `ready` with 0 chunks — legitimate
+under the `*.py` filter, and a reminder that the empty state of every §18 view
+is reachable without anything being broken. Nothing reads them; left alone.
+
+**One number in the entry above does not reproduce.** Its table records httpx at
+2303 edges before and after; the database says **2304** (calls 2014, imports
+223, extends 67). The claim that mattered — unchanged by the fix — holds either
+way, and the row is left as written because this log is append-only. Flagged
+rather than corrected, since an off-by-one in a count nobody re-derived is
+exactly the kind of thing that becomes a load-bearing citation later.

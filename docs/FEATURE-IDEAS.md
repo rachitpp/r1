@@ -25,10 +25,17 @@
 > an afternoon. See SPEC §18.6 and DECISIONS 2026-08-02. It was also built in the
 > right order by luck rather than judgement: the src-layout resolution fix landed
 > the same day, and a module diagram drawn over the previous graph would have been
-> a confident picture of half a repo. **Anything that reads the symbol graph now
-> carries a precondition** — snapshots ingested before 2026-08-02 must be
-> re-ingested before `architecture`, `coverage`, `overview` *or* the diagram mean
-> anything.
+> a confident picture of half a repo.
+>
+> **The re-ingest that precondition implied is done, and was already done when
+> this was written.** Audited against the database, not the notes: all five
+> library corpora carry post-fix graphs matching the counts in DECISIONS
+> (flask 1605, flask-sqlalchemy 311, blinker 193, itsdangerous 264, markupsafe
+> 26 unchanged). httpx is exempt *by construction* — a flat layout yields no
+> import root — and its `825 | 697` invariant verifies. Only three throwaway
+> `rachitpp/*` submissions from 07-28 still hold pre-fix graphs, and nothing
+> reads them. So `architecture`, `coverage`, `overview` and the diagram are all
+> trustworthy on every corpus that matters.
 >
 > **The cost model below understates one thing, and it is the important one.**
 > "$0 unless noted" is true about *invoices* and misleading about *capacity*.
