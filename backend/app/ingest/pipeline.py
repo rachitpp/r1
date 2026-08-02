@@ -158,20 +158,28 @@ async def _store_graph(
     return len(symbols), n_test, len(edge_rows), stats
 
 
-async def _store_history(
-    conn: asyncpg.Connection, snapshot_id: UUID, repo_dir: Path
+async def store_history(
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    repo_dir: Path,
+    rev: str | None = None,
 ) -> tuple[int, int]:
     """Read and store the commit log (SPEC §20.1). Returns ``(commits, touches)``.
 
     Must run **inside** the clone context — it reads `.git`, which the workdir
     cleanup removes.
 
+    ``rev`` walks from a named commit rather than HEAD. Ingest leaves it unset
+    (it walks the clone it just made, whose HEAD *is* the snapshot's commit);
+    `scripts/backfill_history.py` sets it, because an existing snapshot is
+    pinned to a commit the repo has since moved past.
+
     Touch rows are keyed to commits by sha, and a sha absent from the insert
     map means ``ON CONFLICT DO NOTHING`` skipped it because history for this
     snapshot was already stored. Dropping those touches is correct: the rows
     they would duplicate are already there.
     """
-    commits, touches = walk_history(repo_dir)
+    commits, touches = walk_history(repo_dir, rev=rev)
     if not commits:
         return 0, 0
 
@@ -359,7 +367,7 @@ async def _run(
         # not the chunking strategy, and §2.7's naive baseline sits at the same
         # commit. Storing it twice is the duplication `012` accepts on purpose.
         try:
-            n_commits, n_touches = await _store_history(conn, snapshot_id, info.path)
+            n_commits, n_touches = await store_history(conn, snapshot_id, info.path)
             if n_commits:
                 say(f"history {n_commits} commits, {n_touches} file touches")
         except Exception as exc:  # noqa: BLE001 - enrichment must not fail ingest
