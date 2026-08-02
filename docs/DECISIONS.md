@@ -3242,3 +3242,102 @@ because the test isolates its queue. Queue isolation was the wrong thing to
 check: the contention was at the connection layer, one level below the thing I
 had verified. Ruling out the mechanism I thought of is not the same as ruling
 out the cause.
+
+## 2026-08-02 — 6.5 built as a query, and the tests that passed while lying
+
+FEATURE-IDEAS 6.5 built as SPEC §22. The catalogue pairs it with 3.1, which
+invites "one more generated document" — one more request per snapshot against a
+20/day tier. §18.1's rule says otherwise, and it applies cleanly here: four of
+the five steps are `GROUP BY`s §19 was *already running* to build its prompt.
+The fifth, "what do the tests hit hardest", is one new query. A model would have
+contributed phrasing.
+
+So the checklist costs nothing, renders instantly, and is identical every time —
+and `tests/api/test_checklist.py` asserts the queue stays empty, so a future
+change that routes this through the model fails rather than quietly doubling the
+per-repo budget.
+
+**The interesting part is that the unit tests were green while the output was
+wrong.** Fourteen tests covered ordering, degradation, capping and phrasing.
+Then I ran it against flask and httpx, and two things were plainly bad:
+
+* flask's "what does this package expose" step named
+  `examples/celery/src/task_app/__init__.py` and its `celery_init_app` —
+  confidently pointing a newcomer at a demo app, and listing `create_app` twice
+  because two examples both export it. The tests could not have caught this:
+  they asserted the step existed and was well-formed, which it was.
+* flask's steps 4 and 5 cited the identical range (`app.py:109-149`), so the
+  panel printed what looked like one item twice.
+
+Fixed by scoping the surface to the hub module's own directory — the hub is by
+definition what the repo depends on most, so its directory is the package —
+preferring that package's `__init__.py`, de-duplicating names, and starting the
+file-level test step at line 1. Each fix arrived with a regression test built
+from the real shape that produced it.
+
+**Ranges are capped at 40 lines.** flask's `Flask` class is 1516 lines. That is
+its true extent and a useless pointer; a step says where to start.
+
+**A limitation named rather than papered over.** httpx now reports its declared
+public surface as `main` — the console entry in `_main.py` — because
+`public_api_symbols` only finds symbols *defined* in a file that lists them in
+`__all__`, and `httpx/__init__.py` merely re-exports. That is the same
+re-export blind spot recorded for 2.4 on 2026-07-31, and fixing it means
+changing a query §19 depends on. Left alone, written down in §22.3, because the
+alternative is a step that looks authoritative and is not.
+
+**The lesson, which is the same one twice today.** A green suite is evidence
+about the properties you thought to assert. Both §20's coverage strip and this
+needed someone to run the thing and disbelieve the output — and both times the
+defect was a legitimate-looking answer rather than an error.
+
+## 2026-08-02 — 4.4 built: memory is two features, and one of them is a budget
+
+FEATURE-IDEAS 4.4 built as SPEC §23. The catalogue describes it as one item —
+"real follow-ups, plus saved conversations" — and building it makes clear those
+are two things with different risks. Persistence is a table. **Context is a
+recurring cost on every future turn**, and that is where the decisions are.
+
+**Bounded twice, and the second bound is the one that matters.** A window of
+turns is the obvious cap; the non-obvious one is per-answer length. An answer
+can run to a page whose conclusion is in its first paragraph, so six whole
+answers would quickly dwarf the system prompt and the question together — on a
+tier metered in requests per day, that is how a feature that "worked in testing"
+starts failing mid-run. Questions are kept whole (short, and the thing a
+follow-up refers back to); answers are cut to 1_200 characters **with a marker**,
+because a model that cannot see the cut treats half a sentence as the whole
+claim.
+
+The window is the most *recent* six, not the first six. Anchored at the start it
+would drift further from the question with every turn — which is the opposite of
+what a follow-up needs and would have looked fine in any test with three turns.
+
+**The tool timeline is not stored.** It is large, is already streamed live (§9),
+and answers a question nobody asks next: a follow-up needs the conclusion, not
+the searches. Same call §21 made for shared answers.
+
+**A conversation belongs to a snapshot, not to a repo.** `owned_conversation`
+matches id **and** user **and** snapshot. The third predicate is the one that
+would be easy to drop as redundant, and it is not: a thread's stored citations
+resolve against one immutable corpus, so replaying it against a newer snapshot
+of the same repo would render chips pointing at lines that have since moved.
+There is a test for exactly that, because it is the failure that would look like
+a rendering glitch rather than a correctness bug.
+
+**Turns are written on the success path only.** A cancelled or timed-out run has
+no conclusion, and storing a half-answer would poison the context of every later
+turn — the corruption compounds rather than showing up once. Conversely a
+*storage* failure is logged and swallowed: the user has their answer, and
+failing the stream to protect a stored copy of it would take away the part that
+worked.
+
+**The conversation is opened before the stream, and its id is announced after.**
+Before, so a client that disconnects mid-answer can still resume the thread.
+After, because a run that fails stores nothing, and handing out an id for a
+conversation with no turns would make the next question append to a phantom.
+Both halves are timing decisions with no natural place to write them down except
+here.
+
+**Not built: naming or summarising a conversation.** The title is the first
+question, trimmed. Generating one costs a model call to produce something worse
+than what the user typed.

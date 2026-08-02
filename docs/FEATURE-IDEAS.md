@@ -19,7 +19,17 @@
 > them touches ingest or retrieval, so none could disturb the eval-equality
 > verification V2/V3 rest on. See SPEC §18 and DECISIONS 2026-07-31.
 >
-> **Status, 2026-08-02 (latest).** **6.1** built as SPEC §21 — **ten**. It closes
+> **Status, 2026-08-02 (latest).** **4.4** built as SPEC §23 — **twelve** — which
+> takes the recommended sequence through step 5. It is the first feature here
+> whose cost is *recurring*: every later turn pays for the context window, which
+> is why it is bounded by turns **and** by per-answer length. See DECISIONS.
+>
+> **Status, 2026-08-02.** **6.5** built as SPEC §22 — **eleven** — which
+> closes the recommended sequence's step 4 entirely. Like 2.2 and 3.3 it costs no
+> model call; unlike them, its unit tests were green while its output was wrong,
+> and only running it against flask and httpx showed it. See DECISIONS.
+>
+> **Status, 2026-08-02.** **6.1** built as SPEC §21 — **ten**. It closes
 > the doc's step 4 except for 6.5, and it is the first feature here whose hard
 > part was a security boundary rather than a query: the permalink read is the
 > only unauthenticated route in the API. See DECISIONS 2026-08-02.
@@ -533,7 +543,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Risks.** Requires 2.1/2.3 to be genuinely useful; otherwise it is just chat
   in a comment.
 
-### 4.4 Multi-turn conversation memory
+### 4.4 Multi-turn conversation memory — **BUILT 2026-08-02**
 
 - **What it is.** Real follow-ups — *"and where is that called?"* — answered with
   the prior turns as context, plus saved/named conversations across sessions.
@@ -542,10 +552,26 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   (`use-repo-chat.ts`) and each answer is largely self-contained. You would give
   the agent prior-turn context and (server-side) a `conversations` table so
   history survives across devices/sessions.
-- **Effort.** **M.**
-- **Money cost.** $0 (slightly more tokens per turn as context grows — trim old
-  turns; still free-tier-friendly).
-- **Risks.** Context bloat inflating token use and latency — cap history window.
+- **Effort.** **M.** Accurate.
+- **Money cost.** $0, and the parenthetical was the whole design problem rather
+  than an aside. "Slightly more tokens per turn" is true only *because* of the
+  trimming it recommends; without it six whole answers dwarf the system prompt
+  and the question together.
+- **Risks.** Correctly identified, and bounded twice: `CONVERSATION_CONTEXT_TURNS`
+  (6, the most **recent** six — a window anchored at the start drifts away from
+  the question) and `CONVERSATION_ANSWER_CHARS` (1_200, answers only; questions
+  are kept whole because they are what a follow-up refers back to). Truncation
+  is marked, not silent.
+- **Shipped as.** SPEC §23 — `014_conversations.sql`, an optional
+  `conversation_id` on `POST /chat`, and `GET`/`DELETE
+  /repos/{id}/conversations[/{cid}]`. The `done` event now carries the id, so
+  the client captures it on turn one and sends it thereafter.
+- **The decision worth stealing.** A conversation is scoped to a **snapshot**,
+  not a source: its stored citations resolve against one immutable corpus, so
+  replaying a thread against a newer snapshot of the same repo would point its
+  own chips at lines that have moved.
+- **Not built.** Generated conversation titles. The title is the first question,
+  trimmed — a model call would buy something worse than what the user typed.
 
 ### 4.5 CLI enhancements & scripting — **BUILT 2026-07-31**
 
@@ -652,8 +678,15 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   commit B?"* — natural once history (2.1) and multiple snapshots exist. **M–L.**
 - **6.4 Cross-repo / org-wide search.** Ask across *all* your indexed repos at
   once. Builds on V2 snapshots + multi-tenant. **L.**
-- **6.5 Onboarding checklist.** Auto-generate "the first 5 things to understand
-  about this repo," each a launch-point into chat. Pairs with 3.1. **S–M.**
+- **6.5 Onboarding checklist.** **BUILT 2026-08-02.** `GET
+  /repos/{id}/checklist` (SPEC §22) + a panel under the overview, each step a
+  `?q=` launch-point. "Pairs with 3.1" was right about placement and wrong about
+  mechanism: 3.1 is one model call, this is **none** — four of the five steps
+  were already `GROUP BY`s §19 ran to build its prompt. `S–M` held for the code;
+  the time went into two defects only real output revealed (a step pointing at
+  flask's *example app* as the public API, and two steps citing the same range).
+  A test asserts the job queue stays empty, so this cannot silently become a
+  model call later.
 - **6.6 Dark-mode toggle.** **BUILT 2026-07-31.** Three-state (system / light /
   dark), hand-rolled rather than `next-themes` (rule 11), with a pre-paint
   inline script so dark-mode users do not get a white flash on every navigation.
@@ -675,9 +708,10 @@ noted.
 | 3.5 Explain-this quick action | ★★★ | S | Chat pipeline + viewer | **BUILT** — and `?q=` fed 3.1 |
 | 2.4 Test↔code linkage | ★★★ | S–M | `is_test` + edges | **BUILT** — cheap, high signal |
 | 2.2 Architecture overview | ★★★★ | M | Symbol graph rollup | **BUILT** — and it did feed 3.1 |
-| 4.4 Multi-turn memory | ★★★ | M | SSE + agent | Feels like a colleague |
+| 4.4 Multi-turn memory | ★★★ | M | SSE + agent | **BUILT** — bounded by turns *and* answer length |
 | 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | **BUILT** — a second view of 2.2, not a second query |
 | 6.1 Answer permalinks | ★★★ | S–M | Immutable snapshots | **BUILT** — the API's only unauthenticated read |
+| 6.5 Onboarding checklist | ★★★ | S–M | §19's own fact queries | **BUILT** — zero model calls, unlike 3.1 |
 | 5.3 Incremental re-index | ★★★ | L | Snapshots | Freshness; saves compute |
 | 4.2 IDE extension | ★★★★★ | L | The whole API | Adoption, but a new surface |
 | 1.1 TypeScript | ★★★★★ | L–XL | Chunking only; resolution is new | Highest ceiling, biggest investment |
@@ -697,10 +731,9 @@ standing on the last:
 3. ~~**2.1 Git-history tool**~~ — **done.** The endpoint/tool split above was the
    right call and is now the built shape; the semantic-search-over-messages half
    remains unbuilt and is the only part that would need a model.
-4. ~~**3.5 explain-this** + **2.4 test↔code** + **6.x product polish**~~ — done
-   bar **6.5** (onboarding checklist). 3.5, 2.4, 6.1, 6.2 and 6.6 all shipped.
-5. **4.4 multi-turn memory** — the interaction upgrade from "search box" to
-   "colleague."
+4. ~~**3.5 explain-this** + **2.4 test↔code** + **6.x product polish**~~ —
+   **done.** 3.5, 2.4, 6.1, 6.2, 6.5 and 6.6 all shipped.
+5. ~~**4.4 multi-turn memory**~~ — **done.** SPEC §23.
 6. **4.1 private repos** — unlock real-world usage (do the security work
    carefully).
 7. **1.1 TypeScript** — the big investment, taken deliberately once the rest is

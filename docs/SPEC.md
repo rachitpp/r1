@@ -709,7 +709,7 @@ event: tool_result  data: {"n": 1, "tool": "search_code",
 event: text         data: {"delta": "Auth starts in "}
 event: citations    data: {"citations": [{"file_path": "...",
                                           "start_line": 12, "end_line": 48}]}
-event: done         data: {"tool_calls_used": 5}
+event: done         data: {"tool_calls_used": 5, "conversation_id": "…"}   # id added by §23.3
 event: error        data: {"message": "...", "request_id": "..."}
 ```
 
@@ -814,6 +814,11 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `HISTORY_PAGE_MAX` | 100 | §20.2 |
 | `SHARED_ANSWER_MAX_CHARS` | 40_000 | §21.2 |
 | `SHARED_CITATIONS_MAX` | 50 | §21.2 |
+| `CHECKLIST_MAX_ITEMS` | 5 | §22.2 |
+| `STEP_MAX_LINES` | 40 | §22.2 |
+| `CONVERSATION_CONTEXT_TURNS` | 6 | §23.2 |
+| `CONVERSATION_ANSWER_CHARS` | 1_200 | §23.2 |
+| `CONVERSATION_PAGE_MAX` | 50 | §23.4 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
 | `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
@@ -2037,3 +2042,177 @@ the API fixtures wire a single global `app`, so requesting `client` and
 both. `_wire` now clears the user override when `as_user is None` so the
 collision fails loudly, and these tests read a **seeded** permalink rather than
 publishing one and then trying to read it anonymously.
+
+---
+
+## §22 Onboarding checklist
+
+*"The first five things to understand about this repo"* — each a real file and
+line range, each a question you can ask with one click. §19's overview
+*describes* the repo; this hands the reader something to do next.
+
+### 22.1 No model call, and why that was the decision
+
+FEATURE-IDEAS 6.5 pairs this with 3.1, and the obvious reading is "a second
+generated document" — a second request per snapshot against a tier that allows
+twenty a day. §18.1 had already settled the shape: **if the symbol graph can
+answer it exactly, it is a query.** Which module everything imports, where
+execution starts, which definition the code leans on hardest, what the package
+exports, what the tests hit most — every one is a `GROUP BY`, and four of the
+five were already being run to build §19's prompt. What a model would contribute
+here is phrasing, and phrasing is what a template is for.
+
+So `app/checklist.py` is **pure**: rows in, items out, no I/O and no prompt. The
+route runs the SQL, the module decides what is worth saying, and that split is
+what lets the editorial rules be tested without a database.
+
+### 22.2 `GET /repos/{id}/checklist`
+
+```
+ChecklistOut { items: [{kind, title, detail, file_path, start_line, end_line, question}] }
+```
+
+Owner-scoped, deterministic over an immutable snapshot (§14.3), cacheable
+indefinitely by the client — the §18.4 properties, unchanged.
+
+**Order is narrative, not score.** Each input is ranked by its own query, so
+sorting the five against each other would be comparing fan-in to test counts:
+different units, no meaning. They are laid out as a path — where it starts, what
+everything leans on, the one definition to read first, what it exposes, how it
+is exercised. `most_tested` is last on purpose: tests are the best documentation
+in a repo and the least useful thing to read before the vocabulary the other
+four steps establish.
+
+**Every step is optional, and none is padded.** A library has no entry point; a
+repo with no resolved test edges has no test step. Missing steps are absent —
+padding to five with a weak item teaches the reader to skim.
+
+**Every range is capped at `STEP_MAX_LINES` (40).** flask's `Flask` class runs
+1516 lines; a citation that size is a real extent and a useless pointer. The
+step says where to start and the viewer shows the rest.
+
+### 22.3 Two corrections that only real output could have found
+
+Both were invisible to the unit tests, which asserted structure while the
+content was wrong. They are recorded because "the tests passed and the output
+was misleading" is the failure this section is most likely to repeat.
+
+* **The public-surface step pointed at an example app.** `public_api_symbols`
+  scans every `__all__` in the repo, and on flask the winner was
+  `examples/celery/src/task_app/__init__.py`, announcing `celery_init_app` as
+  though it were flask's API. The step now scopes to the hub module's own
+  directory — the hub is what the repo depends on most, so its directory is the
+  package — preferring that package's `__init__.py`, and de-duplicates names
+  (`create_app` appeared twice, from two examples).
+* **Two steps cited the identical range.** `most_tested` started at its first
+  symbol, which on flask was `app.py:109` — exactly where the surface step
+  landed, so the panel printed what looked like one item twice. It starts at
+  line 1 now, which is also more honest: that step is about a *file*.
+
+**A limitation this inherits and does not fix.** `public_api_symbols` finds
+symbols that are *defined* in a file listing them in `__all__`. A package whose
+`__init__.py` only re-exports therefore contributes nothing, which is why httpx
+reports its declared surface as `main` — `_main.py`'s console entry — rather
+than the forty names in `httpx/__init__.py`. This is the same re-export blind
+spot recorded for 2.4 on 2026-07-31, and fixing it means resolving re-exports in
+a query §19 also depends on. Out of scope here; named so the output is not
+mistaken for a complete answer.
+
+### 22.4 Verification
+
+`tests/test_checklist.py` drives the pure builder: reading order, the length
+promise, every step openable and askable, each optional step dropping cleanly, a
+module with fan-in 0 not being called a hub, singular/plural, range capping, the
+example-app scoping, `__init__.py` preference, and duplicate elision.
+`tests/api/test_checklist.py` covers the route: ownership, anonymous 401, no
+code body, ranges clamped to real file lengths, and — the design claim asserted
+rather than trusted — **that nothing reaches the job queue**.
+
+---
+
+## §23 Conversations (multi-turn memory)
+
+Before this, every answer was self-contained and every transcript died with the
+tab. Asking *"and where is that called?"* produced a run that had never heard of
+"that". Two gaps, one table: the agent gets prior turns as context, and the
+history survives the session.
+
+### 23.1 What is stored, and what deliberately is not
+
+`014_conversations.sql`: a `conversations` row per thread, `conversation_turns`
+rows beneath it holding **question, answer, and validated citations**.
+
+* **No tool timeline.** It is large, already streamed live (§9), and useless as
+  context for the next question — a follow-up needs what was *concluded*, not
+  which searches produced it. §21's `shared_answers` made the same call.
+* **Scoped to a snapshot, not a source.** A conversation is about a corpus. Its
+  stored citations resolve against one immutable snapshot (§14.3), so letting a
+  thread span two snapshots of the same repo would make its own history cite
+  lines that have moved. `owned_conversation` therefore matches on **id, user,
+  *and* snapshot** — three predicates, all load-bearing.
+* **The title is the first question, trimmed.** Generating one would cost a
+  model call to produce something worse than what the user typed.
+
+### 23.2 The context window
+
+`prior_turns_as_messages` renders turns as alternating Human/AI messages,
+inserted between the system prompt and the new question so the model reads them
+as earlier exchanges rather than as instructions.
+
+Bounded twice, both as §12 constants because they bound what a *request costs*
+on a tier measured in requests per day:
+
+* `CONVERSATION_CONTEXT_TURNS` (6) — the most **recent** six, not the first six.
+  Context for a follow-up is what was just said; a window anchored at the start
+  drifts further from the question with every turn.
+* `CONVERSATION_ANSWER_CHARS` (1_200) — questions in full, answers truncated. A
+  question is short and is the thing a follow-up refers back to; an answer can
+  be a page whose conclusion is in the first paragraph. Keeping whole answers is
+  how a history window silently becomes the largest part of every prompt.
+
+Truncation is **marked**, not silent: a model that cannot see where an answer
+was cut treats half a sentence as the whole claim.
+
+With no history the run is byte-identical to the single-shot run it always was.
+
+### 23.3 Writing a turn
+
+`POST /repos/{id}/chat` takes an optional `conversation_id`.
+
+* **Absent** → a conversation is opened *before the stream starts*, so the id
+  exists even if the client disconnects mid-answer and the thread is resumable.
+* **Present** → checked with all three predicates above, before a concurrency
+  slot is taken or a token is spent; an unknown or foreign id is 404.
+
+The turn is stored **after the answer is whole, on the success path only**. A
+cancelled or timed-out run has no conclusion, and persisting a half-answer would
+poison the context of every later turn with a sentence that stops mid-clause. A
+storage failure is logged and swallowed — the user has their answer, and failing
+the stream to protect a stored copy of it would take away the thing that worked.
+
+The §9 `done` event gains `conversation_id`. It cannot be sent earlier: a run
+that fails stores nothing, and handing out an id for a conversation with no
+turns would make the next question append to a phantom.
+
+### 23.4 Reading them back
+
+* `GET /repos/{id}/conversations` — the caller's threads for this repo, most
+  recently *used* first (`updated_at`, bumped per turn), with a turn count.
+* `GET /repos/{id}/conversations/{cid}` — the full transcript, oldest-first,
+  every turn carrying its stored validated citations. **Resuming costs no model
+  call and no re-validation**, which is the whole reason turns are stored rather
+  than replayed.
+* `DELETE /repos/{id}/conversations/{cid}` — scoped in the statement, like
+  §21.4. One 404 covers never-existed, someone-else's, and wrong-snapshot.
+
+### 23.5 Verification
+
+`tests/agent/test_history_context.py` — the pure window: alternating message
+shape, oldest-first order, empty history producing an unchanged prompt, long
+answers truncated *and marked*, short answers untouched, questions never cut.
+
+`tests/api/test_conversations.py` — listing scoped to caller and repo, resume
+returning stored citations and no tool timeline, the three-predicate lookup
+(including a conversation refused through a *different snapshot*), anonymous
+401, cross-tenant 404, delete, and chat both opening a conversation when none is
+given and appending a turn when one is.
