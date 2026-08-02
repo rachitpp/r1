@@ -228,6 +228,7 @@ PATH` writes every chunk as JSONL, `--sample N` prints N random full chunks.
 | Ingest finishes with 0 chunks | repo has no Python | v1 is **Python only** |
 | The code viewer says "History not indexed for this snapshot" | the snapshot was ingested before SPEC §20, so it has no commit rows | `uv run python scripts/backfill_history.py` (try `--dry-run` first). It writes only `commits`/`commit_files` — no re-embedding, and retrieval numbers cannot move. New ingests index up to `HISTORY_MAX_COMMITS` (500) automatically |
 | OOM / swap thrash | <8 GB RAM | the embedder needs headroom |
+| `pytest` fails only in `test_worker_integration.py`, with `redis.exceptions.TimeoutError: Timeout connecting to server` | something else is contending for the managed Redis — commonly the worker from §4 still running | fixed 2026-08-02: the test now builds its pool with the app's own `redis_settings()`. If it recurs, raise `REDIS_CONN_TIMEOUT_S` in `backend/.env` |
 
 Logs worth reading: the worker terminal narrates every ingest stage; the API
 terminal logs each request and any typed exception.

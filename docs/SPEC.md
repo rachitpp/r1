@@ -812,6 +812,8 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `ENTRY_POINT_FILENAMES` | `{__main__.py, cli.py, main.py, app.py, server.py, manage.py}` | §19.2 |
 | `HISTORY_MAX_COMMITS` | 500 | §20.1 |
 | `HISTORY_PAGE_MAX` | 100 | §20.2 |
+| `SHARED_ANSWER_MAX_CHARS` | 40_000 | §21.2 |
+| `SHARED_CITATIONS_MAX` | 50 | §21.2 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
 | `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
@@ -1925,3 +1927,113 @@ and a directory that is not a repo at all.
 default and reachable by flag, path scoping, null author email, unknown path
 empty-not-404, the `indexed: false` case, `limit` validation at both ends,
 cross-tenant 404, anonymous 401, and no code body in the response.
+
+---
+
+## §21 Shared answer permalinks
+
+A stable URL for one answer and its citations. 6.2's Markdown export already
+made an answer portable; this makes it *linkable* — the difference between
+pasting a wall of text into a PR and pasting a URL.
+
+**Sound only because a snapshot is immutable (§14.3).** A permalink promises
+the recipient sees what the sender saw. Nothing in this section enforces that;
+the frozen corpus does. `_client.py:718-738` still names the same lines a month
+later because the commit is pinned, which is the same property §19's cache and
+§20's history rest on.
+
+### 21.1 Explicit, and stored rather than derived
+
+Chatting persists nothing server-side — a transcript lives in sessionStorage
+(§9) and dies there. Sharing writes a row. Two consequences worth stating:
+
+* **Nothing is published by accident.** Storing every answer would grow without
+  bound and would quietly retain someone's questions, which is a different
+  decision from letting them publish one deliberately.
+* **The row is a copy, not a pointer.** It holds the answer *text*, so a
+  permalink is not re-generated on read: no model call, no dependence on the
+  agent still producing the same words. An answer is model output at a moment,
+  and the permalink is of that moment.
+
+### 21.2 Publish — `POST /repos/{id}/share`
+
+Owner-only via `_require_owned_repo` (§13.5); 201 with `{id}`.
+
+```
+ShareRequest { question, answer, citations[], model? }
+```
+
+Every field is client-supplied, so every field is bounded — `QUESTION_MAX_CHARS`,
+`SHARED_ANSWER_MAX_CHARS`, `SHARED_CITATIONS_MAX` (§12). An unbounded field on a
+route that writes a row is a storage DoS with extra steps.
+
+**The citations are re-validated, not trusted.** They arrive from the browser,
+and a browser can send anything: a path from another repo, a range past EOF, an
+outright fabrication. `validate_citations` (§7.5) drops what is not in this
+snapshot and clamps what overruns it. This is the same function the agent's own
+output goes through; the difference is that here the input is *untrusted* rather
+than merely unreliable, and the stakes are higher — a permalink that asserts
+some file says something it does not is the one failure that would discredit
+every other citation in the product.
+
+### 21.3 Read — `GET /shared/{id}`
+
+**The only route in this API that answers without an identity.** That is the
+feature: a permalink nobody can open is not a permalink. The id is a random
+UUID, so knowing it *is* the authorization — the secret-link model, the same one
+"anyone with the link can view" uses everywhere else.
+
+The response carries the repo's name, URL and pinned commit alongside the
+answer, so a reader with no account can resolve each citation to a GitHub blob
+link at that commit. `created_by` is deliberately absent: who published an
+answer is the owner's business, not the reader's. No code body, per §18.4 —
+`/files` remains the only endpoint that serves code, and it is owner-scoped.
+
+**What this discloses**, in full: the question, the answer text, the cited paths
+and line ranges, and the repo's identity and commit. In v1 every one of those is
+derived from a **public** GitHub repository, so the link reveals nothing that
+`git clone` would not.
+
+> **FEATURE-IDEAS 4.1 (private repositories) must gate this route.** The moment
+> a private corpus can exist, an anonymous read here leaks it. The fix is a
+> visibility flag on the source, checked at both share and read time. It is not
+> written now because guessing a schema for an unbuilt feature ages worse than
+> a loud warning — this is that warning, and it is repeated in the header of
+> `013_shared_answers.sql` where someone touching the table will meet it.
+
+### 21.4 Retract — `DELETE /shared/{id}`
+
+A feature that mints public links needs an undo. Publisher-only, and scoped in
+the `DELETE` statement rather than checked first — a read-then-delete would be a
+race, and "not yours" and "not there" should be one answer anyway.
+
+All three of *never existed*, *belongs to someone else* and *retracted* return
+**404**. Collapsing them is the point: a distinguishable response would let
+anyone probe which share ids are real, and a retracted link would keep
+confirming it once was.
+
+### 21.5 Rendering
+
+`/a/{id}` is the only page in the frontend that does not assume a session. It is
+a document, not the app shell: no split pane, no code viewer, no "New chat".
+Every affordance that would 401 the reader is absent rather than present and
+broken — citations link to GitHub at the pinned commit rather than to the code
+viewer, which the reader could not open.
+
+`robots: noindex`. The id is a capability, not a public name.
+
+### 21.6 Verification
+
+`tests/api/test_share.py` — publish requires a session and ownership; oversized,
+empty and over-many inputs are 422; a fabricated citation is dropped and an
+overrunning range clamped, asserted both through the read *and* against the
+stored row; an anonymous reader gets the answer, the repo facts and no
+publisher; no code body; unknown id 404; the publisher can retract and the link
+then 404s; a stranger gets 401 and another tenant 404; retracting twice is 404.
+
+One harness note, because it caused a test to pass for the wrong reason once:
+the API fixtures wire a single global `app`, so requesting `client` and
+`anon_client` in the same test leaves whichever was set up last in charge of
+both. `_wire` now clears the user override when `as_user is None` so the
+collision fails loudly, and these tests read a **seeded** permalink rather than
+publishing one and then trying to read it anonymously.

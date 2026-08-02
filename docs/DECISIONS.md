@@ -3143,3 +3143,102 @@ commit is `c3364059` — the snapshot's pin, not the branch tip. A snapshot whos
 commit is unreachable in the deepened clone is skipped and reported rather than
 approximated, because a plausible-looking wrong history is worse than an empty
 one that says so.
+
+## 2026-08-02 — 6.1 built: a public read, and the fixture that hid a wrong pass
+
+FEATURE-IDEAS 6.1 built as SPEC §21. The feature is `S–M`; its security surface
+is not, and that asymmetry is most of what is worth recording.
+
+**One route now answers without an identity, and that is the feature.** Every
+other route is behind §13 ownership. `GET /shared/{id}` is not, because a
+permalink nobody can open is not a permalink. The id is a random v4 UUID, so
+knowing it is the authorization — the ordinary secret-link model.
+
+What it discloses is bounded and was enumerated before it was built: question,
+answer, cited paths and ranges, repo identity and commit. In v1 all of it
+derives from a **public** GitHub repo, so the link reveals nothing `git clone`
+would not. **This stops being true the moment 4.1 lands.** The warning is in
+§21.3 and repeated in the migration header, where someone altering the table
+will actually meet it. Rejected: adding a `visibility` column now, on the theory
+that it would be ready. Guessing a schema for an unbuilt feature ages worse than
+a comment, and a column nothing sets is a column everyone trusts.
+
+**Citations are re-validated on publish.** They arrive from the browser, and a
+browser can post any path. `validate_citations` — the same §7.5 function the
+agent's own output goes through — drops what is not in the snapshot and clamps
+what overruns it. The difference is the threat model: for the agent that
+function corrects an unreliable writer, here it stops a hostile one. A permalink
+that asserts some file says something it does not would discredit every citation
+in the product, not just its own.
+
+**Retract exists, and all three failures are one 404.** A feature that mints
+public links needs an undo. "Never existed", "not yours" and "retracted" return
+the same status, so the endpoint cannot be used to enumerate ids and a retracted
+link stops confirming it was ever real. The delete is scoped in the statement
+rather than checked first — a read-then-delete is a race.
+
+**The test that passed for the wrong reason.** Two of these tests failed on
+first run, and the failure was in my tests rather than the code — but chasing
+it found something worse. `_wire(as_user=None)` only ever *added* the
+`get_current_user` override and never removed it, so an `anon_client` set up
+after a signed-in `client` in the same test silently inherited that session.
+Any "unauthenticated request is rejected" assertion written that way would have
+passed while sending an authenticated request.
+
+Nothing in the suite was wrong today — every existing use takes `anon_client`
+alone — so this was a trap rather than a live bug. `_wire` now clears the
+override, which makes the collision fail loudly instead of quietly, and §21's
+tests read a *seeded* permalink rather than publishing one and reading it back
+through a second client. Recorded because "the fixture made the assertion
+meaningless" is the failure mode a test suite cannot catch for itself, and it is
+the second time today a legitimate-looking empty/allowed state turned out to be
+indistinguishable from a broken one.
+
+## 2026-08-02 — The integration test never used the app's Redis settings
+
+`test_queued_ingest_reaches_ready_and_is_idempotent` failed twice today and
+passed in between. I called it flaky and said so, having ruled out clone depth
+by measurement and queue contention by reading `queue_name=TEST_QUEUE`. Both
+exclusions were right; the conclusion was wrong, and the third failure is what
+made the pattern legible:
+
+| run | worker process | result |
+|---|---|---|
+| 1 | running | FAILED |
+| 2 | stopped | 402 passed |
+| 3 | running | FAILED |
+
+The traceback, once I stopped filtering it out of the log — a mistake worth its
+own line — was `redis.exceptions.TimeoutError: Timeout connecting to server`.
+
+**The cause is a split-brain this repo had already documented.** `config.py`'s
+`redis_settings()` exists because "``from_dsn`` on its own silently keeps ARQ's
+1-second ``conn_timeout``, and getting that wrong in one of the two places is
+the kind of split-brain that only shows up under load." The integration test
+called `RedisSettings.from_dsn()` directly, in two places. So the one test that
+exercises the real worker ran against a **cross-region managed Redis on a
+1-second connect timeout with no retry policy** — precisely the configuration
+the 2026-08-02 resilience work exists to prevent.
+
+That is why the running worker mattered without ever touching the test's queue:
+it was not stealing jobs, it was adding the contention that pushed connect past
+one second.
+
+**Fix.** The test builds its pools with `build_redis_settings()`, the same
+function `app/worker.py` and `app/main.py` use. Verified under the failing
+condition rather than the passing one — worker running, 3 passed in 573s, where
+the same command had failed twice.
+
+**What this cost, and the lesson that is not "add a retry".** A test that
+configures its own infrastructure differently from the app is not testing the
+app; it is testing a configuration nobody ships. The hardening was correct and
+had been correct for hours — it simply was not on the path under test. Worth
+noting that the failure mode was *invisible while the app was idle*, which is
+the shape of most integration-test flakiness and the reason "it passes on my
+machine" is so often true and so rarely useful.
+
+**A correction to my own reasoning.** I dismissed process contention early
+because the test isolates its queue. Queue isolation was the wrong thing to
+check: the contention was at the connection layer, one level below the thing I
+had verified. Ruling out the mechanism I thought of is not the same as ruling
+out the cause.

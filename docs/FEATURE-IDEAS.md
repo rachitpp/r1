@@ -19,6 +19,11 @@
 > them touches ingest or retrieval, so none could disturb the eval-equality
 > verification V2/V3 rest on. See SPEC §18 and DECISIONS 2026-07-31.
 >
+> **Status, 2026-08-02 (latest).** **6.1** built as SPEC §21 — **ten**. It closes
+> the doc's step 4 except for 6.5, and it is the first feature here whose hard
+> part was a security boundary rather than a query: the permalink read is the
+> only unauthenticated route in the API. See DECISIONS 2026-08-02.
+>
 > **Status, 2026-08-02 (later).** **2.1** built as SPEC §20, bringing the total
 > to **nine**. Notable as the first item since the §18 batch to touch ingest: it
 > needed a migration, a `git log` pass, and a change to §2.1's depth-1 clone,
@@ -630,8 +635,16 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ## 6. Product surface (makes it feel like a real product) *(new)*
 
-- **6.1 Shareable answer permalinks.** A stable URL for a specific answer +
-  citations against a snapshot (safe *because* snapshots are immutable). **S–M.**
+- **6.1 Shareable answer permalinks.** **BUILT 2026-08-02.** `POST
+  /repos/{id}/share` → `GET /shared/{id}` → `/a/{id}`, plus a publisher-only
+  `DELETE`. The "safe *because* snapshots are immutable" note was the right
+  instinct and understated the work: immutability makes the *link* honest, but
+  the read is **the only route in the API with no session**, so the real cost
+  was the boundary — bounded inputs, citations re-validated against the snapshot
+  rather than trusted from the client, the publisher never named in the
+  response, and one 404 covering never-existed / not-yours / retracted. `S–M`
+  was accurate for the code and wrong for the review. SPEC §21. **4.1 must gate
+  the public read before a private corpus can exist.**
 - **6.2 Export a conversation to Markdown.** **BUILT 2026-07-31.** One click;
   citations become GitHub blob links at the pinned commit, so the note still
   resolves for someone without this app open. **S.**
@@ -664,6 +677,7 @@ noted.
 | 2.2 Architecture overview | ★★★★ | M | Symbol graph rollup | **BUILT** — and it did feed 3.1 |
 | 4.4 Multi-turn memory | ★★★ | M | SSE + agent | Feels like a colleague |
 | 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | **BUILT** — a second view of 2.2, not a second query |
+| 6.1 Answer permalinks | ★★★ | S–M | Immutable snapshots | **BUILT** — the API's only unauthenticated read |
 | 5.3 Incremental re-index | ★★★ | L | Snapshots | Freshness; saves compute |
 | 4.2 IDE extension | ★★★★★ | L | The whole API | Adoption, but a new surface |
 | 1.1 TypeScript | ★★★★★ | L–XL | Chunking only; resolution is new | Highest ceiling, biggest investment |
@@ -683,8 +697,8 @@ standing on the last:
 3. ~~**2.1 Git-history tool**~~ — **done.** The endpoint/tool split above was the
    right call and is now the built shape; the semantic-search-over-messages half
    remains unbuilt and is the only part that would need a model.
-4. **3.5 explain-this** + **2.4 test↔code** + **6.x product polish** — a cluster of
-   cheap wins that make it feel finished.
+4. ~~**3.5 explain-this** + **2.4 test↔code** + **6.x product polish**~~ — done
+   bar **6.5** (onboarding checklist). 3.5, 2.4, 6.1, 6.2 and 6.6 all shipped.
 5. **4.4 multi-turn memory** — the interaction upgrade from "search box" to
    "colleague."
 6. **4.1 private repos** — unlock real-world usage (do the security work
