@@ -71,6 +71,12 @@ COVERAGE_MAX_LINKS: int = 500
 # serialise thousands of identical-looking rows.
 DEPENDENCY_MAX_PACKAGES: int = 200
 DEPENDENCY_MAX_USES: int = 300
+# §28 snapshot comparison. Each list is capped separately, because a release
+# that deletes a package and adds one function should not have the function
+# crowded out by the package. Ranked by name, so truncation is alphabetical and
+# stable rather than whatever order the join produced.
+COMPARE_MAX_ITEMS: int = 200
+COMPARE_MAX_COMMITS: int = 100
 # §19 overview. These bound the *prompt*, not a response: everything gathered
 # here is pasted into one model context, so each cap is tokens somebody pays
 # for. Sized to brief a reader, not to be exhaustive.

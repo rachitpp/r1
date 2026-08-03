@@ -211,6 +211,21 @@ count, and validated citations. Useful flags: `--json` for machine-readable
 output, `--tool-cap N` to change the 8-call cap. On the ingest side: `--dump
 PATH` writes every chunk as JSONL, `--sample N` prints N random full chunks.
 
+### Comparing a repo against its own past (SPEC §28)
+
+Ingest the same repo twice, pinning the second to an older commit:
+
+```bash
+uv run python -m app.ingest.cli https://github.com/pallets-eco/blinker --db --owner <you>
+uv run python -m app.ingest.cli https://github.com/pallets-eco/blinker --db --owner <you> --rev <older-sha>
+curl "localhost:8000/repos/<newer-id>/compare?base=<older-id>" -H "Authorization: Bearer <token>"
+```
+
+Reports files, symbols and third-party packages added or removed, plus the
+commits between — a *structural* diff, not a line diff. The rev must be within
+the shallow clone's window (`HISTORY_MAX_COMMITS`, 500). There is no web surface
+for this yet: nothing in the UI creates a second snapshot of one repo.
+
 ---
 
 ## 6. When it doesn't work

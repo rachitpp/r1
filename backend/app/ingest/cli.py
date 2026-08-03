@@ -102,6 +102,7 @@ async def ingest_to_db(
     build_graph: bool = True,
     strategy: str = "ast",
     owner: str | None = None,
+    rev: str | None = None,
     log: Callable[[str], None] | None = None,
 ) -> IngestStats:
     """Create (or reuse) the repo row for ``url`` and run the pipeline inline.
@@ -151,6 +152,7 @@ async def ingest_to_db(
             pool=pool,
             build_graph=build_graph and strategy != "naive",
             strategy=strategy,
+            rev=rev,
             log=emit,
         )
     finally:
@@ -429,6 +431,15 @@ def build_parser() -> argparse.ArgumentParser:
         "symbol graph). Baseline only; never the product path.",
     )
     parser.add_argument(
+        "--rev",
+        metavar="SHA",
+        help="ingest the repo at this commit instead of the branch tip. What "
+        "makes `GET /repos/{id}/compare` (SPEC §28) usable: comparing a repo "
+        "against its own past needs two snapshots at two commits, and without "
+        "this every snapshot is pinned to whatever HEAD was on the day it ran. "
+        "Must be within the most recent commits a shallow clone fetches.",
+    )
+    parser.add_argument(
         "--owner",
         metavar="LOGIN",
         help="GitHub login to put this repo in the library of (SPEC §13.5). "
@@ -468,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
                     build_graph=not args.no_graph,
                     strategy=args.strategy,
                     owner=args.owner,
+                    rev=args.rev,
                     log=lambda m: print(f"  {m}", file=human),
                 )
             )

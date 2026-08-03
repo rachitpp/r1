@@ -214,3 +214,14 @@ class OAuthError(AppError):
     matters to the log, never to the caller, and a response that distinguishes
     them tells a probe which half of the flow it broke.
     """
+
+
+class SnapshotsNotComparable(AppError):
+    """Two snapshots that cannot meaningfully be diffed (SPEC §28.1).
+
+    Raised for a cross-repo pair, and for a cross-strategy pair at the same
+    commit: `naive` builds no symbol graph, so comparing it against `ast` would
+    report every symbol in the repo as deleted. A confident wrong answer is
+    worse than a refusal, and this is one of the few places the shape of the
+    inputs makes the wrongness certain rather than likely.
+    """

@@ -3683,3 +3683,55 @@ which is a double standing in for an asyncpg connection and should have had it.
 
 Visible as `db_pool_dead_connections_total`: a trickle is a managed database
 reaping idle connections and is fine; a spike is the database going away.
+
+## 2026-08-03 — 6.3 snapshot comparison, and the prerequisite nobody had noticed
+
+FEATURE-IDEAS 6.3 built (SPEC §28). The catalogue calls it "natural once history
+(2.1) and multiple snapshots exist" — and the second half of that was false.
+**Every source in the database had exactly one distinct commit**, because
+`clone_repo(url)` took no rev and always cloned the branch tip. The feature's
+real prerequisite was ingest-at-a-commit, which did not exist and is now
+`--rev`.
+
+Worth recording because it inverts the effort estimate: the diff itself is four
+SQL statements, and the part that took the thinking was noticing there was
+nothing to diff.
+
+**Structural, not textual.** `git diff` answers "which lines changed" better
+than this ever will. What only this can answer is what the *index* now holds —
+files, symbols, third-party packages (§26), and the commits between. That is the
+thing a reader coming back to a repo after a release actually wants.
+
+**Symbols are keyed on qualname, not on (file, line).** A line-keyed comparison
+reports a whole file as replaced when something near its top grows by two lines,
+because every symbol below shifts. The dotted name treats a moved function as
+the same function, which it is.
+
+**Two refusals rather than two bad answers.** A cross-repo pair, and a
+cross-strategy pair. `naive` stores no symbols (§2.7), so comparing it against
+`ast` reports the entire repo as deleted — a number that looks like a finding
+and is an artefact of the question. Both are the narrow case where the inputs
+make the wrongness certain, which is the only kind of input worth refusing.
+
+**Verified on real data, and one number checked the rest.** blinker ingested at
+HEAD (`c3364059`) and at `7ab94c1d`, deliberately 60 commits back: the endpoint
+reported 6 symbols removed (the deprecated `_WeakNamespace`,
+`temporarily_connected_to`, two `__getattr__` shims), 2 added
+(`_PNamespaceSignal`), `typing_extensions` dropped — and **exactly 60 commits
+between**, which matches the `--skip=60` used to pick the commit and is the
+cheapest available proof the join is right.
+
+**Two fixture mistakes, both mine, both worth the note.** Seeding a second
+snapshot of one source broke two §14.5 dedup tests, because the fake resolved
+"newest snapshot" as *last seeded* while the real query orders by `created_at`.
+The fake now sorts, which is what it should always have done — a double that
+agrees with production only when the data is trivial is a double that will lie
+later. And `_require_owned_repo` returns `SNAPSHOT_COLUMNS`, which carries
+neither `source_id` nor `strategy`; rather than widen the tuple every repo route
+returns, §28 reads what it needs through a dedicated `snapshot_meta`.
+
+**No web surface.** Nothing in the UI creates a second snapshot of a repo, so a
+panel would have nothing to compare until someone used the CLI. The gap is the
+re-index-at-commit affordance, not the diff, and shipping a picker with no pairs
+to pick would be the "built with no consumer" mistake 2.2 and 2.4 already made
+once.

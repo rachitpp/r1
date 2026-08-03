@@ -39,6 +39,7 @@ from app.exceptions import (
     RepoNotFoundError,
     RepoNotReadyError,
     SharedAnswerNotFoundError,
+    SnapshotsNotComparable,
     SymbolNotFoundError,
     TooManyRequestsError,
     UnauthorizedError,
@@ -64,6 +65,9 @@ _STATUS: dict[type[Exception], int] = {
     OAuthError: status.HTTP_400_BAD_REQUEST,
     AuthNotConfiguredError: status.HTTP_503_SERVICE_UNAVAILABLE,
     RepoNotReadyError: status.HTTP_409_CONFLICT,
+    # §28: the pair is well-formed but not comparable — a client
+    # error about the *request*, not a missing resource.
+    SnapshotsNotComparable: status.HTTP_400_BAD_REQUEST,
     QueueUnavailableError: status.HTTP_503_SERVICE_UNAVAILABLE,
     TooManyRequestsError: status.HTTP_429_TOO_MANY_REQUESTS,
     PayloadTooLargeError: status.HTTP_413_CONTENT_TOO_LARGE,

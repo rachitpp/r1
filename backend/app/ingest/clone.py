@@ -91,7 +91,7 @@ def _rmtree(path: Path) -> None:
         logger.warning("could not remove clone workdir %s: %s", path, exc)
 
 
-def clone_repo(url: str) -> CloneInfo:
+def clone_repo(url: str, rev: str | None = None) -> CloneInfo:
     """Shallow-clone ``url`` into a fresh temp dir and return its metadata.
 
     The caller owns the returned directory and must delete it; prefer the
@@ -103,6 +103,16 @@ def clone_repo(url: str) -> CloneInfo:
     deepening, not a full history — so the cost is one number's worth of commit
     objects, not a repo's entire past. Blobs are still fetched only for the
     checked-out tree, which is where clone time actually goes.
+
+    ``rev`` checks out a specific commit instead of the branch tip, which is
+    what makes §28 comparison possible at all: comparing a repo against its own
+    past needs two snapshots at two commits, and until this existed every
+    snapshot was pinned to whatever HEAD happened to be on the day it ran.
+
+    The rev must be inside the shallow window (``HISTORY_MAX_COMMITS``). A
+    deeper one is reported as a `CloneError` naming the depth rather than
+    something opaque from git — "not found" is a confusing thing to be told
+    about a commit that plainly exists.
     """
     workdir = Path(tempfile.mkdtemp(prefix="onboarding-clone-"))
     try:
@@ -115,6 +125,15 @@ def clone_repo(url: str) -> CloneInfo:
                 "--single-branch",
             ],
         )
+        if rev is not None:
+            try:
+                repo.git.checkout(rev)
+            except GitCommandError as exc:
+                raise CloneError(
+                    f"could not check out {rev!r} in {url}: it is not within the "
+                    f"most recent {HISTORY_MAX_COMMITS} commits of the default "
+                    f"branch, which is all a shallow clone fetches ({exc})"
+                ) from exc
         head_sha = repo.head.commit.hexsha
         try:
             default_branch = repo.active_branch.name
@@ -140,9 +159,9 @@ def clone_repo(url: str) -> CloneInfo:
 
 
 @contextlib.contextmanager
-def cloned_repo(url: str) -> Iterator[CloneInfo]:
+def cloned_repo(url: str, rev: str | None = None) -> Iterator[CloneInfo]:
     """Context manager that clones ``url`` and always removes the work dir."""
-    info = clone_repo(url)
+    info = clone_repo(url, rev)
     try:
         yield info
     finally:

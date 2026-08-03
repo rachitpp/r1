@@ -2603,3 +2603,79 @@ It costs one read of the cited files and no model call. Failures are swallowed
 and degrade to an empty array: this is advice attached to an answer the user
 already has, and a grounding read that fails must never break the stream at its
 last event.
+
+---
+
+## §28 Snapshot comparison
+
+What changed between two snapshots of the same repository.
+
+**A structural diff, not a textual one.** `git diff` already answers "which
+lines changed" and answers it far better. What nothing else here answers is
+what the *index* holds now that it did not before: which files, symbols and
+third-party packages exist across two immutable, commit-pinned corpora.
+
+### 28.1 Two refusals
+
+    GET /repos/{id}/compare?base={other_id}
+
+Reads as "this snapshot, compared against `base`" — the path names what you are
+looking at, the query names what you are looking back to.
+
+Both snapshots must be owned by the caller (§13.5), and **both sides are
+checked**: a comparison reads two corpora, so validating only the path one would
+leak the other. Beyond that, two pairings are rejected with 400 rather than
+answered:
+
+* **Different repositories.** A cross-repo diff is every symbol in one against
+  every symbol in the other — a large number that looks like a finding and means
+  nothing.
+* **Different chunking strategies.** `naive` builds no symbol graph at all
+  (§2.7), so comparing it against `ast` reports every symbol in the repo as
+  deleted. That is an artefact of the question, not a fact about the code.
+
+Both refusals exist for the same reason: these are the cases where the shape of
+the inputs makes a wrong answer *certain* rather than merely possible, and a
+confident wrong answer is worse than a refusal.
+
+### 28.2 What is compared
+
+| | keyed on | why |
+|---|---|---|
+| files | path | added / removed |
+| symbols | **qualname** | see below |
+| dependencies | top-level module (§26) | third-party only |
+| commits | sha, present in head and absent from base (§20) | |
+
+**Symbols are keyed on qualname, deliberately not on (file, line).** Every
+symbol below an edit shifts by however many lines that edit added, so a
+line-keyed comparison reports an entire file as replaced because something near
+its top grew by two lines. The dotted name answers what a reader is actually
+asking — what is gone, what is new — and treats a moved function as the same
+function, which it is.
+
+Each list is capped separately (`COMPARE_MAX_ITEMS`), so a release that removes
+a package and adds one function does not have the function crowded out.
+
+`commits_indexed` is false when *either* side predates the §20 history pass,
+which stops an empty `commits` reading as "nothing landed between these two"
+when the truth is "nobody recorded what did" — the §20.4 distinction, applied to
+a pair.
+
+### 28.3 Getting a second snapshot
+
+The comparison is only possible because ingest can pin a commit:
+
+    uv run python -m app.ingest.cli <url> --db --rev <sha>
+
+Before this, `clone_repo` always took the branch tip, so every snapshot of a
+source was pinned to whatever HEAD happened to be that day and no two ever
+differed. The rev must be inside the shallow clone's window
+(`HISTORY_MAX_COMMITS`); a deeper one fails with a `CloneError` that names the
+depth, because "not found" is a confusing thing to be told about a commit that
+plainly exists.
+
+**No web surface yet.** Nothing in the UI creates a second snapshot of one
+repo, so a comparison has no pair to offer until the CLI has made one. The API
+and the CLI are the complete path today; a panel waits on a re-index-at-commit
+affordance rather than on the diff.

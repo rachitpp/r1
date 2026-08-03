@@ -272,6 +272,7 @@ async def run_ingest(
     pool: asyncpg.Pool | None = None,
     build_graph: bool = True,
     strategy: str = "ast",
+    rev: str | None = None,
     log: ProgressLog | None = None,
 ) -> IngestStats:
     """Run the full pipeline for an existing ``repo_snapshots`` row and store it.
@@ -296,7 +297,12 @@ async def run_ingest(
     try:
         async with pool.acquire() as conn:
             return await _run(
-                conn, snapshot_id, build_graph=build_graph, strategy=strategy, say=say
+                conn,
+                snapshot_id,
+                build_graph=build_graph,
+                strategy=strategy,
+                rev=rev,
+                say=say,
             )
     finally:
         if own_pool:
@@ -309,6 +315,7 @@ async def _run(
     *,
     build_graph: bool,
     strategy: str,
+    rev: str | None,
     say: ProgressLog,
 ) -> IngestStats:
     row = await queries.source_of(conn, snapshot_id)
@@ -323,7 +330,7 @@ async def _run(
     say(f"cloning {clone_url}")
 
     parse_start = time.perf_counter()
-    with cloned_repo(clone_url) as info:
+    with cloned_repo(clone_url, rev) as info:
         # §14.4, the half of dedup that needs the clone. The commit SHA is not
         # knowable before this point — checking earlier would dedup on URL,
         # which is wrong (two users, two commits), and checking after ingesting

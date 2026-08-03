@@ -766,8 +766,17 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **6.2 Export a conversation to Markdown.** **BUILT 2026-07-31.** One click;
   citations become GitHub blob links at the pinned commit, so the note still
   resolves for someone without this app open. **S.**
-- **6.3 Snapshot comparison.** *"What changed between this repo at commit A and
-  commit B?"* — natural once history (2.1) and multiple snapshots exist. **M–L.**
+- **6.3 Snapshot comparison.** **BUILT 2026-08-03.** `GET /repos/{id}/compare?base=`
+  (SPEC §28): files, symbols and third-party packages added/removed between two
+  snapshots, plus the commits between them. Structural, not textual — `git diff`
+  does lines better; nothing else says what the *index* now holds. Symbols keyed
+  on qualname, not (file, line), or every symbol below an edit reads as replaced.
+  **"Natural once multiple snapshots exist" was the wrong half of the estimate:**
+  every source had exactly one commit, because `clone_repo` always took the
+  branch tip. The real prerequisite was ingest-at-a-commit (`--rev`), which did
+  not exist. The diff is four SQL statements; noticing there was nothing to diff
+  was the work. No web surface — nothing in the UI creates a second snapshot, and
+  a picker with no pairs would repeat 2.2/2.4's "built with no consumer". **M–L.**
 - **6.4 Cross-repo / org-wide search.** Ask across *all* your indexed repos at
   once. Builds on V2 snapshots + multi-tenant. **L.**
 - **6.5 Onboarding checklist.** **BUILT 2026-08-02.** `GET

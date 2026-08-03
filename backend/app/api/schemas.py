@@ -633,3 +633,51 @@ class DependencyUsesOut(BaseModel):
     include_tests: bool
     uses: list[DependencyUse]
     truncated: bool
+
+
+class SnapshotRef(BaseModel):
+    """One side of a §28 comparison."""
+
+    id: UUID
+    commit_sha: str | None
+    strategy: str
+    created_at: dt.datetime
+
+
+class ChangedSymbol(BaseModel):
+    qualname: str
+    kind: str
+    file_path: str
+
+
+class CompareCommit(BaseModel):
+    sha: str
+    author_name: str
+    authored_at: dt.datetime
+    subject: str
+
+
+class CompareOut(BaseModel):
+    """``GET /repos/{id}/compare?base=`` (§28.2).
+
+    A *structural* diff, not a textual one. `git diff` already answers "which
+    lines changed" and answers it better; what nothing else here answers is
+    what the **index** now contains that it did not before — files, symbols and
+    third-party packages.
+
+    ``commits_indexed`` is false when either side predates the §20 history
+    pass, which keeps an empty ``commits`` from reading as "nothing landed
+    between these two" when the truth is "nobody recorded what did".
+    """
+
+    base: SnapshotRef
+    head: SnapshotRef
+    files_added: list[str]
+    files_removed: list[str]
+    symbols_added: list[ChangedSymbol]
+    symbols_removed: list[ChangedSymbol]
+    dependencies_added: list[str]
+    dependencies_removed: list[str]
+    commits_indexed: bool
+    commits: list[CompareCommit]
+    truncated: bool

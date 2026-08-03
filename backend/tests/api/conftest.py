@@ -42,6 +42,10 @@ SHARED_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
 # A §23 conversation that already exists, owned by USER_ID on REPO_ID.
 CONVO_ID = uuid.UUID("66666666-6666-6666-6666-666666666666")
 FAILED_REPO_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
+# §28. A second snapshot of REPO_ID's *source* at an earlier commit, plus a
+# `naive` one at the same commit — the two ways a comparison can be refused.
+OLDER_REPO_ID = uuid.UUID("77777777-7777-7777-7777-777777777777")
+NAIVE_REPO_ID = uuid.UUID("88888888-8888-8888-8888-888888888888")
 
 # Two tenants (SPEC §13). USER_ID owns every seeded repo; OTHER_USER_ID owns
 # nothing, which is what makes it useful — it is the caller every cross-tenant
@@ -228,6 +232,16 @@ class FakeConn:
             FAILED_REPO_ID: _repo_row(FAILED_REPO_ID, "owner/failed", "failed"),
         }
         self.repos[FAILED_REPO_ID]["error"] = "worker died"
+        # Same source as REPO_ID (identical name -> identical derived source id),
+        # so §28's "different repositories" guard is not what these exercise.
+        self.repos[OLDER_REPO_ID] = _repo_row(OLDER_REPO_ID, "owner/ready", "ready")
+        self.repos[OLDER_REPO_ID]["head_sha"] = "0ldc0mm1t"
+        # Genuinely older, so `newest_snapshot_for_source` still resolves
+        # REPO_ID and the §14.5 dedup tests keep testing what they meant to.
+        self.repos[OLDER_REPO_ID]["created_at"] = "2026-07-20T00:00:00+00:00"
+        self.repos[NAIVE_REPO_ID] = _repo_row(
+            NAIVE_REPO_ID, "owner/ready", "ready", strategy="naive"
+        )
         self.users: dict[uuid.UUID, dict[str, Any]] = {
             USER_ID: _user_row(USER_ID, "owner"),
             OTHER_USER_ID: _user_row(OTHER_USER_ID, "stranger"),
@@ -259,7 +273,10 @@ class FakeConn:
         # "indexed" flag has a repo to be false for — the state every snapshot
         # ingested before §20 is actually in.
         self.history: dict[uuid.UUID, list[dict[str, Any]]] = {
-            REPO_ID: [dict(r) for r in HISTORY_ROWS]
+            REPO_ID: [dict(r) for r in HISTORY_ROWS],
+            # §28 needs history on *both* sides to report `commits_indexed`;
+            # INDEXING_REPO_ID still has none, so the false case keeps a repo.
+            OLDER_REPO_ID: [dict(r) for r in HISTORY_ROWS[2:]],
         }
         # §26. Keyed by snapshot and absent for INDEXING_REPO_ID, exactly like
         # history above, so "was the dependency pass run at all" has a repo to
@@ -499,7 +516,11 @@ class FakeConn:
                 for r in self.repos.values()
                 if r["source_id"] == args[0] and r["strategy"] == str(args[1])
             ]
-            return matches[-1] if matches else None
+            # `ORDER BY sn.created_at DESC LIMIT 1`, not insertion order: a
+            # source may legitimately have several snapshots (§14, and §28
+            # depends on it), so "the last one seeded" is not the same question.
+            matches.sort(key=lambda r: str(r["created_at"]), reverse=True)
+            return matches[0] if matches else None
         # §13.5 ownership join. Returns None for a snapshot that exists but
         # belongs to someone else, which is what makes the route 404.
         if "JOIN user_repos ur" in sql and "WHERE sn.id = $1" in sql:
@@ -565,6 +586,51 @@ class FakeConn:
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        # --- §28 snapshot comparison ------------------------------------
+        if "FROM repo_snapshots\n         WHERE id = ANY" in sql:
+            return [
+                {
+                    "id": rid,
+                    "source_id": row["source_id"],
+                    "strategy": row["strategy"],
+                    "commit_sha": row["head_sha"],
+                    "created_at": row["created_at"],
+                }
+                for rid, row in self.repos.items()
+                if rid in set(args[0])
+            ]
+        if "FULL OUTER JOIN" in sql:
+            # One shape per compared table, distinguished by what it selects.
+            if "files" in sql:
+                # The older snapshot has one extra file; the newer has none added.
+                return (
+                    [{"path": "pkg/gone.py", "added": False}]
+                    if args[0] == OLDER_REPO_ID
+                    else []
+                )
+            if "symbols" in sql:
+                return [
+                    {
+                        "qualname": "pkg.auth.Signer",
+                        "kind": "class",
+                        "file_path": FILE_PATH,
+                        "added": True,
+                    },
+                    {
+                        "qualname": "pkg.gone.old_helper",
+                        "kind": "function",
+                        "file_path": "pkg/gone.py",
+                        "added": False,
+                    },
+                ]
+            if "dependency_uses" in sql:
+                return [
+                    {"module": "werkzeug", "added": True},
+                    {"module": "six", "added": False},
+                ]
+        if "sha NOT IN (SELECT sha FROM commits" in sql:
+            return [dict(r) for r in HISTORY_ROWS[:2]]
+
         # --- §26 dependencies ------------------------------------------
         # Mirrors the real SQL's semantics, not its text: third-party only,
         # `include_tests` filters uses, and `unused` always counts a test
