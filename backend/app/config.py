@@ -287,6 +287,18 @@ class Settings(BaseSettings):
     # (`scripts/eval.py --mode hybrid+rerank`).
     RERANK_ENABLED: bool = False
 
+    # Some rerankers ship their own modelling code on the Hub and will not load
+    # without executing it — `jinaai/jina-reranker-v2-base-multilingual`, the
+    # one credible *code-trained* cross-encoder, is the reason this exists
+    # (FEATURE-IDEAS 5.2).
+    #
+    # OFF by default and staying that way. `trust_remote_code=True` runs
+    # arbitrary Python from the Hub at load time, inside the process that holds
+    # the database pool. That is a fine trade for a measurement run on a laptop
+    # and a bad one for a deployment, so it is a flag an operator sets
+    # deliberately rather than a default anyone inherits.
+    RERANKER_TRUST_REMOTE_CODE: bool = False
+
     # -----------------------------------------------------------------------
     # Serving: pool sizing, timeouts, limits (DECISIONS 2026-07-28).
     #

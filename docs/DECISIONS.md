@@ -3476,3 +3476,59 @@ flag deliberately does not apply, and there is a test for it.
 stored rows, so spending from the 8-call budget on it would buy nothing and cost
 reproducibility. `GET /repos/{id}/dependencies` and `/{module}` instead, with a
 panel on `/repos/[id]`.
+
+## 2026-08-03 — 5.2 measured: the reranker was a bad pick, and reranking is still the wrong idea
+
+FEATURE-IDEAS 5.2 asked whether a code-aware cross-encoder could earn the place
+the general-purpose one lost. The honest answer is *partly measured, and what
+was measured changed the shape of the original claim.*
+
+**Baseline reproduced first.** `--mode hybrid,hybrid+rerank` on httpx @
+`b5addb64` returned hybrid 0.80 / 0.90 / 0.95, MRR 0.753 and hybrid+rerank
+0.80 / 0.80 / 0.85, MRR 0.722 — identical to the 2026-07-26 block. The harness
+and the corpus (825/697, verified) are sound, so the numbers below are
+comparable rather than merely new.
+
+**A second reranker, chosen to be as unlike the first as possible.**
+`cross-encoder/ms-marco-MiniLM-L-6-v2` is general-purpose, plain-architecture,
+and **27× smaller** — ~90 MB against 2.4 GB:
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| hybrid (no rerank) | 0.80 | **0.90** | **0.95** | **0.753** |
+| bge-reranker-v2-m3 (2.4 GB) | 0.80 | 0.80 | 0.85 | 0.722 |
+| ms-marco-MiniLM-L-6 (90 MB) | 0.80 | **0.90** | 0.90 | 0.737 |
+
+**Finding 1 — the shipped model was a poor choice independent of the rerank
+question.** A model 27× smaller beats it on hit@5, hit@10 and MRR. The 2.4 GB
+was buying nothing that 90 MB did not buy better. Nobody had checked, because
+once rerank measured worse than fusion the model itself stopped being
+interesting.
+
+**Finding 2 — reranking still loses, and now against two unrelated models.**
+This is the more useful half. One model losing is attributable to the model; two
+models from different families losing the same way is attributable to the step.
+The claim sharpens from *"`bge-reranker-v2-m3` does not help"* to **"reranking
+the fused list does not help here"** — RRF ordering already carries signal a
+pairwise cross-encoder throws away when it rescores each passage in isolation.
+
+**Finding 3 — hit@3 is 0.80 in every row.** That is precisely the metric a
+reranker exists to move (`.claude/skills/run-eval` says so), and neither model
+moves it by one question. There is no top-of-ranking precision being added and
+then lost further down; there is none being added.
+
+**Not measured, and not disproven: the code-trained model.**
+`jinaai/jina-reranker-v2-base-multilingual` is the one credible code-trained
+cross-encoder, and it will not load without executing its own Hub code — which
+in turn imports `einops`, absent from this venv. `RERANKER_TRUST_REMOTE_CODE`
+was added for it (default **off**: it runs downloaded Python inside the process
+holding the database pool, which is fine for a watched measurement run and not
+for a deployment). `einops` is a new dependency and therefore a CLAUDE.md rule
+11 decision, so the run was stopped rather than the rule bent. "A code-specific
+reranker would win" is untested.
+
+**No default changed.** `RERANK_ENABLED` stays false and `RERANKER_MODEL` stays
+`bge-reranker-v2-m3`. Switching the default to the smaller model would be
+tuning a component that is off, and the honest recommendation — if rerank is
+ever turned on — is now recorded in SPEC §5.3 rather than baked into a default
+nobody re-derives.

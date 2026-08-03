@@ -645,7 +645,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Money cost.** $0 (one extra small call per answer).
 - **Risks.** Adds latency — do it async / mark rather than block.
 
-### 5.2 Code-specific reranker
+### 5.2 Code-specific reranker — **MEASURED 2026-08-03, not adopted**
 
 - **What it is.** Replace/augment the ablated general-purpose reranker with a
   code-aware one.
@@ -659,6 +659,19 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Money cost.** $0.
 - **Risks.** May still not beat fusion — the win is not guaranteed, which is why
   it is measure-first.
+- **Measured.** Exactly as the risk note predicted, and the result decomposed
+  into something more useful than "no". A second, *general-purpose* reranker
+  27× smaller (`cross-encoder/ms-marco-MiniLM-L-6-v2`, ~90 MB vs 2.4 GB) beats
+  the shipped one on hit@5, hit@10 and MRR — **and still loses to plain
+  fusion**. Two unrelated models losing the same way moves the conclusion from
+  "this reranker does not help" to "reranking the fused list does not help".
+  hit@3 is 0.80 in all three conditions: the metric a reranker exists to move
+  does not move.
+- **Still open.** The one credible *code-trained* cross-encoder
+  (`jinaai/jina-reranker-v2-base-multilingual`) needs `trust_remote_code` — the
+  flag now exists, default off — **and** an `einops` dependency, which is a rule
+  11 decision. Untested, not disproven. Numbers in SPEC §5.3 and
+  DECISIONS 2026-08-03.
 
 ### 5.3 Incremental re-indexing on new commits
 

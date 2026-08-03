@@ -1469,3 +1469,76 @@ Per-question hit@10:
 | q19 | ✓ |
 | q20 | ✓ |
 
+
+### Results — 2026-08-03
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks (825 implementation, 697 test), 20 questions. Modes: hybrid, hybrid+rerank.
+
+**Corpus condition:** implementation-only (default, is_test excluded)
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| hybrid | 0.80 (16/20) | 0.90 (18/20) | 0.95 (19/20) | 0.753 |
+| hybrid+rerank | 0.80 (16/20) | 0.80 (16/20) | 0.85 (17/20) | 0.722 |
+
+Per-question hit@10:
+
+| q | hybrid | hybrid+rerank |
+|---|---|---|
+| q01 | ✓ | ✓ |
+| q02 | ✓ | ✓ |
+| q03 | ✓ | ✓ |
+| q04 | ✓ | ✓ |
+| q05 | ✓ | ✓ |
+| q06 | ✓ | ✓ |
+| q07 | ✓ | ✓ |
+| q08 | ✓ | ✓ |
+| q09 | ✓ | · |
+| q10 | · | · |
+| q11 | ✓ | ✓ |
+| q12 | ✓ | ✓ |
+| q13 | ✓ | ✓ |
+| q14 | ✓ | · |
+| q15 | ✓ | ✓ |
+| q16 | ✓ | ✓ |
+| q17 | ✓ | ✓ |
+| q18 | ✓ | ✓ |
+| q19 | ✓ | ✓ |
+| q20 | ✓ | ✓ |
+
+
+### Results — 2026-08-03
+
+**Repo:** https://github.com/encode/httpx @ `b5addb64f016` — 1522 chunks (825 implementation, 697 test), 20 questions. Modes: hybrid+rerank.
+
+**Corpus condition:** implementation-only (default, is_test excluded)
+
+| Mode | hit@3 | hit@5 | hit@10 | MRR |
+|---|---|---|---|---|
+| hybrid+rerank | 0.80 (16/20) | 0.90 (18/20) | 0.90 (18/20) | 0.737 |
+
+Per-question hit@10:
+
+| q | hybrid+rerank |
+|---|---|
+| q01 | ✓ |
+| q02 | ✓ |
+| q03 | ✓ |
+| q04 | ✓ |
+| q05 | ✓ |
+| q06 | ✓ |
+| q07 | ✓ |
+| q08 | ✓ |
+| q09 | · |
+| q10 | · |
+| q11 | ✓ |
+| q12 | ✓ |
+| q13 | ✓ |
+| q14 | ✓ |
+| q15 | ✓ |
+| q16 | ✓ |
+| q17 | ✓ |
+| q18 | ✓ |
+| q19 | ✓ |
+| q20 | ✓ |
+

@@ -174,12 +174,25 @@ class Reranker:
     itself handles passage truncation — callers pass full ``header + code``.
     """
 
-    def __init__(self, model_name: str, token: str | None = None) -> None:
+    def __init__(
+        self,
+        model_name: str,
+        token: str | None = None,
+        *,
+        trust_remote_code: bool = False,
+    ) -> None:
         from sentence_transformers import CrossEncoder
 
         _pin_torch_threads()
+        # `trust_remote_code` executes the model's own Python from the Hub at
+        # load time. Threaded through rather than hardcoded either way: the one
+        # credible code-trained cross-encoder needs it, and a deployment should
+        # not inherit it. See `RERANKER_TRUST_REMOTE_CODE` for the trade.
         self._model = CrossEncoder(
-            model_name, max_length=RERANK_PASSAGE_TOKENS, token=token
+            model_name,
+            max_length=RERANK_PASSAGE_TOKENS,
+            token=token,
+            trust_remote_code=trust_remote_code,
         )
 
     def score(self, query: str, passages: list[str]) -> list[float]:
@@ -260,7 +273,11 @@ def get_reranker() -> Reranker:
     with _load_lock:
         if _reranker is None:
             settings = get_settings()
-            _reranker = Reranker(settings.RERANKER_MODEL, token=settings.HF_TOKEN)
+            _reranker = Reranker(
+                settings.RERANKER_MODEL,
+                token=settings.HF_TOKEN,
+                trust_remote_code=settings.RERANKER_TRUST_REMOTE_CODE,
+            )
         return _reranker
 
 

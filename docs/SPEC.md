@@ -356,6 +356,40 @@ The cross-encoder was worse-or-equal to plain fusion at *every* k and at MRR, in
 |---|---|---|---|---|---|
 | implementation-only | hybrid | 0.80 | **0.90** | **0.95** | **0.755** |
 | implementation-only | hybrid+rerank | 0.80 | 0.80 | 0.85 | 0.722 |
+
+> **A second reranker, and the finding decomposes (2026-08-03, FEATURE-IDEAS
+> 5.2).** The obvious reading of the table above is "`bge-reranker-v2-m3` is the
+> wrong model for code". Measured against `cross-encoder/ms-marco-MiniLM-L-6-v2`
+> — a general-purpose model **27× smaller** (~90 MB against 2.4 GB) — on the same
+> corpus and the same frozen 20:
+>
+> | Mode | hit@3 | hit@5 | hit@10 | MRR |
+> |---|---|---|---|---|
+> | hybrid (no rerank) | 0.80 | **0.90** | **0.95** | **0.753** |
+> | hybrid+rerank · bge-reranker-v2-m3 (2.4 GB) | 0.80 | 0.80 | 0.85 | 0.722 |
+> | hybrid+rerank · ms-marco-MiniLM-L-6 (90 MB) | 0.80 | **0.90** | 0.90 | 0.737 |
+>
+> Two things follow, and they point in different directions.
+>
+> **The shipped model was a bad pick on its own terms.** A model 27× smaller
+> beats it on hit@5, hit@10 and MRR. Whatever else is true, 2.4 GB of resident
+> memory was buying nothing that 90 MB did not buy better.
+>
+> **Reranking still loses, and now with two unrelated models.** Neither beats
+> plain fusion. The single-model result could be blamed on the model; two can
+> not, so the conclusion sharpens from "this reranker does not help" to
+> **"reranking the fused list does not help here"** — the RRF ordering already
+> carries signal that a pairwise cross-encoder discards.
+>
+> **hit@3 is 0.80 in all three rows.** That is the metric a reranker exists to
+> move, and neither model moves it by a single question.
+>
+> The genuinely *code-trained* cross-encoder
+> (`jinaai/jina-reranker-v2-base-multilingual`) is **not measured**: it ships its
+> modelling code on the Hub and needs both `trust_remote_code` and an `einops`
+> dependency. The flag exists (`RERANKER_TRUST_REMOTE_CODE`, default off); the
+> dependency is a CLAUDE.md rule 11 decision and has not been taken. Until it is,
+> "a code-specific reranker would win" remains untested, not disproven.
 | shadowed | hybrid | 0.70 | 0.80 | **0.80** | **0.617** |
 | shadowed | hybrid+rerank | 0.70 | 0.75 | 0.75 | 0.604 |
 
