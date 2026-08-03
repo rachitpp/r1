@@ -4009,3 +4009,73 @@ rate no forward pass achieved — flask's second run would have claimed 180
 chunks/s against a real 15. Both now count only what the model embedded, and the
 reused count is stated separately. The saving is real and does not need
 flattering arithmetic.
+
+## 2026-08-04 — §30: the corpus was answering questions it had no data for
+
+**Decision.** Index prose (`*.md`, `*.rst`, `*.txt`) and configuration
+(manifests, CI, Dockerfiles) alongside Python. Keep them out of the default
+retrieval pool. Reach them through a new agent tool and an overview fact group.
+
+**What prompted it.** Not the coverage number, though that is stark — measured
+across the cloned repos, `filters.py` indexes 25–42% of tracked files, and flask
+carries more documentation files (95) than Python files (83).
+
+What prompted it is *how* the gap behaves. **Retrieval always returns
+something**: the §5.1 fusion query returns top-`k` by score with no floor, so a
+question with no answer in the corpus does not fail, it gets noise. Against the
+real httpx corpus, "how do I run the tests" returns `is_running_trio` — matched
+on *running*. "What does the changelog say about recent releases" returns
+`Cookies.update` and `Client.patch` — matched on *update* and *patch*, words that
+mean something entirely different in release notes. That is then handed to the
+model as evidence.
+
+The existing mitigation is a prompt rule. §19.3 rule 2 forbids the overview from
+discussing installation, dependencies or configuration — a hand-written
+prohibition standing in for missing data. It covers the overview and not the chat
+box, where the question is likelier to be asked. This project's whole posture is
+being honestly limited rather than confidently wrong — `unchecked` grounding
+verdicts, §20.4's "not indexed is not empty", compare refusing a cross-strategy
+diff. This was the one place still answering from noise.
+
+**Why excluded from the default pool.** Not caution — a prediction from a
+measurement already taken. §5.4 excludes tests because test files are written in
+user vocabulary while implementation is terse, so they systematically outrank
+implementation for natural-language questions (2026-07-26). A README is not
+merely user vocabulary, it is the same prose register as the question. Blended
+in, it would outrank implementation harder than tests ever did, and "how does
+auth work" would answer with a paragraph about auth rather than the code.
+
+The consequence is a falsifiable done-when: `scripts/eval.py` must be
+**byte-identical** before and after, because the default candidate pool does not
+change. Any movement means the exclusion leaks.
+
+**A flag, not a `kind` predicate.** `is_prose` mirrors `is_test` because `kind`
+says what a chunk *is* and the flag says how retrieval should *treat* it.
+Filtering on `kind NOT IN (...)` silently acquires a new member every time a kind
+is added.
+
+**Why a tool rather than question classification.** Routing on "is this a setup
+question" is a model-dependent branch on the critical path, and finding (c)
+already established that tool use does not predict correctness — so a
+misclassification would be invisible. `search_docs` lets the agent decide
+visibly, streaming like every other tool call. The overview, which is not
+agentic, instead receives the README as a fixed citable fact group, which is what
+lets §19.3 rule 2 be deleted rather than merely narrowed.
+
+**Rule 11 — the dependency not added.** Heading chunking is a line-scanner in
+`app/ingest/prose.py`, not `tree-sitter-markdown`. A grammar is the literal
+reading of rule 4, but rule 4's purpose is that boundaries carry meaning, and a
+markdown heading is unambiguous in the first character of a line. A new
+dependency to re-derive that is not worth the parse. Config files are not split
+at all: a `pyproject.toml` cut in half answers nothing.
+
+**Deliberately out of scope.** PDFs, images and notebooks — in a code repo a PDF
+is usually a paper or a brand asset, and it needs a parser for a rare payoff.
+Prose contributes no symbols and no edges; §18, §24 and §26 are untouched. §26 is
+not replaced by this — it extracts structured dependency rows from manifests
+while §30 makes the same files readable and citable.
+
+**Known landmine, recorded before it bites.** `queries.py:1154` and `:1165` use
+`kind <> 'module'` as shorthand for *is a real symbol*. `document` and `config`
+pass that filter and would leak into symbol queries. Both need narrowing to the
+code kinds.

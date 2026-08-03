@@ -437,6 +437,11 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   There is no README — `filters.py` indexes `*.py` only. The prompt now
   explicitly forbids that section rather than letting the model recall how
   similar projects usually work.
+- **Superseded by SPEC §30 (specced 2026-08-04, not yet built).** Prose and
+  config ingestion puts the README in the corpus, so the sketch's step 1 becomes
+  possible as originally written. §30.5 gives the overview the README as a
+  citable fact group and deletes §19.3 rule 2 in favour of a fifth "How to run
+  it" section. Until §30 ships, the prohibition above stands and is correct.
 
 ### 3.2 Guided tours
 

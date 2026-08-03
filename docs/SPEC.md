@@ -2779,3 +2779,195 @@ to a full re-embed, which is exactly the previous behaviour.
 **Reported honestly.** The embed rate counts only chunks the model actually
 embedded. Including copied ones would report a throughput no forward pass
 achieved — flask's second run would have claimed 180 chunks/s against a real 15.
+
+## §30 Prose and configuration ingestion
+
+The index holds documentation, manifests and CI config as well as code.
+
+### 30.1 Why — the corpus has a blind spot, and it answers anyway
+
+`filters.py` keeps `*.py` only (§2.2). Measured on the repos already cloned,
+that is a **quarter to a little over a third** of what the clone contains:
+
+| repo | tracked | indexed | ignored docs | ignored config |
+|---|---|---|---|---|
+| flask | 236 | 83 (35%) | 95 | 14 |
+| flask-sqlalchemy | 95 | 40 (42%) | 25 | 9 |
+| blinker | 27 | 7 (25%) | 7 | 8 |
+
+flask carries **more documentation files than Python files**.
+
+The cost is not that those questions go unanswered. It is that they are answered
+badly, because **retrieval always returns something** — the §5.1 fusion query
+hands back top-`k` by score with no floor, so there is no "nothing here matches".
+Run against the httpx corpus, the five questions a newcomer types first:
+
+| question | top hit |
+|---|---|
+| how do I install and run this project | `Client.__init__` |
+| how do I run the tests | **`is_running_trio`** |
+| what dependencies does this project need | `NetRCAuth.__init__` |
+| what does the changelog say about recent releases | **`Cookies.update`, `Client.patch`** |
+| how do I contribute to this project | `build_request` |
+
+Not near-misses — lexical collisions. "Run the tests" matched `is_running_trio`
+on *running*; "changelog, releases" matched `Cookies.update` and `Client.patch`
+on *update* and *patch*, words that mean something else entirely in release
+notes. That noise is then handed to the model as evidence.
+
+Today the only guard is a prompt rule. §19.3 rule 2 forbids the overview from
+discussing installation, dependencies or configuration at all — a hand-written
+prohibition standing in for data. It works for the overview and does nothing for
+the chat box, where a user is likelier to ask. **An onboarding assistant that
+cannot answer the first question of onboarding has a gap in its premise, not its
+feature list.**
+
+### 30.2 What is selected
+
+Inserted into the §2.2 sequence after the `*.py` keep, which becomes: keep `*.py`
+**or** a prose/config path. Every later step — ignore-dirs, size cap, binary
+sniff, UTF-8 decode, `MAX_FILES` — applies unchanged.
+
+| class | matched by | `kind` |
+|---|---|---|
+| prose | `*.md`, `*.rst`, `*.txt` | `document` |
+| manifest | `pyproject.toml`, `setup.py`†, `setup.cfg`, `requirements*.txt`, `Pipfile`, `environment.yml` | `config` |
+| CI / container | `.github/workflows/*.yml`, `Dockerfile*`, `docker-compose*.yml`, `Makefile`, `tox.ini`, `noxfile.py`† | `config` |
+
+† `setup.py` and `noxfile.py` are already `*.py` and already chunk as code. They
+appear here only to state that §30 does **not** reclassify them; a file is code
+or it is prose, never both, and the extension decides.
+
+`IGNORE_DIRS` does real work here: without it, `node_modules` and vendored docs
+would arrive as prose. The lists live in `filters.py` (rule 10) with the values
+in §12.
+
+### 30.3 Chunking — headings, not characters
+
+Rule 4 requires structural boundaries, not raw character splits. For prose the
+structural boundary is the **heading**: markdown `#`–`######` and rST
+over/underlined titles. One chunk per section, carrying its heading path.
+
+**Implemented as a line-scanner in `app/ingest/prose.py`, not a grammar.** A
+markdown grammar (`tree-sitter-markdown`) would be the literal reading of rule 4,
+but it is a new dependency (rule 11) for a boundary that is unambiguous in the
+first character of a line. Rule 4's purpose is that boundaries mean something;
+headings satisfy that. Recorded rather than assumed — see DECISIONS 2026-08-04.
+
+Config files are **not** split. They are small, and a `pyproject.toml` cut in
+half is a `pyproject.toml` that answers nothing. Oversize config falls to §2.5
+part-splitting on line boundaries.
+
+Chunk text keeps the §2.4 shape, `header + "\n---\n" + body`:
+
+```
+# File: docs/quickstart.md
+# Section: Quickstart > Installation
+# Kind: document
+---
+Install with pip:
+
+    pip install httpx
+```
+
+`chunks.symbol` is **NULL** for both classes. The heading path is display and
+embedding material, not a qualname; putting it in `symbol` would place strings
+that resolve to nothing into a column the symbol graph joins on. `kind` gains
+`document` and `config`; no schema change — it was always free text.
+
+The `tsv` column needs nothing either. It is already
+`to_tsvector('english', header || ' ' || code)`, which serves prose better than
+it serves code, and `BAAI/bge-small-en-v1.5` is an English model embedding
+English text for the first time.
+
+### 30.4 Kept out of the default pool — and why that is not a hedge
+
+Migration `017` adds `chunks.is_prose BOOLEAN NOT NULL DEFAULT false`, and
+`hybrid_search(..., include_prose=False)` excludes it from **both fusion CTEs**
+and from §5.2 injection, filtering inside each CTE before the per-leg `LIMIT`.
+Mechanically identical to §5.4.
+
+This is not caution, it is a prediction from an existing measurement. §5.4
+excludes tests because *"test files are written in user vocabulary while
+implementation is terse, so test chunks systematically outrank implementation for
+natural-language questions"* (DECISIONS 2026-07-26). A README is not merely user
+vocabulary — it is the same prose register as the question itself. Blended into
+the default pool it would outrank implementation harder than tests ever did, and
+"how does auth work" would answer with a paragraph *about* auth instead of the
+code.
+
+A flag rather than a `kind` predicate, for the same reason `is_test` is a flag:
+`kind` says what a chunk **is**, `is_prose` says how retrieval should **treat**
+it. Conflating them makes the exclusion `kind NOT IN (...)`, which silently
+acquires a new member every time a `kind` is added.
+
+`include_prose=True` keeps the counterfactual measurable
+(`scripts/eval.py --include-prose`) rather than merely asserted.
+
+### 30.5 How prose is reached
+
+Excluded by default means something must ask for it. Two callers, chosen because
+neither guesses:
+
+**The agent gets a seventh tool.** Not a classifier over the question — that is a
+model-dependent branch on the critical path, and finding (c) already says tool
+use does not predict correctness. The agent decides, visibly, and the choice
+streams like every other tool call.
+
+```python
+search_docs(query: str, k: int = 5) -> {"hits": [SearchHit]}
+    # hybrid_search(include_prose=True) restricted to prose/config chunks.
+    # For setup, usage, configuration and release-note questions. Code
+    # questions stay on search_code — this returns prose ABOUT code, which
+    # is weaker evidence than the code.
+```
+
+The §6 cap of 8 executions is unchanged; this competes for the same budget.
+
+**The overview gets a fact group.** §19 is not agentic — it assembles fixed facts
+— so the README (and only the README: `README*` at repo root) arrives as one more
+citable fact group, per §19.3's rule that *a fact you want cited has to arrive
+with something to cite*. That is what allows §19.3 rule 2 to be **deleted** and
+replaced with a fifth section, "How to run it", written from the file rather than
+from recall.
+
+The default `hybrid_search` path is untouched, so §5 retrieval behaviour is
+unchanged by construction — see 30.7.
+
+### 30.6 What this does not do
+
+- **No PDFs, images or notebooks.** In a code repo a PDF is usually a paper or a
+  brand asset, not documentation of the code, and it needs a parsing dependency
+  for a rare payoff.
+- **No symbols and no edges.** Prose contributes nothing to the symbol graph.
+  §18 graph views, §24 traces and §26 dependency edges are unaffected.
+- **§26 is not replaced.** It extracts *structured* dependency facts from
+  manifests; §30 makes the same files readable and citable. A manifest chunk
+  saying `httpx>=0.27` is evidence for a sentence; §26's rows are the
+  dependency panel. Complementary, not duplicate.
+- **Grounding (§27) is unchanged and will often return `unchecked`.** A prose
+  claim frequently names no identifiers, which is exactly the case `unchecked`
+  exists for. Reporting those as `unsupported` would manufacture warnings out of
+  the method's blind spot.
+- **§29 reuse works as-is.** It hashes file content and is indifferent to what
+  the chunker did with it.
+
+**One landmine, named because it is easy to miss.** `queries.py:1154` and `:1165`
+use `kind <> 'module'` as shorthand for *is a real symbol*. `document` and
+`config` pass that filter. Both predicates need narrowing to the code kinds.
+
+### 30.7 Done when
+
+- Prose and config chunks exist, are retrievable via `search_docs`, and cite with
+  file and line like any other chunk.
+- **`scripts/eval.py` is byte-identical before and after.** The default candidate
+  pool does not change, so this is not a hope — it is a falsifiable claim, and
+  any movement means the exclusion leaks. This is the check that matters; hit@10
+  sits at a 0.95 ceiling both chunkers already reach and would say nothing either
+  way.
+- The overview answers "how do I run this", cited to the README, with §19.3
+  rule 2 gone.
+- The five questions in 30.1 return prose, not `is_running_trio`.
+- **Re-ingesting the benchmark changes its counts.** The CLAUDE.md verification
+  query returns `825 | 697` over `*.py` alone and must gain a kind scope — the
+  same lesson as the 2026-07-31 correction, one class of chunk later.
