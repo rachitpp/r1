@@ -31,6 +31,7 @@ Failure handling belongs to the caller: this function raises, and the ARQ task
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import time
 from collections.abc import Callable
@@ -117,6 +118,8 @@ class IngestStats:
     n_edges: int = 0
     edge_stats: EdgeStats | None = None
     n_chunks_linked: int = 0
+    #: Chunks copied from an earlier snapshot instead of embedded (§29).
+    n_chunks_reused: int = 0
     graph_elapsed_s: float = 0.0
 
 
@@ -173,6 +176,64 @@ async def _store_graph(
 
     n_test = sum(1 for s in symbols if s.is_test)
     return len(symbols), n_test, len(edge_rows), stats
+
+
+async def _reuse_unchanged_chunks(
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    *,
+    source_id: UUID,
+    strategy: str,
+    selection: SelectionResult,
+    say: ProgressLog,
+) -> tuple[set[str], int]:
+    """Copy chunks for files identical to an earlier snapshot's (SPEC §29).
+
+    Returns ``(paths reused, chunks copied)``; ``(set(), 0)`` whenever there is
+    no eligible source, which is the common case on a first ingest and must
+    cost nothing.
+
+    **Why a file digest is enough.** A chunk's text is a pure function of the
+    file's content and the chunker, and an embedding is a pure function of the
+    chunk text and the model. `reusable_snapshot` has already established that
+    the chunker and the model match, so identical content implies identical
+    chunks implies identical vectors. Nothing here is an approximation — it is
+    the same answer, not a cheaper estimate of it.
+
+    Guarded, and a failure only costs the saving: a repo that cannot reuse
+    re-embeds exactly as it always did.
+    """
+    try:
+        model = get_settings().EMBEDDING_MODEL
+        prior = await queries.reusable_snapshot(
+            conn,
+            source_id,
+            exclude=snapshot_id,
+            strategy=strategy,
+            embedding_model=model,
+        )
+        if prior is None:
+            return set(), 0
+
+        old_digests = await queries.file_digests(conn, prior)
+        unchanged = [
+            f.path
+            for f in selection.files
+            if old_digests.get(f.path)
+            == hashlib.md5(f.text.encode("utf-8")).hexdigest()  # noqa: S324
+        ]
+        if not unchanged:
+            return set(), 0
+
+        copied = await queries.copy_chunks(conn, prior, snapshot_id, unchanged)
+        say(
+            f"reused {copied} chunks from {len(unchanged)} unchanged file(s) "
+            f"(snapshot {str(prior)[:8]}) — not re-embedded"
+        )
+        return set(unchanged), copied
+    except Exception as exc:  # noqa: BLE001 — reuse is an optimisation
+        logger.warning("chunk reuse failed for %s: %s", snapshot_id, exc)
+        return set(), 0
 
 
 async def store_dependencies(
@@ -476,18 +537,55 @@ async def _run(
         done = 0
         last_written = 0
         embed_start = time.perf_counter()
-        for i in range(0, total, EMBED_BATCH):
-            batch = chunks[i : i + EMBED_BATCH]
+
+        # §29. Chunks whose file is byte-identical to an earlier snapshot's are
+        # copied with their vectors instead of re-embedded. Embedding is ~80% of
+        # ingest wall time (flask: 146 s of 180 s), and re-deriving a vector from
+        # text that has not changed spends a forward pass to reproduce bytes
+        # already in the row.
+        reused_paths, n_reused = await _reuse_unchanged_chunks(
+            conn,
+            snapshot_id,
+            source_id=row["source_id"],
+            strategy=strategy,
+            selection=selection,
+            say=say,
+        )
+        # `chunks` stays the whole corpus — it is what `IngestStats` carries and
+        # what `--dump`/`--sample` print, and a caller asking for the chunks of
+        # this snapshot means all of them, not the ones that happened to need a
+        # forward pass. Only the embedding loop works from the filtered list.
+        to_embed = (
+            [c for c in chunks if c.file_path not in reused_paths]
+            if reused_paths
+            else chunks
+        )
+        if n_reused:
+            done = last_written = n_reused
+            await queries.set_repo_progress(
+                conn, snapshot_id, chunks_embedded=n_reused
+            )
+
+        n_embedded = 0
+        for i in range(0, len(to_embed), EMBED_BATCH):
+            batch = to_embed[i : i + EMBED_BATCH]
             vectors = embedder.encode([c.text for c in batch])
             rows = [
                 _chunk_to_row(c, v) for c, v in zip(batch, vectors, strict=True)
             ]
             await queries.insert_chunks(conn, snapshot_id, rows)
             done += len(batch)
+            n_embedded += len(batch)
             if done - last_written >= PROGRESS_EVERY_N or done == total:
                 await queries.set_repo_progress(conn, snapshot_id, chunks_embedded=done)
-                rate = done / max(time.perf_counter() - embed_start, 1e-9)
-                say(f"embedded {done}/{total} chunks ({rate:.0f}/s)")
+                # Rate over *embedded* chunks only. Counting the copied ones
+                # would report a throughput the model never achieved — the
+                # saving is real and does not need flattering arithmetic.
+                rate = n_embedded / max(time.perf_counter() - embed_start, 1e-9)
+                say(
+                    f"embedded {n_embedded}/{len(to_embed)} chunks ({rate:.0f}/s)"
+                    + (f", {done}/{total} ready" if n_reused else "")
+                )
                 last_written = done
         embed_elapsed = time.perf_counter() - embed_start
 
@@ -496,6 +594,12 @@ async def _run(
             n_linked = await queries.backfill_chunk_symbol_ids(conn, snapshot_id)
             say(f"linked {n_linked} chunks to a symbol")
 
+        # §29.1. Recorded at the end, alongside `ready`: a snapshot is only a
+        # valid reuse source once its chunks are all present, and writing the
+        # model earlier would advertise a half-embedded corpus as one.
+        await queries.set_snapshot_embedding_model(
+            conn, snapshot_id, get_settings().EMBEDDING_MODEL
+        )
         await queries.finalize_repo(
             conn,
             snapshot_id,
@@ -513,6 +617,7 @@ async def _run(
             default_branch=info.default_branch,
             selection=selection,
             chunks=chunks,
+            n_chunks_reused=n_reused,
             n_syntax_errors=n_syntax_errors,
             heuristic_chunk_count=heuristic_chunk_count,
             parse_elapsed_s=parse_elapsed,

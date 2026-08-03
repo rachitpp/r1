@@ -2708,3 +2708,74 @@ The Compare panel on `/repos/[id]`, last of the orientation panels because it is
 the only one that asks the reader to do something first. It is also the only
 place in the UI that can create a second snapshot — a commit field posting
 `rev`, which is precisely the gap that kept §28 out of the browser.
+
+---
+
+## §29 Incremental re-indexing
+
+Re-ingesting a repo re-embeds only the files that changed.
+
+Embedding is where ingest time goes — measured on flask, **54.07 s of a ~80 s
+run**. Re-ingesting at a nearby commit re-derived 1520 vectors from text that
+had not changed by a byte.
+
+### 29.1 What makes reuse sound
+
+An embedding is a pure function of the chunk text. The chunk text is a pure
+function of the file content and the chunker. So when the content, the chunker
+and the model are all known identical, the vector already stored **is** the
+answer — not a cheaper estimate of it. Nothing here is approximate.
+
+The third of those was not knowable before: `EMBEDDING_MODEL` is read from the
+environment at ingest and was recorded nowhere. Migration `016` adds
+`repo_snapshots.embedding_model`, written alongside `ready` — a snapshot is only
+a valid reuse source once its chunks are all present, and writing it earlier
+would advertise a half-embedded corpus as one.
+
+**`NULL` means unknown, and unknown is not a match.** Every snapshot ingested
+before `016` is ineligible as a source. Assuming they match the current setting
+would risk mixing vector spaces, and that failure does not look like a failure:
+cosine distance across two embedding models returns perfectly plausible numbers.
+Retrieval would just get quietly worse on a corpus reporting itself `ready`.
+Same "not recorded is not the same as empty" distinction as §20.4 and §26.3.
+
+### 29.2 Choosing a source
+
+`reusable_snapshot` takes the newest snapshot with the same **source**, the same
+**strategy**, the same **embedding model**, and status `ready`. Every one is a
+correctness condition: `naive` and `ast` cut different chunks from identical
+text, so a chunk copied across them describes lines it does not cover.
+
+Eligible files are then those whose `md5(content)` matches. Hashes rather than
+contents — the comparison needs equality, and shipping a corpus over the wire to
+decide what not to embed would spend most of what the feature saves.
+
+### 29.3 Copying
+
+Chunk rows are copied in one `INSERT … SELECT`, vectors included.
+
+`symbol_id` is **not** copied: it points into the previous snapshot's `symbols`
+table, and the post-symbol-pass backfill resolves it against this one. Copying
+it would leave every reused chunk pointing at another corpus's symbol row.
+
+The symbol pass still runs in full. Edges cross files, so per-file reuse is not
+sound there — and it is not where the time is (flask: 15-17 s against 54 s of
+embedding).
+
+### 29.4 Measured
+
+| flask ingest | embed time | chunks embedded |
+|---|---|---|
+| no eligible prior | 54.07 s | 1653 |
+| nearby commit (8 back) | **9.19 s** | **136** (+1520 reused from 78 files) |
+
+Verified rather than assumed: of the 78 byte-identical files, **zero** chunks
+differ from the source snapshot's vectors, and every chunk that does differ
+belongs to a file that genuinely changed.
+
+Reuse is an optimisation and is guarded as one: any failure logs and falls back
+to a full re-embed, which is exactly the previous behaviour.
+
+**Reported honestly.** The embed rate counts only chunks the model actually
+embedded. Including copied ones would report a throughput no forward pass
+achieved — flask's second run would have claimed 180 chunks/s against a real 15.

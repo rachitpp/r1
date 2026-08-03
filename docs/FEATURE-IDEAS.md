@@ -712,7 +712,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   worth against two models that already lost. `einops` removed again. Untested,
   not disproven. Numbers in SPEC §5.3 and DECISIONS 2026-08-03.
 
-### 5.3 Incremental re-indexing on new commits
+### 5.3 Incremental re-indexing on new commits — **BUILT 2026-08-04**
 
 - **What it is.** Keep a repo's index fresh as it changes, instead of a full
   re-ingest.
@@ -725,6 +725,19 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Money cost.** $0 (actually _saves_ compute vs. full re-ingest).
 - **Risks.** Correctness of the diff (partial graphs) — the immutable-snapshot
   invariant helps, but graph edges spanning changed/unchanged files need care.
+- **Shipped as.** SPEC §29 + migration `016`. Re-ingest copies chunk rows —
+  vectors included — for files byte-identical to an earlier snapshot's, and
+  embeds only the rest. flask at a nearby commit: **54.07 s → 9.19 s**, 1520 of
+  1656 chunks reused across 78 unchanged files.
+- **The risk was real and was sidestepped, not solved.** "Graph edges spanning
+  changed/unchanged files need care" is exactly right, so the symbol pass is
+  *not* incremental — it still runs in full. Edges cross files, and at 15-17 s
+  against 54 s of embedding the graph was never where the time was.
+- **The unsafe part was elsewhere.** Reuse copies vectors, which is sound only
+  if both snapshots share an embedding model — and nothing recorded which model
+  produced a snapshot. Mixing spaces fails invisibly: cosine distance across two
+  models returns plausible numbers. `016` records it; `NULL` means unknown and
+  is refused. See DECISIONS 2026-08-04.
 
 ### 5.4 Confidence & uncertainty signals — **BUILT 2026-08-02**
 

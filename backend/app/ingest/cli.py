@@ -166,7 +166,11 @@ def format_db_stats(result: IngestStats) -> str:
     extra_parts = sum(c.n_parts - 1 for c in result.chunks if c.part == 1)
     n = len(result.chunks)
     delta = n - result.heuristic_chunk_count
-    rate = n / max(result.embed_elapsed_s, 1e-9)
+    # Rate over the chunks the model actually embedded. §29 copies unchanged
+    # ones straight from an earlier snapshot, and counting those would report a
+    # throughput no forward pass achieved — the saving stands on its own.
+    n_embedded = n - result.n_chunks_reused
+    rate = n_embedded / max(result.embed_elapsed_s, 1e-9)
     lines = [
         "=" * 60,
         f"repo:        {result.name}  [DB ingest]",
@@ -223,7 +227,13 @@ def format_db_stats(result: IngestStats) -> str:
         ]
     lines += [
         f"parse+chunk: {result.parse_elapsed_s:.2f}s",
-        f"embed:       {result.embed_elapsed_s:.2f}s  ({rate:.0f} chunks/s)",
+        f"embed:       {result.embed_elapsed_s:.2f}s  "
+        f"({n_embedded} chunks, {rate:.0f}/s)"
+        + (
+            f"  [+{result.n_chunks_reused} reused, not re-embedded]"
+            if result.n_chunks_reused
+            else ""
+        ),
         f"symbol pass: {result.graph_elapsed_s:.2f}s",
         f"db write:    {result.db_elapsed_s:.2f}s",
         "=" * 60,

@@ -3965,3 +3965,47 @@ function a context there, which type-checked as the new `rev`. Wrapped at the
 call site. And three tests asserted the enqueue tuple as `(snapshot_id,)`, which
 is now `(snapshot_id, None)`; the assertions were right to be that specific and
 have been updated rather than loosened.
+
+## 2026-08-04 — 5.3 incremental re-indexing, and the column that had to come first
+
+FEATURE-IDEAS 5.3 built (SPEC §29, migration `016`). Re-ingesting a repo now
+re-embeds only the files that changed: flask at a nearby commit went from
+**54.07 s of embedding to 9.19 s**, reusing 1520 of 1656 chunks across 78
+unchanged files.
+
+**The interesting part is not the saving, it is what made it unsafe.** Reuse
+copies stored vectors, which is only sound if both snapshots' embeddings live in
+the same space — and nothing recorded which space that was. `EMBEDDING_MODEL` is
+read from the environment at ingest and left nowhere on the row. Without
+`016.embedding_model`, switching models and re-ingesting would silently mix
+`bge-small` vectors with the new ones, and **that failure does not look like a
+failure**: cosine distance across two embedding spaces returns perfectly
+plausible numbers. Retrieval would quietly get worse on a corpus reporting
+itself `ready`. That is the worst shape a bug can have here, so the column came
+before the feature rather than after the first surprise.
+
+`NULL` means unknown and is excluded by the equality — every pre-`016` snapshot
+is ineligible as a source, costing one full re-embed once. The alternative,
+assuming they match the current setting, is the same guess the column exists to
+avoid.
+
+**Why a file digest is enough.** An embedding is a pure function of the chunk
+text; the chunk text is a pure function of the content and the chunker. With
+chunker and model already established as identical, identical content implies
+identical vectors. This is the same answer, not a cheaper estimate of one — and
+it was checked rather than argued: across the 78 byte-identical files, **zero**
+chunks differ from the source snapshot, and all 21 chunks that do differ belong
+to files that genuinely changed.
+
+**What is deliberately not reused.** `symbol_id`, because it points into the
+previous snapshot's `symbols` table and the existing backfill resolves it
+correctly against this one. And the symbol pass itself, because edges cross
+files — per-file reuse is unsound there, and at 15-17 s against 54 s of
+embedding it is not where the time is.
+
+**One reporting fix, twice.** The progress line and the CLI summary both
+computed throughput as *total chunks ÷ embed time*. With reuse that reports a
+rate no forward pass achieved — flask's second run would have claimed 180
+chunks/s against a real 15. Both now count only what the model embedded, and the
+reused count is stated separately. The saving is real and does not need
+flattering arithmetic.
