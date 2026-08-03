@@ -87,7 +87,9 @@ async def ping(ctx: dict[str, Any]) -> str:
     return "pong"
 
 
-async def ingest_repo(ctx: dict[str, Any], snapshot_id: str) -> str:
+async def ingest_repo(
+    ctx: dict[str, Any], snapshot_id: str, rev: str | None = None
+) -> str:
     """Ingest one repo (SPEC §10). Owns the ``failed`` status and error text.
 
     :func:`run_ingest` raises rather than recording failures itself, because the
@@ -118,7 +120,10 @@ async def ingest_repo(ctx: dict[str, Any], snapshot_id: str) -> str:
     beat = asyncio.create_task(_heartbeat(pool, rid))
     try:
         stats = await run_ingest(
-            rid, pool=pool, log=lambda m: logger.info("[%s] %s", snapshot_id, m)
+            rid,
+            pool=pool,
+            rev=rev,
+            log=lambda m: logger.info("[%s] %s", snapshot_id, m),
         )
     except SnapshotSuperseded as dedup:
         # A success, not a failure (SPEC §14.4): the clone found this commit

@@ -242,7 +242,10 @@ export function SubmitForm() {
   const [fieldError, setFieldError] = useState<string | null>(null);
 
   const submit = useMutation({
-    mutationFn: createRepo,
+    // Wrapped, not passed bare: TanStack hands the mutation function a context
+    // as its second argument, and `createRepo` now takes an optional `rev`
+    // there (SPEC §28.3).
+    mutationFn: (url: string) => createRepo(url),
     onSuccess: (repo) => {
       void queryClient.invalidateQueries({ queryKey: ["repos"] });
       router.push(`/repos/${repo.id}`);

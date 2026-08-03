@@ -15,6 +15,7 @@ from tests.api.conftest import (
     OLDER_REPO_ID,
     REPO_ID,
     UNKNOWN_REPO_ID,
+    FakeArq,
 )
 
 
@@ -107,3 +108,71 @@ async def test_another_tenants_snapshot_is_404_on_either_side(
 async def test_anonymous_is_rejected(anon_client: httpx.AsyncClient) -> None:
     resp = await anon_client.get(f"/repos/{REPO_ID}/compare?base={OLDER_REPO_ID}")
     assert resp.status_code == 401
+
+
+# --- §28.3 getting a second snapshot ---------------------------------------
+
+
+async def test_siblings_offers_other_snapshots_of_the_same_repo(
+    client: httpx.AsyncClient,
+) -> None:
+    body = (await client.get(f"/repos/{REPO_ID}/snapshots")).json()
+    ids = {s["id"] for s in body["siblings"]}
+    assert str(OLDER_REPO_ID) in ids
+    # Itself is not a comparison base.
+    assert str(REPO_ID) not in ids
+
+
+async def test_siblings_excludes_a_different_chunking_strategy(
+    client: httpx.AsyncClient,
+) -> None:
+    """Offering it would only produce a 400 on click (§28.1)."""
+    body = (await client.get(f"/repos/{REPO_ID}/snapshots")).json()
+    assert str(NAIVE_REPO_ID) not in {s["id"] for s in body["siblings"]}
+
+
+async def test_siblings_is_scoped_to_the_caller(
+    other_client: httpx.AsyncClient,
+) -> None:
+    assert (
+        await other_client.get(f"/repos/{REPO_ID}/snapshots")
+    ).status_code == 404
+
+
+async def test_submitting_with_a_rev_makes_a_new_snapshot(
+    client: httpx.AsyncClient, arq: FakeArq
+) -> None:
+    """A pinned rev must not be answered with "here is the newest one".
+
+    The caller asked for a *particular* commit, and the newest snapshot is by
+    definition not it (§28.3).
+    """
+    resp = await client.post(
+        "/repos", json={"url": "https://github.com/owner/ready", "rev": "abc1234"}
+    )
+    assert resp.status_code == 201
+    assert resp.json()["id"] != str(REPO_ID)
+
+    # The rev rides along to the worker, which resolves and dedups it after the
+    # clone — here is where it would silently be dropped.
+    name, args = arq.jobs[-1]
+    assert name == "ingest_repo"
+    assert args[1] == "abc1234"
+
+
+async def test_an_ordinary_submit_still_enqueues_without_a_rev(
+    client: httpx.AsyncClient, arq: FakeArq
+) -> None:
+    await client.post("/repos", json={"url": "https://github.com/owner/fresh"})
+    name, args = arq.jobs[-1]
+    assert name == "ingest_repo"
+    assert args[1] is None
+
+
+async def test_submitting_without_a_rev_still_returns_the_existing_snapshot(
+    client: httpx.AsyncClient,
+) -> None:
+    """§14.5 is unchanged for the common path."""
+    resp = await client.post("/repos", json={"url": "https://github.com/owner/ready"})
+    assert resp.status_code == 200
+    assert resp.json()["id"] == str(REPO_ID)

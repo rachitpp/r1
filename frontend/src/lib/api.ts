@@ -125,11 +125,77 @@ export function getRepo(id: string): Promise<RepoOut> {
  * Submit a URL. 201 = new repo queued; 200 = URL already known (which also
  * re-queues a `ready` or `failed` repo — the Retry button is this same call).
  */
-export function createRepo(url: string): Promise<RepoOut> {
+export function createRepo(url: string, rev?: string): Promise<RepoOut> {
   return request<RepoOut>("/repos", {
     method: "POST",
-    body: JSON.stringify({ url }),
+    // `rev` pins a commit instead of the branch tip (SPEC §28.3). Omitted
+    // entirely when absent rather than sent as null, so the common path posts
+    // exactly the body it always did.
+    body: JSON.stringify(rev ? { url, rev } : { url }),
   });
+}
+
+/* ---------------------------------------------------------------------------
+ * §28 snapshot comparison. A structural diff between two corpora of one repo.
+ * ------------------------------------------------------------------------- */
+
+export interface SnapshotRef {
+  id: string;
+  commit_sha: string | null;
+  strategy: string;
+  created_at: string;
+}
+
+export interface ChangedSymbol {
+  qualname: string;
+  kind: string;
+  file_path: string;
+}
+
+export interface CompareCommit {
+  sha: string;
+  author_name: string;
+  authored_at: string;
+  subject: string;
+}
+
+export interface CompareOut {
+  base: SnapshotRef;
+  head: SnapshotRef;
+  files_added: string[];
+  files_removed: string[];
+  symbols_added: ChangedSymbol[];
+  symbols_removed: ChangedSymbol[];
+  dependencies_added: string[];
+  dependencies_removed: string[];
+  /** False when either side predates the §20 history pass. */
+  commits_indexed: boolean;
+  commits: CompareCommit[];
+  truncated: boolean;
+}
+
+export interface SiblingSnapshot {
+  id: string;
+  commit_sha: string | null;
+  status: string;
+  created_at: string;
+}
+
+/** `GET /repos/{id}/snapshots` — what this snapshot can be compared against. */
+export function getSiblingSnapshots(
+  repoId: string,
+): Promise<{ siblings: SiblingSnapshot[] }> {
+  return request<{ siblings: SiblingSnapshot[] }>(`/repos/${repoId}/snapshots`);
+}
+
+/** `GET /repos/{id}/compare?base=` — this snapshot, against an earlier one. */
+export function getComparison(
+  repoId: string,
+  baseId: string,
+): Promise<CompareOut> {
+  return request<CompareOut>(
+    `/repos/${repoId}/compare?base=${encodeURIComponent(baseId)}`,
+  );
 }
 
 export function getFile(repoId: string, path: string): Promise<FileOut> {

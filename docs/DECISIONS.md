@@ -3929,3 +3929,39 @@ recover real identifiers: `build_chunks`, `RecursiveCharacterTextSplitter`,
 
 SPEC §25.3 already collapses hard-wrapped *uncertainty markers* for exactly this
 reason. The same shape, one feature over, and I did not look.
+
+## 2026-08-04 — §28 gets a surface, and the gap was never the diff
+
+6.3 shipped as API-and-CLI only, with the reason recorded: nothing in the UI
+could create a second snapshot, so a picker would have had no pairs to pick and
+would have repeated the "built with no consumer" mistake 2.2 and 2.4 already
+made once. That gap is now closed, and closing it took three small things rather
+than a panel.
+
+**`POST /repos` accepts `rev`.** The route change that matters is one line of
+logic: a pinned rev *skips* the §14.5 "return the newest snapshot" shortcut. The
+caller asked for a particular commit and the newest snapshot is by definition
+not it. Whether that commit is already indexed cannot be answered at submit time
+— a rev may be a tag, a branch, or a short sha — so a new snapshot is queued and
+the worker's existing post-clone §14.4 dedup decides. No new dedup logic; the
+one that was already there is the one that can actually answer the question.
+
+**`GET /repos/{id}/snapshots`** lists the siblings a reader could compare
+against, scoped by `user_repos` and to the same strategy. Same-strategy is not
+tidiness: offering an `ast`/`naive` pairing would produce a 400 on click, and a
+picker that shows you options which fail is worse than one that shows fewer.
+
+**The panel** is last on the page, because it is the only one that asks the
+reader to do something before it can show anything.
+
+Verified end to end through the web path, and one number checks the rest:
+blinker indexed at `acb87a82`, chosen 30 commits back, ready in 27 s; comparing
+HEAD against it reported 6 symbols removed, 2 added, and **exactly 30 commits
+between**.
+
+**Two collateral repairs.** `createRepo` gained an optional second parameter and
+could no longer be passed bare as a TanStack `mutationFn` — TanStack hands the
+function a context there, which type-checked as the new `rev`. Wrapped at the
+call site. And three tests asserted the enqueue tuple as `(snapshot_id,)`, which
+is now `(snapshot_id, None)`; the assertions were right to be that specific and
+have been updated rather than loosened.

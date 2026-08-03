@@ -34,7 +34,8 @@ async def test_post_repos_creates_row_and_enqueues(
         "chunks_embedded": 0,
     }
     # The handler must not have done any work itself (hard rule 1) — just queued.
-    assert arq.jobs == [("ingest_repo", (str(body["id"]),))]
+    # `None` is the rev: an ordinary submit takes the branch tip (§28.3).
+    assert arq.jobs == [("ingest_repo", (str(body["id"]), None))]
 
 
 async def test_post_repos_known_url_returns_the_ready_snapshot_and_does_no_work(
@@ -70,7 +71,7 @@ async def test_post_repos_failed_repo_is_re_enqueued(
     assert body["id"] != str(FAILED_REPO_ID)  # a new snapshot, not the old one
     assert body["status"] == "queued"
     assert body["error"] is None  # the stale failure must not linger in the UI
-    assert arq.jobs == [("ingest_repo", (body["id"],))]
+    assert arq.jobs == [("ingest_repo", (body["id"], None))]
 
 
 async def test_post_repos_does_not_re_enqueue_work_in_flight(

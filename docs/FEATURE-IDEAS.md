@@ -1,7 +1,7 @@
 # FEATURE-IDEAS.md — extending the core
 
 > **What this is.** A catalogue of forward-looking ideas for growing what this
-> project *does* — turning "an unfamiliar repo into cited answers" into
+> project _does_ — turning "an unfamiliar repo into cited answers" into
 > something bigger. This is **exploratory**, not committed work: it is a sibling
 > of `ROADMAP.md` (v1 phases 0–6) and `V2.md` (multi-tenant phases V1–V5), not a
 > replacement. Nothing here is scheduled; it is a menu with honest price tags.
@@ -13,7 +13,7 @@
 > model. Read `SPEC.md` for the contracts those refer to.
 
 > **Status, 2026-07-31.** Seven items are **BUILT** — 2.2, 2.4, **3.1**, 3.5, 4.5,
-> 6.2 and 6.6 — and are marked as such below, each with what shipped *and* what it looks
+> 6.2 and 6.6 — and are marked as such below, each with what shipped _and_ what it looks
 > like to a user. (2.2 and 2.4 landed as endpoints first and were briefly "built"
 > with no consumer; both now have a surface.) They were taken together because none of
 > them touches ingest or retrieval, so none could disturb the eval-equality
@@ -21,7 +21,7 @@
 >
 > **Status, 2026-08-02 (latest).** **4.4** built as SPEC §23 — **twelve** — which
 > takes the recommended sequence through step 5. It is the first feature here
-> whose cost is *recurring*: every later turn pays for the context window, which
+> whose cost is _recurring_: every later turn pays for the context window, which
 > is why it is bounded by turns **and** by per-answer length. See DECISIONS.
 >
 > **Status, 2026-08-02.** **6.5** built as SPEC §22 — **eleven** — which
@@ -37,7 +37,7 @@
 > **Status, 2026-08-02 (later).** **2.1** built as SPEC §20, bringing the total
 > to **nine**. Notable as the first item since the §18 batch to touch ingest: it
 > needed a migration, a `git log` pass, and a change to §2.1's depth-1 clone,
-> which existed *because* history was out of scope. The catalogue's sketch called
+> which existed _because_ history was out of scope. The catalogue's sketch called
 > for a 7th agent tool; §18.1's rule said endpoint, and endpoint is what shipped.
 > See DECISIONS 2026-08-02.
 >
@@ -53,23 +53,23 @@
 > this was written.** Audited against the database, not the notes: all five
 > library corpora carry post-fix graphs matching the counts in DECISIONS
 > (flask 1605, flask-sqlalchemy 311, blinker 193, itsdangerous 264, markupsafe
-> 26 unchanged). httpx is exempt *by construction* — a flat layout yields no
+> 26 unchanged). httpx is exempt _by construction_ — a flat layout yields no
 > import root — and its `825 | 697` invariant verifies. Only three throwaway
 > `rachitpp/*` submissions from 07-28 still hold pre-fix graphs, and nothing
 > reads them. So `architecture`, `coverage`, `overview` and the diagram are all
 > trustworthy on every corpus that matters.
 >
 > **The cost model below understates one thing, and it is the important one.**
-> "$0 unless noted" is true about *invoices* and misleading about *capacity*.
+> "$0 unless noted" is true about _invoices_ and misleading about _capacity_.
 > The real currency is provider rate limits: `app/agent/model.py` records that
 > the AI Studio key's actual ceiling is **20 requests/day/model — two agent
 > runs**, which is what forced the documented Mistral/Gemini/Vertex role split.
 > So 3.1 (one cached run per snapshot) is genuinely free, while 3.2, 3.4, 4.3
-> and 5.1 all *multiply* runs against a tier that has already proven too thin
+> and 5.1 all _multiply_ runs against a tier that has already proven too thin
 > once. Weigh those against quota, not against dollars.
 >
-> **Two corrections to the text below.** (1) "V1–V3 done" in *Relationship to
-> the existing plans* is optimistic: V2.md shows V1 at `[~]` (the auth'd chat
+> **Two corrections to the text below.** (1) "V1–V3 done" in _Relationship to
+> the existing plans_ is optimistic: V2.md shows V1 at `[~]` (the auth'd chat
 > stream is unverified on this host) and V2 with an open rollback box. (2) §2.5
 > attributes the ~45% external-import figure to `SPEC §6.1`; the number is real
 > but it comes from ROADMAP Phase 3's done-when, not from that section.
@@ -85,23 +85,23 @@ Every idea uses the same template so they are comparable:
 - **How it fits the current architecture** — what it reuses vs. what is new.
 - **Implementation sketch** — the concrete steps, in order.
 - **Effort** — `S` (a day or two), `M` (about a week), `L` (multiple weeks),
-  `XL` (a month or more). This is *your time*, the scarce resource here.
+  `XL` (a month or more). This is _your time_, the scarce resource here.
 - **Money cost** — almost always **$0** on the current free tiers (your machine,
   Neon free, Redis Cloud free, Mistral free tier). Exceptions are called out.
 - **Risks / dependencies** — what could go wrong or must come first.
 
 **The cost model, once, up front.** Building features costs **time, not money**.
-Money only enters at *scale and public hosting* — a 24/7 host for the API +
+Money only enters at _scale and public hosting_ — a 24/7 host for the API +
 worker, outgrowing a free DB/Redis tier, or switching to a paid model
 (Claude/GPT/Vertex). None of the ideas below trigger spend just by existing; you
 can build and run all of them locally on free tiers indefinitely.
 
 The ideas are grouped into four buckets:
 
-1. **Breadth** — what the system can *read* (more languages).
-2. **Depth** — what it can *understand* (history, architecture, data flow).
-3. **Synthesis** — what it *produces unprompted* (overviews, tours, diagrams).
-4. **Reach** — *where* the understanding gets used (IDE, PRs, private repos).
+1. **Breadth** — what the system can _read_ (more languages).
+2. **Depth** — what it can _understand_ (history, architecture, data flow).
+3. **Synthesis** — what it _produces unprompted_ (overviews, tours, diagrams).
+4. **Reach** — _where_ the understanding gets used (IDE, PRs, private repos).
 
 Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 **Product surface** (things that make it feel like a real product).
@@ -128,8 +128,8 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
     differentiator ("the graph reaches what retrieval cannot"). For Python you
     get it almost free via **Jedi** (`SPEC §6.1`). TypeScript has **no equally
     easy drop-in**. Proper resolution needs the TypeScript compiler tooling
-    (`tsserver` / `ts-morph`), which is a *different runtime* (Node, not Python)
-    and *harder semantics* (tsconfig path aliases, `node_modules`, barrel
+    (`tsserver` / `ts-morph`), which is a _different runtime_ (Node, not Python)
+    and _harder semantics_ (tsconfig path aliases, `node_modules`, barrel
     re-exports, generics, ambient declarations, JS interop).
 - **Implementation sketch.**
   1. Add the TS grammar + chunking queries (`app/ingest/`), gated by file
@@ -162,7 +162,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **How it fits.** The chunker already routes per-file; you would route per-file
   to the right grammar and the right resolver, then write all symbols/chunks
   into the same snapshot. Cross-language edges (a TS call into a Python API over
-  HTTP) are *not* statically resolvable and should be left out — intra-language
+  HTTP) are _not_ statically resolvable and should be left out — intra-language
   graphs per file, unified corpus.
 - **Implementation sketch.** Extend the per-file language dispatch from 1.1;
   ensure the embedder and retrieval treat all chunks uniformly (they already
@@ -183,7 +183,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   but each is still a new toolchain.
 - **Effort.** **L** each.
 - **Money cost.** $0.
-- **Risks.** Only worth it once the multi-language *machinery* from 1.1/1.2
+- **Risks.** Only worth it once the multi-language _machinery_ from 1.1/1.2
   exists so each new language is "add a grammar + a resolver," not a rebuild.
 
 ---
@@ -193,10 +193,10 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 ### 2.1 Git-history awareness (`search_commits`, blame) — **BUILT 2026-08-02**
 
 - **What it is.** A new agent tool (and ingest pass) that makes commit history
-  queryable: *"when was this introduced and why?"*, *"what changed here
-  recently?"*, *"who last touched this?"*
+  queryable: _"when was this introduced and why?"_, _"what changed here
+  recently?"_, _"who last touched this?"_
 - **Why it matters.** Turns "what does the code do" into "how did it evolve /
-  why is it like this" — often the *real* onboarding question. Nothing else in
+  why is it like this" — often the _real_ onboarding question. Nothing else in
   the system answers it.
 - **How it fits.** The snapshots model is already **commit-pinned**
   (`repo_snapshots.commit_sha`, `SPEC §14`), so the foundation exists. You would
@@ -206,13 +206,13 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   v2 backlog ("Commit-history indexing").
 - **Implementation sketch.**
   1. During clone (`SPEC §2.1`), walk `git log` and store commits + file/line
-     touch ranges in a new `commits` / `commit_files` table. *(Built as written,
+     touch ranges in a new `commits` / `commit_files` table. _(Built as written,
      with one thing the sketch missed: §2.1 cloned `--depth 1` **because**
      history was out of scope, so there was nothing to walk. The clone had to
-     deepen first — the one place this feature touches something that worked.)*
-  2. Optionally embed commit messages for semantic search over "why." *(Not
+     deepen first — the one place this feature touches something that worked.)_
+  2. Optionally embed commit messages for semantic search over "why." _(Not
      built. It is the only half that needs a model, and it is a separate
-     feature — see the note under step 3.)*
+     feature — see the note under step 3.)_
   3. ~~Add `search_commits(query | path | symbol)` as a 7th tool~~ — **rejected,
      and this was the significant call.** §18.1 had already settled it the other
      way: the agent's budget is 8 executions and Phase 5 reached it, so a 7th
@@ -222,9 +222,9 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   4. ~~Add a "blame" affordance in the code viewer~~ — shipped as per-file
      history rather than per-line blame: the strip answers "how did this file
      get here", which is the question a reader of a file actually has.
-- **Effort.** **M.** *(Actual: M — genuinely, unlike 2.2 and 3.3. This one adds
+- **Effort.** **M.** _(Actual: M — genuinely, unlike 2.2 and 3.3. This one adds
   a migration, an ingest pass, an endpoint and a surface, and is the first item
-  since the §18 batch that touches ingest at all.)*
+  since the §18 batch that touches ingest at all.)_
 - **Money cost.** $0, and **zero model calls** — the property that made it the
   right pick over 3.2/3.4/5.1, all of which multiply runs against the 20/day
   tier.
@@ -236,8 +236,8 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   **never fails an ingest** — history is an enrichment, and a corpus that is
   otherwise complete should not be lost to it.
 - **Surfaced as.** A collapsed strip in the code viewer under the coverage one:
-  subject, short sha, author, relative time, and the line deltas *for that
-  file*. Merges are excluded by default (`is_merge` is stored, so it stays a
+  subject, short sha, author, relative time, and the line deltas _for that
+  file_. Merges are excluded by default (`is_merge` is stored, so it stays a
   query-time decision, per §2.6's flag-and-filter).
 - **The part worth stealing.** The response carries an `indexed` flag, because
   `commits: []` means either "no commits in the window" or "nobody walked the
@@ -263,14 +263,14 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ### 2.2 Architecture-level understanding — **BUILT 2026-07-31**
 
-- **What it is.** Answer *global* questions, not just local ones: *"what are the
-  main modules and how do they depend on each other?"*, *"what are the entry
-  points?"*
-- **Why it matters.** Today the agent excels at *local* questions (find a
+- **What it is.** Answer _global_ questions, not just local ones: _"what are the
+  main modules and how do they depend on each other?"_, _"what are the entry
+  points?"_
+- **Why it matters.** Today the agent excels at _local_ questions (find a
   function, trace a call). The symbol graph is your most under-used asset for
-  *global* structure — the thing a newcomer needs first.
+  _global_ structure — the thing a newcomer needs first.
 - **How it fits.** You already build a symbol graph (`symbols` + `edges`). A
-  module-dependency view is an *aggregation* of the import edges you already
+  module-dependency view is an _aggregation_ of the import edges you already
   have — group by file/package, count cross-module edges, rank by fan-in/fan-out.
   No new extraction, just a new query + a synthesis prompt.
 - **Implementation sketch.**
@@ -279,27 +279,27 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
      call to get the module map as structured data.
   3. Feed that map to the model to narrate "here are the layers and how they
      relate," with citations to the key files.
-- **Effort.** **M.** *(Actual: hours, not a week — the estimate assumed new
+- **Effort.** **M.** _(Actual: hours, not a week — the estimate assumed new
   extraction. There is none: `symbols.file_path` is the module key and the
-  rollup is two `GROUP BY`s over tables that have existed since `004`.)*
+  rollup is two `GROUP BY`s over tables that have existed since `004`.)_
 - **Money cost.** $0 — and **zero model calls**, which is the point.
 - **Risks.** Ranking "important" modules well is heuristic; start with
   fan-in/fan-out and iterate.
-- **Shipped as.** `GET /repos/{id}/architecture` (SPEC §18.2), *not* an agent
+- **Shipped as.** `GET /repos/{id}/architecture` (SPEC §18.2), _not_ an agent
   capability: the answer is exact SQL, so spending from the 8-call budget on it
   would buy nothing and cost reproducibility. Same-file edges excluded;
   `include_tests` off by default per §6.3.
 - **Surfaced as.** The Architecture panel on `/repos/[id]`: modules ranked by
-  fan-in with a bar relative to the top module, each expanding into *Depends
-  on* / *Used by* and a pre-filled question via `?q=`. On httpx it ranks
+  fan-in with a bar relative to the top module, each expanding into _Depends
+  on_ / _Used by_ and a pre-filled question via `?q=`. On httpx it ranks
   `_exceptions.py` (fan-in 80, fan-out 2 — the leaf everything imports) above
   `_models.py` (71/108 — the hub), which is the right answer and is why the
   ranking is worth showing at all.
 
 ### 2.3 Call-hierarchy & data-flow tracing — **BUILT 2026-08-02**
 
-- **What it is.** *"Trace how a request flows end to end,"* or *"what calls this,
-  transitively, and what does it call?"* — multi-hop graph walks surfaced as a
+- **What it is.** _"Trace how a request flows end to end,"_ or _"what calls this,
+  transitively, and what does it call?"_ — multi-hop graph walks surfaced as a
   path.
 - **Why it matters.** This is the deepest form of "understanding" and directly
   showcases the graph thesis.
@@ -327,16 +327,16 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ### 2.4 Test ↔ code linkage — **BUILT 2026-07-31**
 
-- **What it is.** *"Which tests cover this function?"* and the reverse.
+- **What it is.** _"Which tests cover this function?"_ and the reverse.
 - **Why it matters.** Cheap, high-signal onboarding aid — tests are executable
   documentation.
 - **How it fits.** You already flag `is_test` at ingest (`SPEC §2.6`) and resolve
-  call edges. A test-to-impl link is just: call edges *from* test symbols *into*
+  call edges. A test-to-impl link is just: call edges _from_ test symbols _into_
   implementation symbols, which you can already compute.
 - **Implementation sketch.** Add a query/tool that, given an impl symbol,
   returns test symbols with an edge into it (and vice versa). Surface as chips.
-- **Effort.** **S–M.** *(Actual: S. `queries.implementation_callers` already
-  had the shape; this is the same join with the `is_test` filter inverted.)*
+- **Effort.** **S–M.** _(Actual: S. `queries.implementation_callers` already
+  had the shape; this is the same join with the `is_test` filter inverted.)_
 - **Money cost.** $0.
 - **Risks.** Minimal; relies on resolution quality you already have.
 - **Shipped as.** `GET /repos/{id}/coverage?path=` (SPEC §18.3), both
@@ -355,13 +355,13 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 ### 2.5 Dependency / third-party understanding — **BUILT 2026-08-02**
 
 - **What it is.** Parse `requirements.txt` / `pyproject.toml` (and later
-  `package.json`) and answer *"what libraries does this use, and where?"*
+  `package.json`) and answer _"what libraries does this use, and where?"_
 - **Why it matters.** A big part of understanding a repo is understanding what
-  it *stands on*. Also a stepping-stone to security/licence awareness later.
+  it _stands on_. Also a stepping-stone to security/licence awareness later.
 - **How it fits.** Manifest parsing is a small ingest add; "where is dep X used"
   is a search over import edges you already have (unresolved external imports are
   currently dropped — `SPEC §6.1` notes ~45% of sites are external; capturing
-  *those* is the feature).
+  _those_ is the feature).
 - **Implementation sketch.** Parse manifests into a `dependencies` table; keep
   (don't drop) external import edges tagged as external; add a tool to list
   deps and their usage sites.
@@ -384,25 +384,25 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   of reasoning would have found: `_typeshed` (a type-checker-only module,
   imported 8× in flask, not installable) and five in-repo packages under
   `tests/test_apps/` that a depth-1 scan reads as undeclared dependencies. Also
-  `dotenv` vs `python-dotenv` — one package reported as both undeclared *and*
+  `dotenv` vs `python-dotenv` — one package reported as both undeclared _and_
   unused until an alias table reconciled them. See DECISIONS 2026-08-02.
 
 ---
 
 ## 3. Synthesis — what it produces unprompted
 
-> This is the highest-leverage bucket for the *stated promise* ("understand an
+> This is the highest-leverage bucket for the _stated promise_ ("understand an
 > unfamiliar codebase in minutes"), because it removes the "what do I even ask?"
 > problem.
 
-### 3.1 Auto-generated repo overview — **BUILT 2026-07-31** *(was the top pick)*
+### 3.1 Auto-generated repo overview — **BUILT 2026-07-31** _(was the top pick)_
 
 - **What it is.** The moment indexing finishes, synthesize a **"Start here"**
   guide: what the project does, its architecture, entry points, key modules, how
   to run it — every claim carrying `file:line` citations.
-- **Why it matters.** Turns a passive Q&A box into something that *greets* a
+- **Why it matters.** Turns a passive Q&A box into something that _greets_ a
   newcomer with a map. It delivers the landing-page tagline better than the chat
-  does, and it is the most *demoable* single upgrade.
+  does, and it is the most _demoable_ single upgrade.
 - **How it fits.** It reuses everything: run a fixed set of the agent's own tools
   (`list_directory`, `search_code`, `get_definition`) against a curated set of
   prompts, then synthesize with the model — the exact machinery you already
@@ -415,7 +415,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
      (from 2.2), "how to run" (from README + config detection), key files.
   2. Persist it keyed on `snapshot_id` (immutable ⇒ no invalidation).
   3. Render it as the repo's landing tab on `/repos/[id]` (the page you just
-     enhanced) — above the "Ask" CTA, so the overview *is* the first thing seen.
+     enhanced) — above the "Ask" CTA, so the overview _is_ the first thing seen.
   4. Each section links into chat with a pre-filled question (`?q=`), so the
      overview becomes launch-points for deeper questions.
 - **Effort.** **M.** Best value-to-effort ratio in this document — and it was,
@@ -433,14 +433,14 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   claimed by a primary key so concurrent viewers cannot both spend a request.
   Four fixed sections rendered above the Architecture panel, each with an "ask
   more" link through `?q=`.
-- **Correction to the sketch.** Step 1 lists *"how to run"* from the README.
+- **Correction to the sketch.** Step 1 lists _"how to run"_ from the README.
   There is no README — `filters.py` indexes `*.py` only. The prompt now
   explicitly forbids that section rather than letting the model recall how
   similar projects usually work.
 
 ### 3.2 Guided tours
 
-- **What it is.** *"Walk me through how auth works"* rendered as a **narrated,
+- **What it is.** _"Walk me through how auth works"_ rendered as a **narrated,
   multi-step path** through the code (step 1 here, step 2 there…), each step
   cited, rather than one dense answer.
 - **Why it matters.** Matches how a senior engineer actually onboards someone —
@@ -458,16 +458,16 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   symbol graph, rendered as mermaid.
 - **Why it matters.** A picture of the module graph is worth a thousand answers
   for orientation.
-- **How it fits.** The `edges` table *is* a graph; emitting mermaid is a
+- **How it fits.** The `edges` table _is_ a graph; emitting mermaid is a
   serialization of the module-level rollup from 2.2. Mermaid renders natively in
   the docs tooling already, so the primitive is familiar.
 - **Implementation sketch.** Module rollup query → mermaid string → render in a
-  diagram tab; make nodes click-through to the file. *(Accurate, with one
+  diagram tab; make nodes click-through to the file. _(Accurate, with one
   correction: there is no query. 2.2's response was already on the page, so the
   first arrow in that chain does not exist and the feature adds no endpoint and
-  no request.)*
-- **Effort.** **M.** *(Actual: an afternoon — for the same reason 2.2 came in
-  under its estimate. Nothing was computed that did not already exist.)*
+  no request.)_
+- **Effort.** **M.** _(Actual: an afternoon — for the same reason 2.2 came in
+  under its estimate. Nothing was computed that did not already exist.)_
 - **Money cost.** $0, and **zero model calls** — same property as 2.2, inherited
   rather than re-earned.
 - **Risks.** Exactly right, and it bit on the first try: twelve modules drawn
@@ -475,7 +475,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   Fixed by the top-N the risk note prescribed — `DIAGRAM_MAX_NODES` 12,
   `DIAGRAM_MAX_EDGES` 18, everything cut counted in the caption.
 - **Shipped as.** A list/diagram toggle on the existing Architecture panel
-  (SPEC §18.6), *not* a separate tab: same data, same ranking, one click apart.
+  (SPEC §18.6), _not_ a separate tab: same data, same ranking, one click apart.
   `mermaid@11` is dynamically imported (~500 KB, larger than the rest of the
   page) so a reader who never opens the diagram pays nothing for it. Clicking a
   box opens that module in the list — done by reading the node id back out of
@@ -486,18 +486,18 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   list does. On a repo whose graph is thin, the feature correctly declines to
   appear — which also means its absence is not a bug report.
 
-### 3.4 Docstring / README / comment generation *(new)*
+### 3.4 Docstring / README / comment generation _(new)_
 
 - **What it is.** Generate missing docstrings, a draft README, or a
   module-summary comment — grounded in the actual code.
 - **Why it matters.** Flips the tool from "read-only understanding" to "helps you
-  *document* the thing you just understood."
+  _document_ the thing you just understood."
 - **How it fits.** Same retrieve-then-synthesize loop; output is prose keyed to a
   symbol. Kept read-only (proposes text; never writes to the repo) to stay
   within scope and safety.
 - **Effort.** **M.**
 - **Money cost.** $0.
-- **Risks.** Hallucinated docs — require citations and mark output as a *draft*.
+- **Risks.** Hallucinated docs — require citations and mark output as a _draft_.
 
 ### 3.5 "Explain this symbol / file" quick action — **BUILT 2026-07-31**
 
@@ -523,9 +523,9 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 ### 4.1 Private repositories
 
 - **What it is.** Let a signed-in user index their **private** GitHub repos.
-- **Why it matters.** People most want to understand *their company's* code, not
+- **Why it matters.** People most want to understand _their company's_ code, not
   public OSS. High real-world relevance.
-- **How it fits.** Small *architectural* lift: you chose GitHub OAuth partly for
+- **How it fits.** Small _architectural_ lift: you chose GitHub OAuth partly for
   this — the user's OAuth token is already the credential a private clone needs
   (`SPEC §13.1` calls this out explicitly). The work is scope, token storage, and
   security, not new pipeline.
@@ -546,7 +546,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Deferred 2026-08-03**, deliberately and not for effort. Scoped out first,
   and step 1 above is the part that is wrong: **"request the `repo` scope" is
   not a small change, because GitHub has no read-only private-repo scope for an
-  OAuth App.** `repo` is all-or-nothing — full read *and write* to every private
+  OAuth App.** `repo` is all-or-nothing — full read _and write_ to every private
   repository the user owns, to run a tool that only ever needs to read. Asking a
   reviewer for that in order to index a codebase is a bad trade and an
   unattractive consent screen.
@@ -565,9 +565,9 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ### 4.2 VS Code / IDE extension
 
-- **What it is.** Ask questions about the repo you have *open in your editor*,
+- **What it is.** Ask questions about the repo you have _open in your editor_,
   without a browser.
-- **Why it matters.** This is *where a tool like this actually gets adopted* —
+- **Why it matters.** This is _where a tool like this actually gets adopted_ —
   understanding happens in the editor.
 - **How it fits.** Your backend is already an HTTP + SSE API with a clean
   contract (`SPEC §8/§9`). An extension is a **new client** over that same API —
@@ -579,7 +579,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ### 4.3 GitHub PR bot / App
 
-- **What it is.** *"Explain what this PR changes and what it affects,"* posted as
+- **What it is.** _"Explain what this PR changes and what it affects,"_ posted as
   a PR comment.
 - **Why it matters.** Meets developers in their review workflow; very shareable.
 - **How it fits.** Combines git-history (2.1) + call-hierarchy (2.3): given a
@@ -593,7 +593,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ### 4.4 Multi-turn conversation memory — **BUILT 2026-08-02**
 
-- **What it is.** Real follow-ups — *"and where is that called?"* — answered with
+- **What it is.** Real follow-ups — _"and where is that called?"_ — answered with
   the prior turns as context, plus saved/named conversations across sessions.
 - **Why it matters.** Makes it feel like a colleague, not a stateless search box.
 - **How it fits.** Today transcripts persist only in `sessionStorage`
@@ -602,7 +602,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   history survives across devices/sessions.
 - **Effort.** **M.** Accurate.
 - **Money cost.** $0, and the parenthetical was the whole design problem rather
-  than an aside. "Slightly more tokens per turn" is true only *because* of the
+  than an aside. "Slightly more tokens per turn" is true only _because_ of the
   trimming it recommends; without it six whole answers dwarf the system prompt
   and the question together.
 - **Risks.** Correctly identified, and bounded twice: `CONVERSATION_CONTEXT_TURNS`
@@ -612,7 +612,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   is marked, not silent.
 - **Shipped as.** SPEC §23 — `014_conversations.sql`, an optional
   `conversation_id` on `POST /chat`, and `GET`/`DELETE
-  /repos/{id}/conversations[/{cid}]`. The `done` event now carries the id, so
+/repos/{id}/conversations[/{cid}]`. The `done` event now carries the id, so
   the client captures it on turn one and sends it thereafter.
 - **The decision worth stealing.** A conversation is scoped to a **snapshot**,
   not a source: its stored citations resolve against one immutable corpus, so
@@ -625,20 +625,20 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 - **What it is.** Harden the existing `app.agent.cli` / `app.ingest.cli` into a
   batch/scriptable tool (`--json`, exit codes, pipe-friendly output).
-- **Why it matters.** Lets the understanding feed *other* tools (CI checks,
+- **Why it matters.** Lets the understanding feed _other_ tools (CI checks,
   scripts) — cheap reach with no new surface.
 - **How it fits.** The CLIs already exist (`SPEC` references them); this is
   polish and output contracts.
 - **Effort.** **S.**
 - **Money cost.** $0.
 - **Risks.** None material.
-- **Shipped as.** `--json` on the ingest CLI and a JSON *error* envelope on the
+- **Shipped as.** `--json` on the ingest CLI and a JSON _error_ envelope on the
   agent CLI. The real work was not the flag: the pipeline's progress lines were
   printed to stdout, so they landed inside the document. `run_ingest`'s `log` is
   now a parameter and `--json` routes every human line to stderr — stdout is one
   object carrying `ok`, on success and on failure, and the exit code mirrors it.
 
-### 4.6 Chat bot (Slack / Discord) *(new)*
+### 4.6 Chat bot (Slack / Discord) _(new)_
 
 - **What it is.** Ask about an indexed repo from a team chat channel.
 - **Why it matters.** Brings the tool to where teams already talk.
@@ -657,7 +657,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   supports the claim before showing it.
 - **Why it matters.** "An answer without citations is a bug" is already the
   project's rule (`CLAUDE.md` rule 5); this goes further — citations that are
-  *present but wrong* are the subtler failure.
+  _present but wrong_ are the subtler failure.
 - **How it fits.** A post-answer pass that re-reads each cited range and checks
   relevance (cheap model call or heuristic), flagging weak citations.
 - **Effort.** **M.**
@@ -684,10 +684,10 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 - **What it is.** Replace/augment the ablated general-purpose reranker with a
   code-aware one.
-- **Why it matters.** The current `bge-reranker-v2-m3` measured *worse-or-equal*
+- **Why it matters.** The current `bge-reranker-v2-m3` measured _worse-or-equal_
   to plain fusion (`SPEC §5.3`, `DECISIONS 2026-07-26`) and is off by default; a
   code-tuned cross-encoder might actually earn its place.
-- **How it fits.** The ablation is *still wired* — `eval.py --mode hybrid+rerank`
+- **How it fits.** The ablation is _still wired_ — `eval.py --mode hybrid+rerank`
   — so this is a swap-and-measure, not new plumbing. Explicitly in the
   `ROADMAP.md` backlog.
 - **Effort.** **M** (mostly evaluation).
@@ -695,7 +695,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Risks.** May still not beat fusion — the win is not guaranteed, which is why
   it is measure-first.
 - **Measured.** Exactly as the risk note predicted, and the result decomposed
-  into something more useful than "no". A second, *general-purpose* reranker
+  into something more useful than "no". A second, _general-purpose_ reranker
   27× smaller (`cross-encoder/ms-marco-MiniLM-L-6-v2`, ~90 MB vs 2.4 GB) beats
   the shipped one on hit@5, hit@10 and MRR — **and still loses to plain
   fusion**. Two unrelated models losing the same way moves the conclusion from
@@ -703,7 +703,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   hit@3 is 0.80 in all three conditions: the metric a reranker exists to move
   does not move.
 - **Still open, and blocked by a stale model rather than by nerve.** The one
-  credible *code-trained* cross-encoder
+  credible _code-trained_ cross-encoder
   (`jinaai/jina-reranker-v2-base-multilingual`) was attempted properly:
   `RERANKER_TRUST_REMOTE_CODE` added (default off), `einops` installed. It then
   failed on transformers 5.14 removing a symbol its Hub code imports — the model
@@ -718,18 +718,18 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   re-ingest.
 - **Why it matters.** Real repos move; a stale index degrades quietly.
 - **How it fits.** Snapshots are per-commit and immutable, so "fresh" means "a
-  new snapshot at the new SHA." Incremental means *diffing* commits and only
+  new snapshot at the new SHA." Incremental means _diffing_ commits and only
   re-embedding changed files rather than the whole repo. A webhook can trigger
   it. In both the `ROADMAP.md` and `V2.md` backlogs.
 - **Effort.** **L.**
-- **Money cost.** $0 (actually *saves* compute vs. full re-ingest).
+- **Money cost.** $0 (actually _saves_ compute vs. full re-ingest).
 - **Risks.** Correctness of the diff (partial graphs) — the immutable-snapshot
   invariant helps, but graph edges spanning changed/unchanged files need care.
 
 ### 5.4 Confidence & uncertainty signals — **BUILT 2026-08-02**
 
-- **What it is.** Let the agent say *"I'm not certain"* or *"the code doesn't
-  clearly show this,"* rather than always answering confidently.
+- **What it is.** Let the agent say _"I'm not certain"_ or _"the code doesn't
+  clearly show this,"_ rather than always answering confidently.
 - **Why it matters.** Trust. A tool that hedges when the evidence is thin is more
   trustworthy than one that always sounds sure.
 - **How it fits.** A prompt/system-message change plus a UI affordance; optionally
@@ -739,24 +739,24 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   already being generated, unlike 5.1 which adds a second pass.
 - **Risks.** "Over-hedging — calibrate" was the entire feature, not a caveat on
   it. The prompt names the three cases that warrant a marker, forbids the rest
-  *with a reason* (a marker on every answer is worth what a marker on none is),
+  _with a reason_ (a marker on every answer is worth what a marker on none is),
   and shows the specific wrong example — the generic "I am an AI" disclaimer.
 - **Shipped as.** A parsed `[uncertain: …]` marker (SPEC §25) rendered as a
   dashed callout in chat, on the §21 permalink page, and as a blockquote in the
   6.2 Markdown export. Structured rather than prose precisely so it can be
-  rendered, and so over-hedging would be *countable* rather than a feeling.
+  rendered, and so over-hedging would be _countable_ rather than a feeling.
 - **One thing worth knowing.** The parser is anchored to the end of the answer
   because this tool gets pointed at its own repository, and an answer explaining
   §25 would otherwise have its prose eaten by its own example.
 
 ---
 
-## 6. Product surface (makes it feel like a real product) *(new)*
+## 6. Product surface (makes it feel like a real product) _(new)_
 
 - **6.1 Shareable answer permalinks.** **BUILT 2026-08-02.** `POST
-  /repos/{id}/share` → `GET /shared/{id}` → `/a/{id}`, plus a publisher-only
-  `DELETE`. The "safe *because* snapshots are immutable" note was the right
-  instinct and understated the work: immutability makes the *link* honest, but
+/repos/{id}/share` → `GET /shared/{id}` → `/a/{id}`, plus a publisher-only
+  `DELETE`. The "safe _because_ snapshots are immutable" note was the right
+  instinct and understated the work: immutability makes the _link_ honest, but
   the read is **the only route in the API with no session**, so the real cost
   was the boundary — bounded inputs, citations re-validated against the snapshot
   rather than trusted from the client, the publisher never named in the
@@ -769,23 +769,26 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **6.3 Snapshot comparison.** **BUILT 2026-08-03.** `GET /repos/{id}/compare?base=`
   (SPEC §28): files, symbols and third-party packages added/removed between two
   snapshots, plus the commits between them. Structural, not textual — `git diff`
-  does lines better; nothing else says what the *index* now holds. Symbols keyed
+  does lines better; nothing else says what the _index_ now holds. Symbols keyed
   on qualname, not (file, line), or every symbol below an edit reads as replaced.
   **"Natural once multiple snapshots exist" was the wrong half of the estimate:**
   every source had exactly one commit, because `clone_repo` always took the
   branch tip. The real prerequisite was ingest-at-a-commit (`--rev`), which did
   not exist. The diff is four SQL statements; noticing there was nothing to diff
-  was the work. No web surface — nothing in the UI creates a second snapshot, and
-  a picker with no pairs would repeat 2.2/2.4's "built with no consumer". **M–L.**
-- **6.4 Cross-repo / org-wide search.** Ask across *all* your indexed repos at
+  was the work. **Surfaced 2026-08-04** as the Compare panel on `/repos/[id]`: a commit
+  field that posts `rev` (the only place in the UI that can create a second
+  snapshot), a picker of sibling commits from `GET /repos/{id}/snapshots`, and
+  the diff. The gap was never the diff — it was that nothing could make a pair.
+  **M–L.**
+- **6.4 Cross-repo / org-wide search.** Ask across _all_ your indexed repos at
   once. Builds on V2 snapshots + multi-tenant. **L.**
 - **6.5 Onboarding checklist.** **BUILT 2026-08-02.** `GET
-  /repos/{id}/checklist` (SPEC §22) + a panel under the overview, each step a
+/repos/{id}/checklist` (SPEC §22) + a panel under the overview, each step a
   `?q=` launch-point. "Pairs with 3.1" was right about placement and wrong about
   mechanism: 3.1 is one model call, this is **none** — four of the five steps
   were already `GROUP BY`s §19 ran to build its prompt. `S–M` held for the code;
   the time went into two defects only real output revealed (a step pointing at
-  flask's *example app* as the public API, and two steps citing the same range).
+  flask's _example app_ as the public API, and two steps citing the same range).
   A test asserts the job queue stays empty, so this cannot silently become a
   model call later.
 - **6.6 Dark-mode toggle.** **BUILT 2026-07-31.** Three-state (system / light /
@@ -801,24 +804,24 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 Value is impact on the core promise; effort is your time. Money is `$0` unless
 noted.
 
-| Idea | Value | Effort | Reuses what exists? | Notes |
-|---|---|---|---|---|
-| 3.1 Auto-overview | ★★★★★ | M | Almost entirely | **BUILT** — one model call, not a loop |
-| 2.1 Git-history tool | ★★★★ | M | Snapshots are commit-pinned | **BUILT** — as an endpoint; the 7th tool was rejected |
-| 4.1 Private repos | ★★★★ | M | OAuth token already the credential | Security-first |
-| 3.5 Explain-this quick action | ★★★ | S | Chat pipeline + viewer | **BUILT** — and `?q=` fed 3.1 |
-| 2.4 Test↔code linkage | ★★★ | S–M | `is_test` + edges | **BUILT** — cheap, high signal |
-| 2.2 Architecture overview | ★★★★ | M | Symbol graph rollup | **BUILT** — and it did feed 3.1 |
-| 4.4 Multi-turn memory | ★★★ | M | SSE + agent | **BUILT** — bounded by turns *and* answer length |
-| 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | **BUILT** — a second view of 2.2, not a second query |
-| 6.1 Answer permalinks | ★★★ | S–M | Immutable snapshots | **BUILT** — the API's only unauthenticated read |
-| 6.5 Onboarding checklist | ★★★ | S–M | §19's own fact queries | **BUILT** — zero model calls, unlike 3.1 |
-| 2.3 Call-hierarchy trace | ★★★ | M | `edges` + a recursive CTE | **BUILT** — a path, not a code dump |
-| 5.4 Confidence signals | ★★★ | S–M | The answer already being written | **BUILT** — calibration *is* the feature |
-| 5.3 Incremental re-index | ★★★ | L | Snapshots | Freshness; saves compute |
-| 4.2 IDE extension | ★★★★★ | L | The whole API | Adoption, but a new surface |
-| 1.1 TypeScript | ★★★★★ | L–XL | Chunking only; resolution is new | Highest ceiling, biggest investment |
-| 4.3 PR bot | ★★★ | L | Needs 2.1/2.3 first | Shareable |
+| Idea                          | Value | Effort | Reuses what exists?                | Notes                                                 |
+| ----------------------------- | ----- | ------ | ---------------------------------- | ----------------------------------------------------- |
+| 3.1 Auto-overview             | ★★★★★ | M      | Almost entirely                    | **BUILT** — one model call, not a loop                |
+| 2.1 Git-history tool          | ★★★★  | M      | Snapshots are commit-pinned        | **BUILT** — as an endpoint; the 7th tool was rejected |
+| 4.1 Private repos             | ★★★★  | M      | OAuth token already the credential | Security-first                                        |
+| 3.5 Explain-this quick action | ★★★   | S      | Chat pipeline + viewer             | **BUILT** — and `?q=` fed 3.1                         |
+| 2.4 Test↔code linkage         | ★★★   | S–M    | `is_test` + edges                  | **BUILT** — cheap, high signal                        |
+| 2.2 Architecture overview     | ★★★★  | M      | Symbol graph rollup                | **BUILT** — and it did feed 3.1                       |
+| 4.4 Multi-turn memory         | ★★★   | M      | SSE + agent                        | **BUILT** — bounded by turns _and_ answer length      |
+| 3.3 Diagrams (mermaid)        | ★★★   | M      | `edges` table                      | **BUILT** — a second view of 2.2, not a second query  |
+| 6.1 Answer permalinks         | ★★★   | S–M    | Immutable snapshots                | **BUILT** — the API's only unauthenticated read       |
+| 6.5 Onboarding checklist      | ★★★   | S–M    | §19's own fact queries             | **BUILT** — zero model calls, unlike 3.1              |
+| 2.3 Call-hierarchy trace      | ★★★   | M      | `edges` + a recursive CTE          | **BUILT** — a path, not a code dump                   |
+| 5.4 Confidence signals        | ★★★   | S–M    | The answer already being written   | **BUILT** — calibration _is_ the feature              |
+| 5.3 Incremental re-index      | ★★★   | L      | Snapshots                          | Freshness; saves compute                              |
+| 4.2 IDE extension             | ★★★★★ | L      | The whole API                      | Adoption, but a new surface                           |
+| 1.1 TypeScript                | ★★★★★ | L–XL   | Chunking only; resolution is new   | Highest ceiling, biggest investment                   |
+| 4.3 PR bot                    | ★★★   | L      | Needs 2.1/2.3 first                | Shareable                                             |
 
 ---
 
@@ -828,7 +831,7 @@ A path that front-loads value and defers the big investments, each step
 standing on the last:
 
 1. **3.1 Auto-generated overview** — biggest promise-delivery per hour; makes the
-   repo page (which you just enhanced) *the* onboarding surface.
+   repo page (which you just enhanced) _the_ onboarding surface.
 2. ~~**2.2 Architecture rollup** + **3.3 diagrams**~~ — **done.** Both fell out of
    the graph, as predicted; 3.3 turned out to need no query at all.
 3. ~~**2.1 Git-history tool**~~ — **done.** The endpoint/tool split above was the
@@ -863,5 +866,5 @@ standing on the last:
 
 ---
 
-*This is a living idea list. Add, cut, and re-rank freely — the point is a clear
-menu, not a contract.*
+_This is a living idea list. Add, cut, and re-rank freely — the point is a clear
+menu, not a contract._

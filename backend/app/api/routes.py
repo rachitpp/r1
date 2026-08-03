@@ -56,6 +56,8 @@ from app.api.schemas import (
     ShareCreated,
     SharedAnswerOut,
     ShareRequest,
+    SiblingSnapshot,
+    SiblingsOut,
     SnapshotRef,
     SymbolRef,
     TraceNode,
@@ -251,7 +253,16 @@ async def create_repo(
     """
     url, name = normalize_github_url(body.url)
     source_id = await queries.get_or_create_source(conn, url=url, name=name)
-    existing = await queries.newest_snapshot_for_source(conn, source_id)
+    # A pinned rev skips the "return the newest snapshot" shortcut: the caller
+    # is asking for a *particular* commit, and the newest snapshot is by
+    # definition not it. Whether that commit is already indexed cannot be known
+    # here — a rev may be a tag or a short sha — so the worker's post-clone
+    # §14.4 check decides, and returns the existing corpus if there is one.
+    existing = (
+        None
+        if body.rev
+        else await queries.newest_snapshot_for_source(conn, source_id)
+    )
 
     # §14.5. A `ready` snapshot is returned as it is — re-submitting a URL is no
     # longer a destructive re-ingest, which is the whole point of the phase: the
@@ -279,8 +290,13 @@ async def create_repo(
 
     snapshot_id = await queries.create_snapshot(conn, source_id)
     await queries.link_user_repo(conn, user["id"], snapshot_id)
-    await arq.enqueue_job("ingest_repo", str(snapshot_id))
-    logger.info("enqueued ingest for %s (snapshot %s)", name, snapshot_id)
+    await arq.enqueue_job("ingest_repo", str(snapshot_id), body.rev)
+    logger.info(
+        "enqueued ingest for %s (snapshot %s, rev %s)",
+        name,
+        snapshot_id,
+        body.rev or "HEAD",
+    )
 
     row = await _require_owned_repo(conn, user["id"], snapshot_id)
     response.status_code = status.HTTP_201_CREATED
@@ -492,6 +508,32 @@ async def get_repo_overview(
     if row["status"] == "generating":
         response.status_code = status.HTTP_202_ACCEPTED
     return OverviewOut.from_row(row)
+
+
+@router.get("/repos/{snapshot_id}/snapshots", response_model=SiblingsOut)
+async def list_sibling_snapshots(
+    snapshot_id: UUID, conn: Conn, user: CurrentUser
+) -> SiblingsOut:
+    """Other snapshots of this repo the caller could compare against (§28.3).
+
+    Exists so the UI can offer a comparison without the reader having to know
+    snapshot ids. Same-strategy only: an `ast` corpus and a `naive` one are not
+    comparable, and putting the pairing in a picker would only produce a 400 on
+    click.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    rows = await queries.sibling_snapshots(conn, user["id"], snapshot_id)
+    return SiblingsOut(
+        siblings=[
+            SiblingSnapshot(
+                id=r["id"],
+                commit_sha=r["commit_sha"],
+                status=str(r["status"]),
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+    )
 
 
 @router.get("/repos/{snapshot_id}/compare", response_model=CompareOut)

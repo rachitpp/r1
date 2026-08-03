@@ -28,6 +28,12 @@ class RepoCreate(BaseModel):
     """``POST /repos`` body. Validation of the URL itself is §8's 422 path."""
 
     url: str = Field(min_length=1, max_length=REPO_URL_MAX_CHARS)
+    # §28.3. A commit to index instead of the branch tip, which is what makes a
+    # comparison possible from the web app at all: without it every snapshot of
+    # a source lands on whatever HEAD was that day, and there is never a second
+    # one to compare against. Short shas, tags and branch names all work — the
+    # clone resolves it, and the resulting `commit_sha` is what dedup uses.
+    rev: str | None = Field(default=None, max_length=200)
 
 
 class RepoProgress(BaseModel):
@@ -681,3 +687,18 @@ class CompareOut(BaseModel):
     commits_indexed: bool
     commits: list[CompareCommit]
     truncated: bool
+
+
+class SiblingSnapshot(BaseModel):
+    """Another snapshot of the same repo, offered as a comparison base (§28.3)."""
+
+    id: UUID
+    commit_sha: str | None
+    status: str
+    created_at: dt.datetime
+
+
+class SiblingsOut(BaseModel):
+    """``GET /repos/{id}/snapshots`` — what this one can be compared against."""
+
+    siblings: list[SiblingSnapshot]

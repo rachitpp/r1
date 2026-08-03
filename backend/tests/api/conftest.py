@@ -586,6 +586,24 @@ class FakeConn:
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        if "FROM repo_snapshots sn\n              JOIN user_repos ur" in sql:
+            # sibling_snapshots: same source and strategy, excluding itself.
+            me = self.repos.get(args[1])
+            if me is None:
+                return []
+            return [
+                {
+                    "id": rid,
+                    "commit_sha": r["head_sha"],
+                    "status": r["status"],
+                    "created_at": r["created_at"],
+                }
+                for rid, r in self.repos.items()
+                if rid != args[1]
+                and r["source_id"] == me["source_id"]
+                and r["strategy"] == me["strategy"]
+                and (args[0], rid) in self.user_repos
+            ]
         # --- §28 snapshot comparison ------------------------------------
         if "FROM repo_snapshots\n         WHERE id = ANY" in sql:
             return [

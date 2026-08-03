@@ -29,6 +29,7 @@ import Link from "next/link";
 import { Fragment, useState } from "react";
 
 import { ArchitecturePanel } from "@/components/architecture-panel";
+import { ComparePanel } from "@/components/compare-panel";
 import { DependenciesPanel } from "@/components/dependencies-panel";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { TracePanel } from "@/components/trace-panel";
@@ -400,6 +401,12 @@ export function RepoStatusView({ repoId }: { repoId: string }) {
           built on" is the one you ask after it. Renders nothing at all for a
           snapshot ingested before the pass existed. */}
       {isReady && <DependenciesPanel repoId={repoId} />}
+
+      {/* What changed since an earlier commit (§28). Last, because it is the
+          only panel that asks the reader to *do* something first — index a
+          second commit — and it is also the only place in the UI that can
+          create one. */}
+      {isReady && <ComparePanel repoId={repoId} repoUrl={data.url} />}
 
       {/* In flight — the live process. */}
       {!isReady && !isFailed && (

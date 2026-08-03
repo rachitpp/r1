@@ -2684,7 +2684,27 @@ differed. The rev must be inside the shallow clone's window
 depth, because "not found" is a confusing thing to be told about a commit that
 plainly exists.
 
-**No web surface yet.** Nothing in the UI creates a second snapshot of one
-repo, so a comparison has no pair to offer until the CLI has made one. The API
-and the CLI are the complete path today; a panel waits on a re-index-at-commit
-affordance rather than on the diff.
+`POST /repos` takes the same `rev`, which is what makes the feature reachable
+from a browser:
+
+    POST /repos  {"url": "...", "rev": "acb87a82"}
+
+**A pinned rev skips the §14.5 "return the newest snapshot" shortcut.** The
+caller is asking for a *particular* commit and the newest snapshot is by
+definition not it. Whether that commit is already indexed cannot be decided at
+submit time — a rev may be a tag, a branch or a short sha — so a new snapshot is
+queued and the worker's post-clone §14.4 check returns the existing corpus if
+there is one.
+
+    GET /repos/{id}/snapshots
+
+lists the other snapshots of the same source the caller owns, so a picker never
+needs the reader to know snapshot ids. Same-strategy only: offering an `ast`/
+`naive` pairing would produce a 400 on click (§28.1).
+
+### 28.4 Surface
+
+The Compare panel on `/repos/[id]`, last of the orientation panels because it is
+the only one that asks the reader to do something first. It is also the only
+place in the UI that can create a second snapshot — a commit field posting
+`rev`, which is precisely the gap that kept §28 out of the browser.

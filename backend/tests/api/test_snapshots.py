@@ -62,7 +62,7 @@ async def test_a_retry_creates_a_new_snapshot_rather_than_resetting_the_failed_o
     assert resp.status_code == 201
     new_id = resp.json()["id"]
     assert new_id != str(FAILED_REPO_ID)
-    assert arq.jobs == [("ingest_repo", (new_id,))]
+    assert arq.jobs == [("ingest_repo", (new_id, None))]
 
 
 async def test_an_in_flight_snapshot_is_joined_not_duplicated(

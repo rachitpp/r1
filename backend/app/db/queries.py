@@ -2321,3 +2321,37 @@ async def snapshot_meta(
         list(ids),
     )
     return {r["id"]: r for r in rows}
+
+
+async def sibling_snapshots(
+    conn: asyncpg.Connection, user_id: UUID, snapshot_id: UUID
+) -> list[asyncpg.Record]:
+    """Other snapshots of the same source that ``user_id`` can see (§28.3).
+
+    Scoped by `user_repos` like everything else in §13.5, and to the same
+    strategy — an `ast` corpus and a `naive` one are not comparable (§28.1), so
+    offering the pairing in a picker would only produce a 400 on click.
+
+    The snapshot itself is excluded: it is the thing being compared *from*.
+    """
+    return list(
+        await conn.fetch(
+            """
+            SELECT sn.id, sn.commit_sha, sn.status, sn.created_at
+              FROM repo_snapshots sn
+              JOIN user_repos ur ON ur.snapshot_id = sn.id
+             WHERE ur.user_id = $1
+               AND sn.id <> $2
+               AND sn.source_id = (
+                     SELECT source_id FROM repo_snapshots WHERE id = $2
+                   )
+               AND sn.strategy = (
+                     SELECT strategy FROM repo_snapshots WHERE id = $2
+                   )
+             ORDER BY sn.created_at DESC
+             LIMIT 50
+            """,
+            user_id,
+            snapshot_id,
+        )
+    )
