@@ -3868,3 +3868,64 @@ and the error path behaved correctly, surfacing the provider's own message
 rather than a generic failure — but it does mean the chat/grounding/share/export
 leg of the walkthrough is verified only from earlier runs today, not from this
 pass. Worth resuming when the rate limit resets.
+
+## 2026-08-03 — walkthrough, part two: two bugs the rate limit uncovered
+
+Resuming the chat leg of the shakedown, blocked earlier by a Mistral 429. The
+block itself turned out to be the first finding.
+
+**1. The configured retries never covered a rate limit.** `model.py` sets
+`max_retries=5` on every client, under a comment claiming 429s were "routine
+rather than exceptional, so retries are configured on the client itself". They
+were not. `langchain_mistralai._create_retry_decorator` retries::
+
+    errors = [httpx.RequestError, httpx.StreamError]
+
+and a 429 raises `httpx.HTTPStatusError` — a **sibling** of `RequestError`
+under `HTTPError`, not a subclass. So the number bought retries on connection
+failures and nothing at all on the most common free-tier failure. The comment
+has been corrected rather than deleted, because a confident wrong comment is
+how the next person concludes the case is handled.
+
+What that cost: the agent makes one model call per tool round, so a 429 on the
+eighth call discards the seven tool calls already spent. Observed exactly —
+seven tool calls streamed to the user, then the whole answer thrown away.
+
+`agent/rate_limit_retry.py` retries **only** 429, and only the model call. A 400
+will be bad again; a 401 is a wrong key. Retrying those turns a clear error into
+a slow one.
+
+**The first version of that retry was useless, and measuring is why it is not
+what shipped.** It waited ~2s then ~4s. Probing the API directly showed why that
+could never work:
+
+    x-ratelimit-limit-tokens-minute: 25000
+    x-ratelimit-remaining-tokens-minute: 0
+
+A **per-minute** token bucket at zero, and Mistral sends no `Retry-After` at
+all. Backing off two and four seconds against a minute-long window burns both
+attempts and reports the same failure, only later. The retry now reads those
+headers: an empty per-minute bucket waits out the window. Verified live — the
+same question that had been discarded completed in 95 s with one wait logged, 7
+tool calls, 4 citations and no error event.
+
+**2. Hard-wrapped citations lost their claim entirely.** With answers flowing
+again, all four citations came back `unchecked`. Not the model's fault and not
+an honest blind spot — a §27 bug. The model wraps long bullets and puts the
+citation on its own continuation line::
+
+    - `build_chunks` reads every PDF and splits prose into chunks
+      [app.py:404-449]
+
+`claim_for` walked back to the nearest newline, found two spaces, and returned
+an empty claim. Every wrapped citation degraded to `unchecked` — *silently*,
+because that is exactly what a genuinely uncheckable claim looks like. The
+failure was invisible by construction.
+
+It now skips boundaries that yield nothing, bounded at three hops so it cannot
+reach into the claim above. Re-scored against the same stored answer, all four
+recover real identifiers: `build_chunks`, `RecursiveCharacterTextSplitter`,
+`run_ingest`, `IndexFlatIP`, `retrieve`.
+
+SPEC §25.3 already collapses hard-wrapped *uncertainty markers* for exactly this
+reason. The same shape, one feature over, and I did not look.

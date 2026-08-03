@@ -2562,6 +2562,11 @@ heuristic, chosen for three reasons and not for cost alone:
 For each citation: take the **claim** it terminates — back to the nearest
 sentence, bullet, or line boundary, not the whole paragraph, because a paragraph
 drags in neighbouring claims and their identifiers until everything passes.
+Boundaries that yield only whitespace are skipped, up to three hops: a model
+that hard-wraps puts the citation on its own continuation line, and stopping at
+the nearest newline then returns two spaces — which scored every wrapped
+citation `unchecked`, indistinguishably from an honestly uncheckable one
+(§25.3 collapses hard-wrapped uncertainty markers for the same reason).
 Strip any earlier citation markers from that window; another citation's path is
 not evidence about this one.
 

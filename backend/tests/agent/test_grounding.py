@@ -168,3 +168,47 @@ def test_unreadable_file_is_unchecked_not_unsupported() -> None:
 
 def test_no_citations_grounds_to_nothing() -> None:
     assert ground_answer("A plain answer.", [], {}) == []
+
+
+def test_a_hard_wrapped_citation_keeps_its_claim() -> None:
+    """Found on a live answer: the model wraps and puts the citation on its
+    own continuation line, so the nearest boundary yields only whitespace.
+
+    Every wrapped citation scored `unchecked` — silently, because that is also
+    what a genuinely uncheckable claim looks like. All four citations in the
+    observed answer were affected.
+    """
+    answer = (
+        "- `build_chunks` reads every PDF and splits prose into chunks\n"
+        "  [app.py:404-449]\n"
+    )
+    end = answer.index("]") + 1
+    claim = claim_for(answer, end)
+    assert "build_chunks" in claim
+    assert "build_chunks" in claim_identifiers(claim)
+
+
+def test_a_wrapped_citation_can_now_be_supported() -> None:
+    answer = (
+        "- `make_id` assigns the receiver identity\n"
+        "  [src/blinker/base.py:107-108]\n"
+    )
+    grounded = ground_answer(
+        answer,
+        [cite("src/blinker/base.py", 107, 108)],
+        {"src/blinker/base.py": BLINKER_SOURCE},
+    )
+    assert grounded[0]["verdict"] == "supported"
+
+
+def test_walking_back_stops_before_stealing_the_previous_claim() -> None:
+    """Three hops is the budget; it must not reach into the bullet above."""
+    answer = (
+        "- `alpha_helper` does one thing [a.py:1-2]\n"
+        "\n"
+        "\n"
+        "\n"
+        "  [a.py:5-6]\n"
+    )
+    end = answer.rindex("]") + 1
+    assert "alpha_helper" not in claim_for(answer, end)

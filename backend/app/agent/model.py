@@ -44,8 +44,15 @@ from app.exceptions import AgentError
 
 logger = logging.getLogger(__name__)
 
-# Free-tier quotas are tight (~10-15 RPM) and 429s are routine rather than
-# exceptional, so retries are configured on the client itself.
+# Free-tier quotas are tight (~10-15 RPM), so retries are configured on the
+# client itself.
+#
+# **This does NOT cover 429s, despite what this comment used to claim.**
+# `langchain_mistralai._create_retry_decorator` retries `httpx.RequestError`
+# and `httpx.StreamError`; a 429 raises `httpx.HTTPStatusError`, a *sibling*
+# under `HTTPError` rather than a subclass. So this number buys retries on
+# connection failures and nothing at all on the most common free-tier failure.
+# Rate limits are handled a layer up, in `agent/rate_limit_retry.py`.
 DEFAULT_MAX_RETRIES = 5
 
 

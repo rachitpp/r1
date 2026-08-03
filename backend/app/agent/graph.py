@@ -45,6 +45,7 @@ from langgraph.graph.message import add_messages
 from app.agent import tools as t
 from app.agent.citations import Citation, parse_citations, validate_citations
 from app.agent.prompts import FORCED_ANSWER, system_prompt
+from app.agent.rate_limit_retry import ainvoke_with_rate_limit_retry
 from app.config import AGENT_TOOL_CAP, CONVERSATION_ANSWER_CHARS
 from app.db.pool import ConnSource, acquire
 
@@ -165,7 +166,12 @@ def build_graph(
     model_with_tools = model.bind_tools(tool_list)
 
     async def model_node(state: AgentState) -> dict[str, Any]:
-        response = await model_with_tools.ainvoke(state["messages"])
+        # Retries a provider 429 rather than throwing away the tool calls
+        # already spent (see rate_limit_retry — the client's own
+        # `max_retries` never covered 429).
+        response = await ainvoke_with_rate_limit_retry(
+            model_with_tools, state["messages"]
+        )
         return {"messages": [response]}
 
     async def tool_node(state: AgentState) -> dict[str, Any]:
@@ -211,7 +217,9 @@ def build_graph(
             for call in unanswered
         ]
         prompt = HumanMessage(content=FORCED_ANSWER)
-        response = await model.ainvoke([*state["messages"], *closers, prompt])
+        response = await ainvoke_with_rate_limit_retry(
+            model, [*state["messages"], *closers, prompt]
+        )
         return {"messages": [*closers, prompt, response]}
 
     def route(state: AgentState) -> str:

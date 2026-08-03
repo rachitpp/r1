@@ -90,19 +90,41 @@ def claim_for(answer: str, citation_end: int) -> str:
     Taking the whole paragraph would drag in neighbouring claims and their
     identifiers, which is how a lexical check quietly becomes a check that
     everything passes.
+
+    **Boundaries are skipped while they yield nothing.** A model that
+    hard-wraps its output puts the citation on its own continuation line::
+
+        - `build_chunks` reads every PDF and splits prose into chunks
+          [app.py:404-449]
+
+    and stopping at the nearest newline then hands back two spaces. Every
+    wrapped citation would score `unchecked` — silently, since that is also
+    what an uncheckable claim looks like. SPEC §25.3 already collapses
+    hard-wrapped uncertainty markers for the same reason; this is the same
+    shape one feature over.
     """
-    head = answer[:citation_end]
-    # Strip any citation markers already inside the window: `[a.py:1-2]` before
-    # this one belongs to the previous claim, and its path tokens are not
-    # evidence about this one.
-    boundary = max(
-        head.rfind("\n"),
-        head.rfind(". "),
-        head.rfind("? "),
-        head.rfind(": "),
-    )
-    claim = head[boundary + 1 :] if boundary >= 0 else head
-    return CITATION_RE.sub(" ", claim).strip()
+    # Strip citation markers first: another citation's path is not evidence
+    # about this one, and leaving them in makes an otherwise-blank window look
+    # non-empty.
+    head = CITATION_RE.sub(" ", answer[:citation_end])
+
+    # Three hops is enough for a wrapped line and a stray blank line; more
+    # would start pulling in the previous claim, which is the failure the
+    # boundary exists to prevent.
+    for _ in range(3):
+        boundary = max(
+            head.rfind("\n"),
+            head.rfind(". "),
+            head.rfind("? "),
+            head.rfind(": "),
+        )
+        candidate = head[boundary + 1 :] if boundary >= 0 else head
+        if candidate.strip():
+            return candidate.strip()
+        if boundary < 0:
+            break
+        head = head[:boundary]
+    return ""
 
 
 def claim_identifiers(claim: str) -> list[str]:
