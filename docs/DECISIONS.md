@@ -3836,3 +3836,35 @@ empty script when it ran out, raising `IndexError` — which the supervisor
 dutifully treated as a crash and retried forever. The test hung instead of
 failing, which is the worse outcome of the two. An exhausted script now means
 "stop cleanly".
+
+## 2026-08-03 — walkthrough: the alias table needed to be one-to-many
+
+Ran every repo-page surface against a real user repo rather than a benchmark —
+the shakedown argued for on the grounds that every bug found today was found by
+running rather than by testing. It paid immediately.
+
+`rachitpp/simple` reported `faiss` as **imported-but-undeclared** and `faiss-cpu`
+as **declared-but-unused**. One package, two contradictory findings — precisely
+the failure `MODULE_TO_DISTRIBUTION` was added to prevent, and `faiss` was not in
+it.
+
+The fix is not just another row. `faiss` ships from `faiss-cpu` *or* `faiss-gpu`;
+`cv2` from `opencv-python` or `opencv-python-headless`. A one-to-one table has to
+pick one and is then wrong for everyone using the other variant. The value is now
+a tuple and matching any candidate counts as declared, so the table's shape
+matches the relationship instead of flattening it.
+
+Verified live afterwards: `faiss` reads `declared: true` with
+`faiss-cpu==1.14.3`, and both contradictory entries are gone. `langchain_core`
+remains undeclared, which is correct — it is a transitive dependency of
+`langchain-google-genai` and genuinely absent from the manifest.
+
+**What else the walkthrough covered**, all 200 and all sane: the repo row,
+overview, checklist, architecture rollup, dependencies, history, trace,
+coverage, files, and compare.
+
+**What it could not cover.** Further chat runs hit a Mistral 429. Not a defect —
+and the error path behaved correctly, surfacing the provider's own message
+rather than a generic failure — but it does mean the chat/grounding/share/export
+leg of the walkthrough is verified only from earlier runs today, not from this
+pass. Worth resuming when the rate limit resets.

@@ -94,7 +94,7 @@ from app.exceptions import (
     SymbolNotFoundError,
     UnauthorizedError,
 )
-from app.ingest.dependencies import distribution_for
+from app.ingest.dependencies import distributions_for
 from app.ingest.urls import normalize_github_url
 
 logger = logging.getLogger(__name__)
@@ -645,14 +645,23 @@ async def get_repo_dependencies(
     # table in one language.
     declared = await queries.declared_by_name(conn, snapshot_id)
     used_distributions = {
-        distribution_for(str(r["module"])) for r in rows
-    } | {distribution_for(str(r["module"])) for r in undeclared}
+        dist
+        for r in [*rows, *undeclared]
+        for dist in distributions_for(str(r["module"]))
+    }
 
     packages = []
     for row in rows:
         package = DependencyOut.from_row(row)
         if not package.declared:
-            match = declared.get(distribution_for(package.module))
+            match = next(
+                (
+                    declared[d]
+                    for d in distributions_for(package.module)
+                    if d in declared
+                ),
+                None,
+            )
             if match is not None:
                 # Carry the manifest across too: "declared" beside an empty
                 # requirement reads as a bug in the panel.
@@ -669,7 +678,9 @@ async def get_repo_dependencies(
         undeclared=[
             str(r["module"])
             for r in undeclared
-            if distribution_for(str(r["module"])) not in declared
+            if not any(
+                d in declared for d in distributions_for(str(r["module"]))
+            )
         ],
         unused=[
             UnusedDependency(

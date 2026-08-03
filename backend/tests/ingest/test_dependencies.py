@@ -16,6 +16,7 @@ from app.ingest.dependencies import (
     KIND_THIRD_PARTY,
     classify,
     distribution_for,
+    distributions_for,
     extract_imports,
     first_party_names,
     normalize,
@@ -256,3 +257,24 @@ def test_alias_makes_the_two_halves_agree() -> None:
     """Without this, one package is reported undeclared *and* unused."""
     declared = {"python-dotenv"}
     assert distribution_for("dotenv") in declared
+
+
+def test_a_module_shipped_by_several_distributions_lists_them_all() -> None:
+    """Found by running the app: a repo imported `faiss` and declared
+    `faiss-cpu`, so one package was reported undeclared AND unused.
+
+    A tuple rather than a single answer because the relationship really is
+    one-to-many — picking `faiss-cpu` alone would leave a `faiss-gpu` project
+    with the same contradiction.
+    """
+    assert distributions_for("faiss") == ("faiss-cpu", "faiss-gpu")
+    assert distributions_for("cv2") == ("opencv-python", "opencv-python-headless")
+
+
+def test_an_unmapped_module_is_its_own_only_candidate() -> None:
+    assert distributions_for("werkzeug") == ("werkzeug",)
+
+
+def test_distribution_for_still_returns_the_primary() -> None:
+    assert distribution_for("faiss") == "faiss-cpu"
+    assert distribution_for("dotenv") == "python-dotenv"

@@ -73,26 +73,44 @@ KIND_THIRD_PARTY = "third_party"
 # mismatches common enough to have bitten someone. An unlisted mismatch
 # degrades exactly as before, which is why `declared=False` is documented as
 # "no manifest row under this name" rather than "undeclared".
-MODULE_TO_DISTRIBUTION: dict[str, str] = {
-    "attr": "attrs",
-    "bs4": "beautifulsoup4",
-    "cv2": "opencv-python",
-    "dateutil": "python-dateutil",
-    "dotenv": "python-dotenv",
-    "jwt": "pyjwt",
-    "OpenSSL": "pyopenssl",
-    "PIL": "pillow",
-    "pkg_resources": "setuptools",
-    "serial": "pyserial",
-    "sklearn": "scikit-learn",
-    "yaml": "pyyaml",
-    "zoneinfo": "backports-zoneinfo",
+MODULE_TO_DISTRIBUTION: dict[str, tuple[str, ...]] = {
+    "attr": ("attrs",),
+    "bs4": ("beautifulsoup4",),
+    "cv2": ("opencv-python", "opencv-python-headless"),
+    "dateutil": ("python-dateutil",),
+    "dotenv": ("python-dotenv",),
+    "jwt": ("pyjwt",),
+    "OpenSSL": ("pyopenssl",),
+    "PIL": ("pillow",),
+    "pkg_resources": ("setuptools",),
+    "serial": ("pyserial",),
+    "sklearn": ("scikit-learn",),
+    "yaml": ("pyyaml",),
+    "zoneinfo": ("backports-zoneinfo",),
+    # Found by running the app on a real repo: `faiss` was reported
+    # undeclared while `faiss-cpu` was reported unused — one package,
+    # two contradictory findings, which is the exact failure this table
+    # exists to stop. Several distributions ship the same module, so the
+    # value is a tuple: matching any one of them counts as declared.
+    "faiss": ("faiss-cpu", "faiss-gpu"),
 }
 
 
+def distributions_for(module: str) -> tuple[str, ...]:
+    """Normalised distribution names that could ship ``module``.
+
+    A tuple because the relationship is genuinely one-to-many: `faiss` comes
+    from `faiss-cpu` or `faiss-gpu`, `cv2` from `opencv-python` or its headless
+    build. Picking one and calling it the answer would report the other as
+    undeclared — the contradiction this table exists to remove.
+    """
+    names = MODULE_TO_DISTRIBUTION.get(module, (module,))
+    return tuple(normalize(n) for n in names)
+
+
 def distribution_for(module: str) -> str:
-    """The normalised distribution name a module most likely comes from."""
-    return normalize(MODULE_TO_DISTRIBUTION.get(module, module))
+    """The most likely distribution for ``module``. Prefer `distributions_for`."""
+    return distributions_for(module)[0]
 
 # Manifests read from the clone. `filters.py` selects `*.py` only, so none of
 # these are in the `files` table and none can be read back later — they have to

@@ -2496,6 +2496,10 @@ distribution name and the module it ships need not agree — `PyYAML` ships
 
 `MODULE_TO_DISTRIBUTION` covers the mismatches common enough to have bitten
 someone (`dotenv` → `python-dotenv`, `yaml` → `pyyaml`, `PIL` → `pillow`, …).
+The value is a **tuple**, because the relationship is genuinely one-to-many:
+`faiss` ships from `faiss-cpu` *or* `faiss-gpu`, `cv2` from `opencv-python` or
+its headless build, and matching any one of them counts as declared. Picking a
+single answer would leave the other variant reporting the same contradiction.
 Without it flask reports one package **twice and contradictorily** — `dotenv`
 undeclared *and* `python-dotenv` unused. The general fix is `importlib.metadata`
 and is rejected for the reason above: it needs the package installed. A lookup
