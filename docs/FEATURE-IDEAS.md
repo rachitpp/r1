@@ -667,11 +667,15 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   "this reranker does not help" to "reranking the fused list does not help".
   hit@3 is 0.80 in all three conditions: the metric a reranker exists to move
   does not move.
-- **Still open.** The one credible *code-trained* cross-encoder
-  (`jinaai/jina-reranker-v2-base-multilingual`) needs `trust_remote_code` — the
-  flag now exists, default off — **and** an `einops` dependency, which is a rule
-  11 decision. Untested, not disproven. Numbers in SPEC §5.3 and
-  DECISIONS 2026-08-03.
+- **Still open, and blocked by a stale model rather than by nerve.** The one
+  credible *code-trained* cross-encoder
+  (`jinaai/jina-reranker-v2-base-multilingual`) was attempted properly:
+  `RERANKER_TRUST_REMOTE_CODE` added (default off), `einops` installed. It then
+  failed on transformers 5.14 removing a symbol its Hub code imports — the model
+  targets 4.x. Downgrading the whole inference stack a major version, under a
+  benchmark corpus embedded on the current one, costs more than the answer is
+  worth against two models that already lost. `einops` removed again. Untested,
+  not disproven. Numbers in SPEC §5.3 and DECISIONS 2026-08-03.
 
 ### 5.3 Incremental re-indexing on new commits
 

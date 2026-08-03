@@ -3532,3 +3532,41 @@ reranker would win" is untested.
 tuning a component that is off, and the honest recommendation — if rerank is
 ever turned on — is now recorded in SPEC §5.3 rather than baked into a default
 nobody re-derives.
+
+## 2026-08-03 — the code-trained reranker is blocked by a stale model, not by the rule
+
+Follow-up to the entry above, recorded because "we did not test it" and "we
+tried and it does not load" are different facts and only one of them is useful
+later.
+
+With permission, `einops` was added and
+`jinaai/jina-reranker-v2-base-multilingual` was run with
+`RERANKER_TRUST_REMOTE_CODE=true`. It failed further in, on a harder problem:
+the model's Hub code does
+
+    from transformers.models.xlm_roberta.modeling_xlm_roberta import \
+        create_position_ids_from_input_ids
+
+and **transformers 5.14.1 does not define that symbol** (verified directly —
+the module has no `position`-named callables at all). The model targets
+transformers 4.x.
+
+**The downgrade was declined.** `sentence-transformers>=5.6.1` permits
+`transformers>=4.41,<6`, so it is possible. It is a bad trade: it moves the
+embedder, the working reranker and the whole inference stack back a major
+version, *under a frozen benchmark whose 1522 chunks were embedded on the
+current stack*. Establishing that the corpus and baseline still compare
+afterwards is hours of work, spent to test a hypothesis that two unrelated
+models have already argued against, on the metric (hit@3) neither of them moved.
+
+`einops` was removed again once its only reason evaporated — it is exactly the
+"declared but never imported" dead weight §26 was built to find, and leaving it
+in would have been a small hypocrisy sitting one commit away from the feature
+that detects it.
+
+**What this changes about the claim:** nothing about findings 1–3, which stand
+on measurement. What it changes is the shape of the gap — "a code-specific
+reranker would win" is untested because the only credible candidate is stale
+against current transformers, not because the experiment was avoided. If that
+model is ever republished against transformers 5.x, the flag and the harness are
+already in place and it is a one-line run.

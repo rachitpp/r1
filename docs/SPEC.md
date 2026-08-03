@@ -385,11 +385,23 @@ The cross-encoder was worse-or-equal to plain fusion at *every* k and at MRR, in
 > move, and neither model moves it by a single question.
 >
 > The genuinely *code-trained* cross-encoder
-> (`jinaai/jina-reranker-v2-base-multilingual`) is **not measured**: it ships its
-> modelling code on the Hub and needs both `trust_remote_code` and an `einops`
-> dependency. The flag exists (`RERANKER_TRUST_REMOTE_CODE`, default off); the
-> dependency is a CLAUDE.md rule 11 decision and has not been taken. Until it is,
-> "a code-specific reranker would win" remains untested, not disproven.
+> (`jinaai/jina-reranker-v2-base-multilingual`) is **not measured, and the reason
+> is not squeamishness about the flag.** `RERANKER_TRUST_REMOTE_CODE` was added
+> for it and the `einops` its Hub code needs was installed. It then failed on a
+> second, harder incompatibility: the model's modelling code imports
+> `create_position_ids_from_input_ids` from
+> `transformers.models.xlm_roberta.modeling_xlm_roberta`, which **transformers
+> 5.14 no longer defines** — the model was written against 4.x.
+>
+> `sentence-transformers` would permit the downgrade (`>=4.41,<6`), and it was
+> **declined**: it moves the embedder, the working reranker and the whole
+> inference stack back a major version, under a benchmark whose corpus was
+> embedded on the current one. Re-establishing comparability afterwards costs
+> more than the answer is worth, for a hypothesis two unrelated models already
+> argue against. `einops` was removed again once it bought nothing.
+>
+> So "a code-specific reranker would win" is **untested, not disproven** — and
+> what blocks it is a stale model, not the idea.
 | shadowed | hybrid | 0.70 | 0.80 | **0.80** | **0.617** |
 | shadowed | hybrid+rerank | 0.70 | 0.75 | 0.75 | 0.604 |
 
