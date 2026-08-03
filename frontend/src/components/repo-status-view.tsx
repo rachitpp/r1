@@ -29,7 +29,9 @@ import Link from "next/link";
 import { Fragment, useState } from "react";
 
 import { ArchitecturePanel } from "@/components/architecture-panel";
+import { DependenciesPanel } from "@/components/dependencies-panel";
 import { ChecklistPanel } from "@/components/checklist-panel";
+import { TracePanel } from "@/components/trace-panel";
 import { OverviewPanel } from "@/components/overview-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -387,6 +389,17 @@ export function RepoStatusView({ repoId }: { repoId: string }) {
           not yet know what to ask. Mounted only when ready — the rollup of a
           half-built graph would be a map of a partial repo. */}
       {isReady && <ArchitecturePanel repoId={repoId} />}
+
+      {/* Symbol-level tracing (§24). After the module map, because "what does
+          this one thing reach" is the question you ask once the shape of the
+          repo is already on screen. */}
+      {isReady && <TracePanel repoId={repoId} />}
+
+      {/* What the repo leans on from outside (§26). Last of the orientation
+          panels: the internal shape is the first question, and "what is this
+          built on" is the one you ask after it. Renders nothing at all for a
+          snapshot ingested before the pass existed. */}
+      {isReady && <DependenciesPanel repoId={repoId} />}
 
       {/* In flight — the live process. */}
       {!isReady && !isFailed && (

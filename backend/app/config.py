@@ -65,6 +65,12 @@ PROGRESS_EVERY_N: int = 25
 ARCH_MAX_NODES: int = 200
 ARCH_MAX_EDGES: int = 1_000
 COVERAGE_MAX_LINKS: int = 500
+# §26 dependencies. Same shape of cap: ranked (by use count) before truncation.
+# A package list is short by nature — 200 covers every repo measured — but the
+# *use sites* for one popular package are not, and `os` in a large repo would
+# serialise thousands of identical-looking rows.
+DEPENDENCY_MAX_PACKAGES: int = 200
+DEPENDENCY_MAX_USES: int = 300
 # §19 overview. These bound the *prompt*, not a response: everything gathered
 # here is pasted into one model context, so each cap is tokens somebody pays
 # for. Sized to brief a reader, not to be exhaustive.
@@ -108,6 +114,16 @@ CONVERSATION_CONTEXT_TURNS: int = 6
 CONVERSATION_ANSWER_CHARS: int = 1_200
 # The resume list. A page, not a cap on how many a user may have.
 CONVERSATION_PAGE_MAX: int = 50
+# §24 call-hierarchy trace. Deeper than EXPAND_MAX_DEPTH (2) because that one
+# bounds how much *code* a tool pulls into a model context, while this bounds a
+# list of pointers — the cost per node is a row, not a token budget.
+#
+# The node cap is the important one. FEATURE-IDEAS 2.3 names the failure
+# directly ("explosion on hot symbols"), and it is not hypothetical: httpx's
+# `_exceptions` has fan-in 80, so an uncapped depth-4 walk from a hot symbol is
+# tens of thousands of rows for a panel that shows a path.
+TRACE_MAX_DEPTH: int = 4
+TRACE_MAX_NODES: int = 200
 
 # ---------------------------------------------------------------------------
 # Serving limits — NOT SPEC §12. These bound what one HTTP request may cost.

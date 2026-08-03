@@ -529,3 +529,107 @@ class ConversationDetail(BaseModel):
                 for r in turn_rows
             ],
         )
+
+
+class TraceNode(BaseModel):
+    """One symbol the walk reached, and how it got there."""
+
+    depth: int
+    kind: str | None
+    name: str
+    qualname: str
+    file_path: str
+    start_line: int
+    end_line: int
+    # The symbol one hop nearer the root. Together with `depth` this is the
+    # path — a client can rebuild the chain without the server serialising one
+    # per node, which on a wide graph is the same data quadratically.
+    via: str | None
+
+
+class TraceOut(BaseModel):
+    """``GET /repos/{id}/trace`` (§24.2).
+
+    ``nodes`` is ordered by depth then qualname, so truncation keeps the near
+    neighbours — on a hot symbol the first hop is the answer.
+    """
+
+    root: SymbolRef
+    direction: str
+    max_depth: int
+    nodes: list[TraceNode]
+    truncated: bool
+
+
+class DependencyUse(BaseModel):
+    """One import site for a package."""
+
+    dotted: str
+    file_path: str
+    start_line: int
+    is_test: bool
+
+
+class DependencyOut(BaseModel):
+    """One third-party package this snapshot imports (§26.2).
+
+    ``declared`` is a *normalised-name* match against the manifests and is
+    honestly approximate: a distribution name and the module it ships need not
+    agree (`PyYAML` ships `yaml`), so ``False`` means "no manifest row under
+    this name", never "this package is undeclared".
+    """
+
+    module: str
+    n_uses: int
+    n_files: int
+    declared: bool
+    requirement: str | None
+    sources: list[str]
+    extras: list[str]
+
+    @classmethod
+    def from_row(cls, row: asyncpg.Record) -> DependencyOut:
+        return cls(
+            module=str(row["module"]),
+            n_uses=int(row["n_uses"]),
+            n_files=int(row["n_files"]),
+            declared=bool(row["declared"]),
+            requirement=row["requirement"],
+            sources=list(row["sources"] or []),
+            extras=list(row["extras"] or []),
+        )
+
+
+class UnusedDependency(BaseModel):
+    """A manifest entry no import in the corpus reaches (§26.2)."""
+
+    name: str
+    requirement: str
+    sources: list[str]
+    extras: list[str]
+
+
+class DependenciesOut(BaseModel):
+    """``GET /repos/{id}/dependencies`` (§26.2).
+
+    ``indexed`` is the §26.3 distinction and the reason this is not just a
+    list: a snapshot ingested before migration 015 has no rows, and an empty
+    ``packages`` would otherwise read as "this project stands on nothing" —
+    which for any real repo is a confident lie.
+    """
+
+    indexed: bool
+    include_tests: bool
+    packages: list[DependencyOut]
+    undeclared: list[str]
+    unused: list[UnusedDependency]
+    truncated: bool
+
+
+class DependencyUsesOut(BaseModel):
+    """``GET /repos/{id}/dependencies/{module}`` — the "and where?" half."""
+
+    module: str
+    include_tests: bool
+    uses: list[DependencyUse]
+    truncated: bool

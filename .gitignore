@@ -39,7 +39,13 @@ credentials*.json
 Thumbs.db
 
 # Local agent settings — per-machine tool permissions, not repo content.
-.claude/
+# Note `.claude/*`, not `.claude/`: git will not descend into an ignored
+# directory, so the skills negation below only works with the glob form.
+.claude/*
+
+# Skills are repo content — shared procedures, versioned with the code they
+# describe. That is the point of .claude/skills/ over ~/.claude/skills/.
+!.claude/skills/
 
 # Agent run traces — every model call is metered; traces are kept locally
 # for debugging but are not repo content.

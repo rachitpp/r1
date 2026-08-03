@@ -11,7 +11,7 @@
  * tool for reading code, not a messaging app.
  */
 
-import { Check, Copy, Link2, RotateCcw } from "lucide-react";
+import { Check, CircleHelp, Copy, Link2, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { AnswerBody } from "@/components/chat/answer-body";
@@ -22,6 +22,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { type Citation, citationKey, dedupeCitations } from "@/lib/citations";
 import type { ChatExchange, ChatStatus } from "@/lib/chat-types";
 import { inlineCitationKeys, parseMarkdown } from "@/lib/markdown";
+import { parseUncertainty } from "@/lib/uncertainty";
 
 function ActionButton({
   onClick,
@@ -68,10 +69,14 @@ export function ExchangeView({
     { state: "idle" | "working" | "done" } | { state: "error"; message: string }
   >({ state: "idle" });
 
-  const blocks = useMemo(
-    () => parseMarkdown(exchange.answer),
+  // §25: the marker is pulled out before markdown sees it, so the renderer
+  // never has to know about it and the callout is not a paragraph.
+  const { body, uncertainty } = useMemo(
+    () => parseUncertainty(exchange.answer),
     [exchange.answer],
   );
+
+  const blocks = useMemo(() => parseMarkdown(body), [body]);
 
   // The citations event is backend-validated. Anything it names that the prose
   // already shows inline would be the same chip twice, so Sources lists only
@@ -188,6 +193,21 @@ export function ExchangeView({
                 {exchange.error}
               </AlertDescription>
             </Alert>
+          )}
+
+          {/* §25. Below the answer and above the actions: it qualifies what
+              was just said, so it has to be read after it — and it is a note
+              about confidence, not an error, so it must not look like one. */}
+          {!live && uncertainty && (
+            <div className="flex items-start gap-2 rounded-md border border-dashed bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+              <CircleHelp className="mt-0.5 size-3.5 shrink-0" />
+              <p className="leading-relaxed">
+                <span className="font-medium text-foreground">
+                  Not fully confirmed:
+                </span>{" "}
+                {uncertainty}
+              </p>
+            </div>
           )}
 
           {!live && (exchange.answer || exchange.error) && (

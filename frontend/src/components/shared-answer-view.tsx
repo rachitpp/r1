@@ -15,7 +15,7 @@
  */
 
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, ArrowRight, ExternalLink } from "lucide-react";
+import { AlertTriangle, ArrowRight, CircleHelp, ExternalLink } from "lucide-react";
 import Link from "next/link";
 
 import { AnswerBody } from "@/components/chat/answer-body";
@@ -24,6 +24,7 @@ import { ApiError, getSharedAnswer } from "@/lib/api";
 import { citationKey } from "@/lib/citations";
 import { githubBlobUrl, shortSha } from "@/lib/format";
 import { parseMarkdown } from "@/lib/markdown";
+import { parseUncertainty } from "@/lib/uncertainty";
 
 export function SharedAnswerView({ shareId }: { shareId: string }) {
   const shared = useQuery({
@@ -74,7 +75,10 @@ export function SharedAnswerView({ shareId }: { shareId: string }) {
   }
 
   const a = shared.data;
-  const blocks = parseMarkdown(a.answer);
+  // A shared answer carries §25's marker too — a reader who followed a link
+  // deserves the same caveat the asker saw, not a stray bracket.
+  const { body, uncertainty } = parseUncertainty(a.answer);
+  const blocks = parseMarkdown(body);
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10 sm:py-14">
@@ -119,6 +123,18 @@ export function SharedAnswerView({ shareId }: { shareId: string }) {
       <div className="mt-8">
         <AnswerBody blocks={blocks} onCiteClick={() => {}} activeKey={null} />
       </div>
+
+      {uncertainty && (
+        <div className="mt-5 flex items-start gap-2 rounded-md border border-dashed bg-secondary/30 px-3 py-2 text-xs text-muted-foreground">
+          <CircleHelp className="mt-0.5 size-3.5 shrink-0" />
+          <p className="leading-relaxed">
+            <span className="font-medium text-foreground">
+              Not fully confirmed:
+            </span>{" "}
+            {uncertainty}
+          </p>
+        </div>
+      )}
 
       {a.citations.length > 0 && (
         <section className="mt-10 border-t pt-6">

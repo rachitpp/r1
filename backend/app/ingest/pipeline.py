@@ -45,12 +45,29 @@ from app.db.pool import close_pool, create_pool
 from app.exceptions import IngestError, SnapshotSuperseded
 from app.ingest.chunker import Chunk, chunk_file
 from app.ingest.clone import cloned_repo
+from app.ingest.dependencies import (
+    KIND_THIRD_PARTY,
+    ImportSite,
+    extract_imports,
+    first_party_names,
+    parse_manifests,
+)
 from app.ingest.embedder import get_embedder
-from app.ingest.filters import SelectionResult, is_test_path, select_files
+from app.ingest.filters import (
+    SelectionResult,
+    SourceFile,
+    is_test_path,
+    select_files,
+)
 from app.ingest.history import walk_history
 from app.ingest.naive import naive_chunk_file
-from app.ingest.parser import ParsedFile, parse_file
-from app.ingest.symbols import EdgeStats, extract_edges, extract_symbols
+from app.ingest.parser import ParsedFile, parse_file, parse_tree
+from app.ingest.symbols import (
+    EdgeStats,
+    extract_edges,
+    extract_symbols,
+    import_roots,
+)
 from app.ingest.tokens import HeuristicTokenCounter
 
 logger = logging.getLogger(__name__)
@@ -156,6 +173,54 @@ async def _store_graph(
 
     n_test = sum(1 for s in symbols if s.is_test)
     return len(symbols), n_test, len(edge_rows), stats
+
+
+async def store_dependencies(
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    repo_dir: Path,
+    sources: list[SourceFile],
+) -> tuple[int, int, int]:
+    """Store declared dependencies and import sites (SPEC §26).
+
+    Returns ``(declared, uses, third_party_packages)``.
+
+    Must run **inside** the clone context: `pyproject.toml` and
+    `requirements*.txt` are not `*.py`, so `filters.py` never selected them and
+    they exist nowhere but the workdir the cleanup is about to delete.
+
+    Re-parses rather than reusing `ParsedFile`, which carries only the
+    *top-level* import statements as text, for the module chunk's header — no
+    line numbers, and nothing from inside a function, where optional
+    dependencies usually live. `extract_edges` re-parses for the same reason;
+    a tree-sitter parse is cheap next to the embedding pass.
+    """
+    roots = import_roots(repo_dir)
+    first_party = first_party_names(repo_dir, roots)
+
+    sites: list[ImportSite] = []
+    for source in sources:
+        tree = parse_tree(source.text)
+        if tree is None or tree.root_node.has_error:
+            continue
+        sites.extend(extract_imports(tree.root_node, source.path, first_party))
+
+    declared = parse_manifests(repo_dir)
+    n_declared = await queries.insert_dependencies(
+        conn,
+        snapshot_id,
+        [(d.name, d.raw, d.source, d.extra) for d in declared],
+    )
+    n_uses = await queries.insert_dependency_uses(
+        conn,
+        snapshot_id,
+        [
+            (s.module, s.dotted, s.kind, s.file_path, s.line, s.is_test)
+            for s in sites
+        ],
+    )
+    third_party = {s.module for s in sites if s.kind == KIND_THIRD_PARTY}
+    return n_declared, n_uses, len(third_party)
 
 
 async def store_history(
@@ -296,6 +361,7 @@ async def _run(
         # which is exactly what was untrue before the split.
         await queries.clear_repo_graph(conn, snapshot_id)
         await queries.clear_repo_history(conn, snapshot_id)
+        await queries.clear_repo_dependencies(conn, snapshot_id)
         await queries.clear_repo_content(conn, snapshot_id)
         file_rows = [(f.path, f.text, f.n_lines) for f in selection.files]
         await queries.insert_files(conn, snapshot_id, file_rows)
@@ -372,6 +438,27 @@ async def _run(
                 say(f"history {n_commits} commits, {n_touches} file touches")
         except Exception as exc:  # noqa: BLE001 - enrichment must not fail ingest
             logger.warning("history pass failed for %s: %s", snapshot_id, exc)
+
+        # --- dependencies --------------------------------------------------
+        # Inside the clone context, for a harder reason than history: the
+        # manifests are not `*.py`, so `filters.py` never selected them and
+        # they exist nowhere but this workdir. After the graph and guarded the
+        # same way — a repo whose pyproject.toml does not parse still has a
+        # perfectly good corpus, and must not lose it over that.
+        #
+        # Outside `if build_graph`, like history: what a repo imports is a
+        # property of the repo, not of the chunking strategy.
+        try:
+            n_declared, n_uses, n_third = await store_dependencies(
+                conn, snapshot_id, info.path, selection.files
+            )
+            if n_uses:
+                say(
+                    f"dependencies {n_third} third-party package(s), "
+                    f"{n_declared} declared, {n_uses} import sites"
+                )
+        except Exception as exc:  # noqa: BLE001 - enrichment must not fail ingest
+            logger.warning("dependency pass failed for %s: %s", snapshot_id, exc)
 
         # --- embedding -----------------------------------------------------
         # The clone is no longer needed from here on, but staying inside the

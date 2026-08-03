@@ -61,10 +61,37 @@ line. To cite several places, write several bracketed ranges:
   A clear "not found" is more useful than a plausible guess.
 """
 
+UNCERTAINTY = """\
+Confidence — say when you are not sure, in a form the interface can show:
+
+    [uncertain: one short clause saying what is unclear]
+
+Put it on its own line at the very end of the answer, and use it at most once.
+
+Emit it ONLY when one of these is true:
+
+- the tools returned nothing relevant to the question, and the answer rests on
+  what the code implies rather than on lines you read;
+- you are describing behaviour that depends on configuration, a caller, or a
+  runtime value that is not visible in this repository;
+- you ran out of tool calls before you could confirm the part that matters.
+
+Do NOT emit it otherwise. An answer built from cited lines you actually read is
+a confident answer, and marking it uncertain teaches the reader to ignore the
+marker — which costs you the one case where it mattered. Hedging every answer is
+the same as hedging none.
+
+CORRECT:   ...the retry count comes from the caller.
+           [uncertain: the default is set by whoever constructs Transport, which
+           this repository never does]
+INCORRECT: [uncertain: I am an AI and could be wrong]
+"""
+
 FORCED_ANSWER = (
     f"Tool limit reached ({AGENT_TOOL_CAP} calls). Answer now from what you "
     "have gathered. If the evidence is incomplete, say what you found, cite "
-    "it, and state plainly what remains unknown."
+    "it, and state plainly what remains unknown — this is exactly the case the "
+    "[uncertain: ...] marker exists for."
 )
 
 
@@ -188,5 +215,6 @@ def system_prompt(name: str, n_files: int, top_dirs: list[str]) -> str:
             ROLE.format(name=name, n_files=n_files, top_dirs=dirs),
             STRATEGY,
             CITATIONS,
+            UNCERTAINTY,
         ]
     )

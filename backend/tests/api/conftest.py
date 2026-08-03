@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import uuid
 from collections.abc import AsyncIterator, Callable, Iterator
 from typing import Any
@@ -260,6 +261,93 @@ class FakeConn:
         self.history: dict[uuid.UUID, list[dict[str, Any]]] = {
             REPO_ID: [dict(r) for r in HISTORY_ROWS]
         }
+        # §26. Keyed by snapshot and absent for INDEXING_REPO_ID, exactly like
+        # history above, so "was the dependency pass run at all" has a repo to
+        # be false for. The seed encodes every case the endpoint reconciles:
+        # a declared package used twice, a test-only package, a stdlib import
+        # that must not appear as a dependency, and `dotenv`/`python-dotenv` —
+        # the alias pair that otherwise reports one package as both undeclared
+        # and unused.
+        self.dependency_uses: dict[uuid.UUID, list[dict[str, Any]]] = {
+            REPO_ID: [
+                {
+                    "module": "werkzeug",
+                    "dotted": "werkzeug.security",
+                    "kind": "third_party",
+                    "file_path": FILE_PATH,
+                    "start_line": 3,
+                    "is_test": False,
+                },
+                {
+                    "module": "werkzeug",
+                    "dotted": "werkzeug",
+                    "kind": "third_party",
+                    "file_path": FILE_PATH,
+                    "start_line": 4,
+                    "is_test": False,
+                },
+                {
+                    "module": "dotenv",
+                    "dotted": "dotenv",
+                    "kind": "third_party",
+                    "file_path": FILE_PATH,
+                    "start_line": 5,
+                    "is_test": False,
+                },
+                {
+                    "module": "requests",
+                    "dotted": "requests",
+                    "kind": "third_party",
+                    "file_path": FILE_PATH,
+                    "start_line": 6,
+                    "is_test": False,
+                },
+                {
+                    "module": "pytest",
+                    "dotted": "pytest",
+                    "kind": "third_party",
+                    "file_path": TEST_FILE_PATH,
+                    "start_line": 1,
+                    "is_test": True,
+                },
+                {
+                    "module": "os",
+                    "dotted": "os",
+                    "kind": "stdlib",
+                    "file_path": FILE_PATH,
+                    "start_line": 1,
+                    "is_test": False,
+                },
+            ]
+        }
+        self.declared_deps: dict[uuid.UUID, list[dict[str, Any]]] = {
+            REPO_ID: [
+                {
+                    "name": "werkzeug",
+                    "requirement": "werkzeug>=3.0",
+                    "source": "pyproject.toml",
+                    "extra": None,
+                },
+                {
+                    "name": "python-dotenv",
+                    "requirement": "python-dotenv",
+                    "source": "pyproject.toml",
+                    "extra": None,
+                },
+                {
+                    "name": "pytest",
+                    "requirement": "pytest>=8",
+                    "source": "pyproject.toml",
+                    "extra": "dev",
+                },
+                {
+                    "name": "abandoned",
+                    "requirement": "abandoned==1.0",
+                    "source": "pyproject.toml",
+                    "extra": None,
+                },
+            ]
+        }
         # §21 permalinks, keyed by share id exactly as the table is.
         self.shares: dict[uuid.UUID, dict[str, Any]] = {
             SHARED_ID: {
@@ -369,6 +457,19 @@ class FakeConn:
                 "commit_sha": repo["head_sha"],
                 "strategy": repo["strategy"],
             }
+        # §24.2 symbol resolution.
+        if "FROM symbols" in sql and "ORDER BY length(qualname), file_path" in sql:
+            if str(args[1]) not in {"verify_token", "pkg.auth.verify_token"}:
+                return None
+            return {
+                "id": 1,
+                "name": "verify_token",
+                "qualname": "pkg.auth.verify_token",
+                "kind": "function",
+                "file_path": FILE_PATH,
+                "start_line": 1,
+                "end_line": 2,
+            }
         # §20.4: "was history indexed at all", asked only when the list is empty.
         if "EXISTS (SELECT 1 FROM commits" in sql:
             return {"present": bool(self.history.get(args[0]))}
@@ -464,6 +565,125 @@ class FakeConn:
         return None
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
+        # --- §26 dependencies ------------------------------------------
+        # Mirrors the real SQL's semantics, not its text: third-party only,
+        # `include_tests` filters uses, and `unused` always counts a test
+        # import as usage.
+        if "FROM dependency_uses" in sql or "FROM dependencies d" in sql:
+            uses = self.dependency_uses.get(args[0], [])
+            declared = self.declared_deps.get(args[0], [])
+            third = [u for u in uses if u["kind"] == "third_party"]
+
+            def _norm(name: str) -> str:
+                return re.sub(r"[-_.]+", "-", name.strip()).lower()
+
+            if "SELECT DISTINCT u.module" in sql:  # undeclared_dependencies
+                names = {d["name"] for d in declared}
+                keep = third if args[1] is True or "NOT u.is_test" not in sql else [
+                    u for u in third if not u["is_test"]
+                ]
+                return [
+                    {"module": m}
+                    for m in sorted({u["module"] for u in keep})
+                    if _norm(m) not in names
+                ]
+            if "FROM dependencies d" in sql:  # unused_dependencies
+                used = {_norm(u["module"]) for u in third}  # tests always count
+                out = []
+                for name in sorted({d["name"] for d in declared} - used):
+                    rows = [d for d in declared if d["name"] == name]
+                    out.append(
+                        {
+                            "name": name,
+                            "requirement": min(r["requirement"] for r in rows),
+                            "sources": sorted({r["source"] for r in rows}),
+                            "extras": sorted(
+                                {r["extra"] for r in rows if r["extra"] is not None}
+                            ),
+                        }
+                    )
+                return out
+            if "SELECT dotted, file_path" in sql:  # dependency_uses (one module)
+                rows = [u for u in uses if u["module"] == args[1]]
+                if "NOT is_test" in sql:
+                    rows = [u for u in rows if not u["is_test"]]
+                return [
+                    {
+                        "dotted": u["dotted"],
+                        "file_path": u["file_path"],
+                        "start_line": u["start_line"],
+                        "is_test": u["is_test"],
+                    }
+                    for u in sorted(rows, key=lambda r: (r["file_path"], r["start_line"]))
+                ]
+            # dependency_summary
+            rows = third if "NOT u.is_test" not in sql else [
+                u for u in third if not u["is_test"]
+            ]
+            by_name = {d["name"]: d for d in declared}
+            grouped: dict[str, dict[str, Any]] = {}
+            for u in rows:
+                g = grouped.setdefault(
+                    u["module"], {"module": u["module"], "n_uses": 0, "files": set()}
+                )
+                g["n_uses"] += 1
+                g["files"].add(u["file_path"])
+            out = []
+            for g in grouped.values():
+                d = by_name.get(_norm(g["module"]))
+                out.append(
+                    {
+                        "module": g["module"],
+                        "n_uses": g["n_uses"],
+                        "n_files": len(g["files"]),
+                        "declared": d is not None,
+                        "requirement": d["requirement"] if d else None,
+                        "sources": [d["source"]] if d else [],
+                        "extras": [d["extra"]] if d and d["extra"] else [],
+                    }
+                )
+            return sorted(out, key=lambda r: (-r["n_uses"], r["module"]))
+        if "GROUP BY name" in sql and "FROM dependencies" in sql:
+            # declared_by_name: grouped rows keyed by normalised name.
+            out = []
+            for name in sorted({d["name"] for d in self.declared_deps.get(args[0], [])}):
+                rows = [d for d in self.declared_deps[args[0]] if d["name"] == name]
+                out.append({
+                    "name": name,
+                    "requirement": min(r["requirement"] for r in rows),
+                    "sources": sorted({r["source"] for r in rows}),
+                    "extras": sorted({r["extra"] for r in rows if r["extra"]}),
+                })
+            return out
+        # --- §24 trace ------------------------------------------------------
+        if "WITH RECURSIVE walk AS" in sql:
+            # Two hops out of `verify_token`, one of them at depth 2, so the
+            # depth ordering and the `via` chain are both observable.
+            rows = [
+                {
+                    "depth": 1,
+                    "kind": "calls",
+                    "name": "Signer",
+                    "qualname": "pkg.auth.Signer",
+                    "file_path": FILE_PATH,
+                    "start_line": 5,
+                    "end_line": 9,
+                    "via": "pkg.auth.verify_token",
+                },
+                {
+                    "depth": 2,
+                    "kind": "calls",
+                    "name": "b64decode",
+                    "qualname": "pkg.util.b64decode",
+                    "file_path": "pkg/util.py",
+                    "start_line": 3,
+                    "end_line": 6,
+                    "via": "pkg.auth.Signer",
+                },
+            ]
+            return [r for r in rows if r["depth"] <= args[2]][: args[3]]
+        if "qualname LIKE $2 || '.%'" in sql:
+            return []
         # --- §23 conversations --------------------------------------------
         if "FROM conversation_turns WHERE conversation_id" in sql:
             entry = self.conversations.get(args[0])
@@ -591,7 +811,10 @@ class FakeConn:
             ]
         return []
 
-    async def fetchval(self, sql: str, *args: Any) -> int:
+    async def fetchval(self, sql: str, *args: Any) -> Any:
+        # §26.3: "did the dependency pass run for this snapshot at all".
+        if "EXISTS (SELECT 1 FROM dependency_uses" in sql:
+            return bool(self.dependency_uses.get(args[0]))
         return 0
 
     async def execute(self, sql: str, *args: Any) -> str:

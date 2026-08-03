@@ -230,6 +230,74 @@ export function getArchitecture(
   );
 }
 
+/* ---------------------------------------------------------------------------
+ * §26 dependencies. What the repo stands on, and what it declares.
+ * ------------------------------------------------------------------------- */
+
+export interface DependencyOut {
+  module: string;
+  n_uses: number;
+  n_files: number;
+  /** Matched against the manifests by normalised name — see `declared` in SPEC §26.2. */
+  declared: boolean;
+  requirement: string | null;
+  sources: string[];
+  extras: string[];
+}
+
+export interface UnusedDependency {
+  name: string;
+  requirement: string;
+  sources: string[];
+  extras: string[];
+}
+
+export interface DependenciesOut {
+  /** False for a snapshot ingested before the pass existed (§26.3). */
+  indexed: boolean;
+  include_tests: boolean;
+  packages: DependencyOut[];
+  undeclared: string[];
+  unused: UnusedDependency[];
+  truncated: boolean;
+}
+
+export interface DependencyUse {
+  dotted: string;
+  file_path: string;
+  start_line: number;
+  is_test: boolean;
+}
+
+export interface DependencyUsesOut {
+  module: string;
+  include_tests: boolean;
+  uses: DependencyUse[];
+  truncated: boolean;
+}
+
+/** `GET /repos/{id}/dependencies` (SPEC §26.2). */
+export function getDependencies(
+  repoId: string,
+  includeTests = false,
+): Promise<DependenciesOut> {
+  return request<DependenciesOut>(
+    `/repos/${repoId}/dependencies?include_tests=${includeTests}`,
+  );
+}
+
+/** `GET /repos/{id}/dependencies/{module}` — every import site for one package. */
+export function getDependencyUses(
+  repoId: string,
+  module: string,
+  includeTests = false,
+): Promise<DependencyUsesOut> {
+  return request<DependencyUsesOut>(
+    `/repos/${repoId}/dependencies/${encodeURIComponent(module)}` +
+      `?include_tests=${includeTests}`,
+  );
+}
+
 export function getCoverage(
   repoId: string,
   path: string,
@@ -264,6 +332,43 @@ export interface ChecklistOut {
 
 export function getChecklist(repoId: string): Promise<ChecklistOut> {
   return request<ChecklistOut>(`/repos/${repoId}/checklist`);
+}
+
+/**
+ * `GET /repos/{id}/trace` (SPEC §24.2) — a bounded transitive walk.
+ *
+ * Pointers, never code: `expand_context` returns bodies for a model to read,
+ * this returns a path for a person to follow. `via` plus `depth` reconstructs
+ * the chain without the server sending one per node.
+ */
+export interface TraceNode {
+  depth: number;
+  kind: string | null;
+  name: string;
+  qualname: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  via: string | null;
+}
+
+export interface TraceOut {
+  root: SymbolRef;
+  direction: "in" | "out";
+  max_depth: number;
+  nodes: TraceNode[];
+  truncated: boolean;
+}
+
+export function getTrace(
+  repoId: string,
+  symbol: string,
+  opts: { direction?: "in" | "out"; depth?: number } = {},
+): Promise<TraceOut> {
+  const params = new URLSearchParams({ symbol });
+  if (opts.direction) params.set("direction", opts.direction);
+  if (opts.depth) params.set("depth", String(opts.depth));
+  return request<TraceOut>(`/repos/${repoId}/trace?${params}`);
 }
 
 export interface CommitOut {

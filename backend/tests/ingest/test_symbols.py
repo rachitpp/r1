@@ -17,10 +17,10 @@ from app.ingest.symbols import (
     KIND_CALLS,
     KIND_EXTENDS,
     KIND_IMPORTS,
-    _import_roots,
     _SpanIndex,
     extract_edges,
     extract_symbols,
+    import_roots,
 )
 
 # A tiny package with one cross-file import, one cross-file call, and one
@@ -307,7 +307,7 @@ def test_edges_written_counts_both_validated_and_module_imports(make_repo) -> No
 
 # The package lives under src/, so nothing on Jedi's default path contains it.
 # `tests/` reaches the implementation only through `import widget.*`, which is
-# exactly the edge that vanished before _import_roots existed.
+# exactly the edge that vanished before import_roots existed.
 SRC_LAYOUT_REPO: dict[str, str | bytes] = {
     "src/widget/__init__.py": "",
     "src/widget/core.py": (
@@ -327,13 +327,13 @@ SRC_LAYOUT_REPO: dict[str, str | bytes] = {
 
 def test_import_roots_finds_src_layout(make_repo) -> None:
     repo = make_repo(SRC_LAYOUT_REPO)
-    assert [Path(r).name for r in _import_roots(repo)] == ["src"]
+    assert [Path(r).name for r in import_roots(repo)] == ["src"]
 
 
 def test_import_roots_empty_for_flat_layout(make_repo) -> None:
     """A package at the root needs no extra path entry — and must not get one."""
     repo = make_repo(CROSS_FILE_REPO)
-    assert _import_roots(repo) == []
+    assert import_roots(repo) == []
 
 
 def test_import_roots_skips_ignored_directories(make_repo) -> None:
@@ -343,7 +343,7 @@ def test_import_roots_skips_ignored_directories(make_repo) -> None:
             "node_modules/vendored/__init__.py": "",
         }
     )
-    assert [Path(r).name for r in _import_roots(repo)] == ["src"]
+    assert [Path(r).name for r in import_roots(repo)] == ["src"]
 
 
 def test_test_to_src_edge_resolves_under_src_layout(make_repo) -> None:

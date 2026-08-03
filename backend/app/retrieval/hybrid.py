@@ -136,27 +136,32 @@ async def _inject_symbol_ids(
 ) -> list[int]:
     """Chunk ids whose symbol matches a query identifier (SPEC §5.2).
 
-    Match rule (Reconciliation 1): ``symbol = name`` OR ``symbol LIKE '%.'||name``
-    against ``chunks.symbol`` (the symbols table does not exist until Phase 3).
+    Match rule (Reconciliation 1): ``symbol = name`` OR ``symbol`` ends with
+    ``'.' + name``, against ``chunks.symbol`` (the symbols table does not exist
+    until Phase 3). The suffix test was a ``LIKE '%.'||name`` until 2026-08-02,
+    when `_` — a LIKE wildcard, and the most common character in a Python
+    identifier — was found matching `json.dumps` for a query of `json_dumps`.
     Test chunks are excluded unless ``include_tests`` (SPEC §5.4) — otherwise a
     query naming a symbol would inject its test alongside the implementation.
     """
     names = extract_identifiers(query)
     if not names:
         return []
-    patterns = [f"%.{name}" for name in names]
+    suffixes = [f".{name}" for name in names]
     rows = await conn.fetch(
         f"""
         SELECT id FROM chunks
         WHERE snapshot_id = $1
-          AND (symbol = ANY($2::text[]) OR symbol LIKE ANY($3::text[]))
+          AND (symbol = ANY($2::text[])
+               OR EXISTS (SELECT 1 FROM unnest($3::text[]) AS sfx
+                           WHERE right(symbol, length(sfx)) = sfx))
           {_test_filter(include_tests)}
         ORDER BY id
         LIMIT $4
         """,
         snapshot_id,
         names,
-        patterns,
+        suffixes,
         INJECT_LIMIT,
     )
     return [int(r["id"]) for r in rows]

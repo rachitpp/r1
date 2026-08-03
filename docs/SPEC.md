@@ -819,6 +819,8 @@ Benchmark repo pinned by name + commit SHA. 20 questions:
 | `CONVERSATION_CONTEXT_TURNS` | 6 | §23.2 |
 | `CONVERSATION_ANSWER_CHARS` | 1_200 | §23.2 |
 | `CONVERSATION_PAGE_MAX` | 50 | §23.4 |
+| `TRACE_MAX_DEPTH` | 4 | §24.1 |
+| `TRACE_MAX_NODES` | 200 | §24.1 |
 | `ZOMBIE_AFTER_S` | 1_200 | §10 |
 | `PROGRESS_EVERY_N` | 25 | §10 |
 | `USER_DAILY_TOKEN_BUDGET` | 1_000_000 (env-overridable) | §17.6 |
@@ -2216,3 +2218,262 @@ returning stored citations and no tool timeline, the three-predicate lookup
 (including a conversation refused through a *different snapshot*), anonymous
 401, cross-tenant 404, delete, and chat both opening a conversation when none is
 given and appending a turn when one is.
+
+---
+
+## §24 Call-hierarchy trace
+
+`expand_context` and `find_references` each do **one hop** and return code.
+This walks several and returns a **path**. The difference is the point: *"what
+does this reach, eventually"* is a shape question, and answering it by pulling
+every reached body into a model context would spend the §12 token budget to say
+something a list of pointers says better.
+
+An endpoint, not a seventh tool — §18.1 unchanged. A bounded graph walk is
+exact SQL.
+
+### 24.1 The walk
+
+One recursive CTE over `edges`. `direction=out` follows `from_symbol →
+to_symbol`; `in` reverses it. The two arms differ by two column names, so the
+guard, the caps and the ordering cannot drift apart.
+
+**The cycle guard is not optional.** Call graphs have cycles — mutual
+recursion, a class whose method calls a helper that constructs the class — and
+a recursive CTE without one does not return a large result, it does not return.
+Each branch carries the set of symbols already visited and refuses re-entry,
+which also gives every row a real parent rather than only a depth.
+
+Bounded by `TRACE_MAX_DEPTH` (4) and `TRACE_MAX_NODES` (200). Deeper than
+`EXPAND_MAX_DEPTH` because that bounds how much *code* enters a model context
+while this bounds a list of pointers — the cost per node is a row, not tokens.
+The node cap is the one that matters: FEATURE-IDEAS 2.3 names the failure
+("explosion on hot symbols") and httpx's `_exceptions` has fan-in 80.
+
+**Nearest-first, then truncate.** `DISTINCT ON` keeps each symbol's shallowest
+occurrence — a node reachable at depth 1 and depth 3 is a depth-1 node with a
+longer alternative route — and the result is re-ordered by depth in an outer
+query *before* the `LIMIT`. Without that wrapper `DISTINCT ON`'s mandatory
+`ORDER BY` would leave the cap keeping an arbitrary set by symbol id.
+
+### 24.2 `GET /repos/{id}/trace?symbol=&direction=&depth=`
+
+```
+TraceOut { root, direction, max_depth, nodes: [{depth, kind, name, qualname,
+           file_path, start_line, end_line, via}], truncated }
+```
+
+`via` names the symbol one hop nearer the root. With `depth` it *is* the path,
+and a client rebuilds any chain without the server serialising one per node —
+which on a wide graph is the same data quadratically.
+
+**A class is traced through its methods.** Found by running it and disbelieving
+the result: `httpx._client.Client` reached exactly **one** node, `BaseClient`,
+via `extends`. True about the class symbol, useless as an answer, because a
+class's calls live in its methods and the chunker stores each as its own symbol
+(§2.3). `symbol_seed_ids` seeds the walk with the class plus everything whose
+qualname is prefixed by it — 21 seeds for `Client`, and 78 reached nodes
+instead of 1. Every seed starts with the whole seed set marked visited, or
+sibling methods re-reach each other constantly and the walk does far more work
+for rows the dedup discards.
+
+An unknown symbol is **404** — unlike §18.3's empty-not-404, because here the
+name came from the user rather than from the index, and "no such symbol" is
+information they need rather than an existence oracle over someone else's repo.
+
+### 24.3 Verification
+
+`tests/api/test_trace.py` — root and reachable nodes, `via` carrying the hop,
+nearest-first ordering, the depth bound reaching SQL rather than being filtered
+after, depth refused at both edges, direction validated, unknown symbol 404,
+cross-tenant 404, anonymous 401, and no code body in the response.
+
+Measured on httpx: `Client` out → 78 nodes over 4 depths in ~2.2s; `HTTPError`
+in → 43 nodes in ~0.5s, correctly reconstructing the exception hierarchy.
+
+---
+
+## §25 Confidence signals
+
+The agent may end an answer with **one** marker on its own line:
+
+    [uncertain: one short clause saying what is unclear]
+
+### 25.1 Why a marker and not prose
+
+"Say when you are unsure" invites hedging in words, which cannot be rendered,
+cannot be measured, and drifts into a disclaimer on every answer. A fixed shape
+can be parsed, shown as a callout the reader can weigh, and — most importantly —
+**counted**, so over-hedging is visible rather than a feeling.
+
+### 25.2 Calibration is the feature
+
+FEATURE-IDEAS 5.4 names the risk exactly: over-hedging. A marker on every answer
+is worth precisely what a marker on none is worth, so the prompt (`UNCERTAINTY`)
+does three things a bare instruction would not:
+
+* **Names the three cases** that warrant it — tools returned nothing relevant
+  and the answer rests on implication; the behaviour depends on a caller, a
+  config value or a runtime value not visible in the repo; the tool cap ran out
+  before the deciding fact was confirmed.
+* **Forbids the rest explicitly**, and says *why*: an answer built from cited
+  lines is a confident answer, and marking it uncertain teaches the reader to
+  ignore the marker — which costs the one case where it mattered.
+* **Shows a wrong example**, not only a right one. The failure mode is the
+  generic disclaimer (`[uncertain: I am an AI and could be wrong]`), so the
+  prompt names that specific sentence as incorrect.
+
+`FORCED_ANSWER` points at the marker too: running out of tool calls is the
+clearest legitimate use of it.
+
+### 25.3 Parsing
+
+`lib/uncertainty.ts`, on the client, because the answer streams — by the time a
+marker exists the prose has already been delivered, so the server cannot strip
+it. The regex is **anchored to the end of the answer**, which is not fussiness:
+this tool is routinely pointed at its own repository, and an answer *about* §25
+that quotes the syntax would otherwise have its prose silently eaten.
+
+An empty marker (`[uncertain: ]`) is dropped rather than rendered — a callout
+that says nothing reads as a UI bug, not as a caveat.
+
+### 25.4 Where it shows
+
+Three surfaces, because an answer travels: the chat exchange (a dashed callout
+below the prose, styled as a note rather than an error), the §21 permalink page
+(a reader who followed a link deserves the same caveat the asker saw), and the
+6.2 Markdown export (as a `> **Not fully confirmed:**` blockquote — exported raw
+it would read as a stray bracket in someone's PR description).
+
+### 25.5 Verification
+
+`tests/agent/test_uncertainty_prompt.py` — the marker format, both halves of the
+rule, that the prompt *argues* the cost of over-hedging rather than only
+forbidding it, that it carries a wrong example, the one-per-answer cap, and that
+`FORCED_ANSWER` points at it. Assertions normalise whitespace, or they would be
+testing the prompt's line width rather than its instruction.
+
+`lib/uncertainty.test.ts` — extraction and stripping, a confident answer left
+byte-identical, a mid-answer marker ignored, hard-wrapped markers collapsed,
+empty markers dropped, case-insensitivity, and an answer that is only a marker.
+
+---
+
+## §26 Dependencies
+
+What the repo declares it needs, what it actually imports, and where.
+
+`§6` describes what the repository *contains*. This describes what it **stands
+on** — the question `§6.1` deliberately refuses, because an import resolved into
+site-packages is dropped by design: the symbol graph is about this repository,
+not its dependency tree.
+
+### 26.1 Collection
+
+Two halves, gathered by different means and stored in separate tables
+(migration `015`), because either can legitimately be empty:
+
+**Declared** — `pyproject.toml` (`[project].dependencies` and every
+`[project.optional-dependencies]` group) plus `requirements*.txt` at the repo
+root and under `requirements/` or `reqs/`. Names are normalised per PEP 503, so
+`Flask-SQLAlchemy`, `flask_sqlalchemy` and `flask.sqlalchemy` are one package.
+The requirement string as written is kept beside it.
+
+Requirement lines are parsed for the **name only**, with a regex rather than
+`packaging` — the name is the sole field anything here uses, and a PEP 508
+parser is a dependency (CLAUDE.md rule 11). Skipped: comments, flags (`-r`,
+`-e`, `--index-url`), URLs, and local paths.
+
+**Used** — every non-relative `import` in the corpus, recorded as
+`(top-level module, dotted path, file, line, is_test)` and classified:
+
+| kind | rule |
+|---|---|
+| `stdlib` | in `sys.stdlib_module_names`, or in `TYPING_ONLY` |
+| `first_party` | a module the repo can satisfy from its own tree |
+| `third_party` | everything else |
+
+Precedence is stdlib → first-party → third-party. A repo with its own
+`types.py` shadows the standard library for its own imports, but nothing needs
+*installing* for it, which is the only sense this section cares about.
+
+**Imports are read from the AST, not resolved with Jedi.** This is the
+load-bearing decision. Jedi answers "does this name point at a symbol in this
+repo", so a third-party import either resolves into site-packages (dropped) or
+resolves nowhere because the package is not installed (counted as a failure —
+154 of flask's 205 import failures were `from werkzeug …`). Reading the
+statement makes the answer exact and **environment-independent**: `import
+werkzeug` names `werkzeug` whether or not werkzeug is installed.
+
+Relative imports (`from . import x`) are skipped: they name no package.
+`from __future__ import …` parses as its own node type and never reaches the
+extractor, which is the right outcome and is asserted in tests so the silence
+cannot be mistaken for a missing case.
+
+First-party detection has **two** sources, because a depth-1 scan is
+demonstrably insufficient: modules directly under an import root
+(`symbols.import_roots`, so a `src/` layout does not report `flask` as a
+third-party dependency of flask), *and* every package root anywhere in the tree
+— a directory holding `__init__.py` whose parent does not. flask keeps fixture
+applications at `tests/test_apps/blueprintapp/`; without the second rule five of
+them read as undeclared third-party packages.
+
+The pass runs **inside the clone context**, for a harder reason than the symbol
+pass: manifests are not `*.py`, so `filters.py` never selected them and they
+exist nowhere but the workdir. It is guarded like the history pass — a repo
+whose `pyproject.toml` does not parse still has a good corpus and must not lose
+it over that.
+
+### 26.2 API
+
+    GET /repos/{id}/dependencies?include_tests=false
+    GET /repos/{id}/dependencies/{module}?include_tests=false
+
+The first returns three lists, and the disagreements between them are the
+product:
+
+* `packages` — third-party imports, most-used first. stdlib and first-party
+  rows are stored but never returned here; "what does this stand on" is not
+  answered by burying it under `os` and `typing`.
+* `undeclared` — imported, named in no manifest. A fresh clone that fails.
+* `unused` — declared, never imported. Weight nobody is carrying on purpose.
+
+`include_tests` applies to the first two. **`unused` always counts a test
+import as usage**, regardless: reporting `pytest` as an unused dependency
+because tests were filtered out would be a false alarm of the worst kind —
+plausible, and wrong.
+
+`declared` is a **normalised-name match and is honestly approximate**. A
+distribution name and the module it ships need not agree — `PyYAML` ships
+`yaml` — so `declared: false` means "no manifest row under this name", never
+"this package is undeclared".
+
+`MODULE_TO_DISTRIBUTION` covers the mismatches common enough to have bitten
+someone (`dotenv` → `python-dotenv`, `yaml` → `pyyaml`, `PIL` → `pillow`, …).
+Without it flask reports one package **twice and contradictorily** — `dotenv`
+undeclared *and* `python-dotenv` unused. The general fix is `importlib.metadata`
+and is rejected for the reason above: it needs the package installed. A lookup
+table is never complete, and an unlisted mismatch degrades to exactly the
+pre-existing behaviour.
+
+An unknown `{module}` returns an empty list, not 404 — "where is X used" and "X
+is not used" are the same answer, and 404 would make the route an existence
+oracle for package names in someone else's repo (the §18.3 reasoning, one level
+down).
+
+### 26.3 "Not indexed" is not "no dependencies"
+
+`indexed: false` for a snapshot ingested before migration `015`. Nothing is
+backfilled, so those snapshots have no rows, and an empty `packages` would read
+as "this project stands on nothing" — which for any real repo is a confident
+lie. Same distinction §20.4 draws for commit history.
+
+The honest test for "the pass ran" is the presence of *any* use row, not a
+third-party one: a repo that genuinely imports nothing third-party still imports
+the standard library.
+
+### 26.4 Caps
+
+`DEPENDENCY_MAX_PACKAGES` (200) and `DEPENDENCY_MAX_USES` (300), ranked before
+truncation. A package list is short by nature; the use sites for one popular
+package are not.

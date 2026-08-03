@@ -56,6 +56,14 @@ class ConversationNotFoundError(AppError):
         super().__init__(f"no conversation {conversation_id}")
 
 
+class SymbolNotFoundError(AppError):
+    """No symbol in this snapshot matches the requested name (§24.2, 404)."""
+
+    def __init__(self, symbol: object) -> None:
+        self.symbol = symbol
+        super().__init__(f"no symbol named {symbol!r} in this repo")
+
+
 class SharedAnswerNotFoundError(AppError):
     """No permalink for that id (§21.3, 404).
 

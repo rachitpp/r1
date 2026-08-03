@@ -149,7 +149,8 @@ async def get_definition(
           LEFT JOIN chunks c
             ON c.snapshot_id = s.snapshot_id AND c.symbol_id = s.id AND c.part = 1
          WHERE s.snapshot_id = $1
-           AND (s.name = $2 OR s.qualname = $2 OR s.qualname LIKE '%.' || $2)
+           AND (s.name = $2 OR s.qualname = $2
+                OR right(s.qualname, length($2) + 1) = '.' || $2)
            {"" if include_tests else "AND NOT s.is_test"}
          ORDER BY length(s.qualname), s.qualname
          LIMIT $3
@@ -213,7 +214,8 @@ async def find_references(
           JOIN symbols t ON t.id = e.to_symbol
           JOIN symbols f ON f.id = e.from_symbol
          WHERE e.snapshot_id = $1
-           AND (t.name = $2 OR t.qualname = $2 OR t.qualname LIKE '%.' || $2)
+           AND (t.name = $2 OR t.qualname = $2
+                OR right(t.qualname, length($2) + 1) = '.' || $2)
            {"" if include_tests else "AND NOT f.is_test"}
            {"AND e.kind = $3" if kind else ""}
          ORDER BY f.file_path, line
@@ -263,7 +265,8 @@ async def expand_context(
         f"""
         SELECT id, qualname FROM symbols
          WHERE snapshot_id = $1
-           AND (name = $2 OR qualname = $2 OR qualname LIKE '%.' || $2)
+           AND (name = $2 OR qualname = $2
+                OR right(qualname, length($2) + 1) = '.' || $2)
            {"" if include_tests else "AND NOT is_test"}
          ORDER BY length(qualname)
          LIMIT 1
@@ -381,7 +384,8 @@ async def list_directory(
     rows = await conn.fetch(
         """
         SELECT path, n_lines FROM files
-         WHERE snapshot_id = $1 AND ($2 = '' OR path LIKE $2 || '/%' OR path = $2)
+         WHERE snapshot_id = $1
+           AND ($2 = '' OR left(path, length($2) + 1) = $2 || '/' OR path = $2)
          ORDER BY path
         """,
         snapshot_id,

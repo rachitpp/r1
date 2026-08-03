@@ -3341,3 +3341,138 @@ here.
 **Not built: naming or summarising a conversation.** The title is the first
 question, trimmed. Generating one costs a model call to produce something worse
 than what the user typed.
+
+## 2026-08-02 — 2.3 built, and a class that reached exactly one thing
+
+FEATURE-IDEAS 2.3 as SPEC §24. A recursive CTE over `edges`, returning a path
+rather than code — which is the distinction that makes it worth having beside
+`expand_context`, and the reason it is an endpoint rather than a tool.
+
+**The cycle guard is the whole difference between working and hanging.** Call
+graphs have cycles. A recursive CTE without a visited set does not return a big
+result; it does not return. Carrying the set per branch also gives every row a
+real parent, so `via` + `depth` reconstructs any chain without the server
+sending one per node.
+
+**A subtle ordering bug, caught by reading my own docstring.** The first version
+used `DISTINCT ON (symbol_id) … ORDER BY symbol_id, depth` and then `LIMIT`.
+`DISTINCT ON` dictates its own `ORDER BY`, so the cap was keeping an arbitrary
+200 by symbol id while the docstring claimed it kept the nearest hops. Fixed
+with an outer query that re-orders by depth before truncating. Worth recording
+because the query *worked* — it returned plausible nodes — and only the stated
+intent revealed that it returned the wrong ones.
+
+**Then the one real output found.** `httpx._client.Client` traced outward to
+exactly **one** node: `BaseClient`, via `extends`. Correct about the class
+symbol and useless as an answer to "what does Client reach", because a class's
+calls live in its methods and §2.3 stores each method as its own symbol. Seeding
+the walk with the class's members took it from 1 node to 78 across four depths.
+
+That is the third time today the same shape of defect has appeared — §20's
+coverage strip, 6.5's example-app surface, and now this. All three were
+*plausible* answers that passed structural tests, and all three were found by
+running the thing against a real repo and disbelieving the result. The pattern
+is specific enough to name: **when a feature reads the symbol graph, the test
+that matters is whether the answer is the one a human wanted, and no assertion
+about shape can check that.**
+
+Measured: `Client` out → 78 nodes / 4 depths / ~2.2s; `HTTPError` in → 43 nodes
+/ ~0.5s, reconstructing the exception hierarchy exactly.
+
+## 2026-08-02 — 5.4: a marker, not a hedge
+
+FEATURE-IDEAS 5.4 as SPEC §25. The catalogue frames it as "let the agent say I'm
+not certain", with over-hedging listed as a risk. Building it, the risk turned
+out to *be* the feature — the instruction is trivial and the calibration is all
+of the work.
+
+**Structured, not prose.** "Say when you are unsure" produces hedging in words:
+unrenderable, unmeasurable, and prone to becoming a disclaimer on every answer.
+A fixed `[uncertain: …]` marker can be shown as a callout, and can be *counted*
+— so if this does start appearing on everything, that is observable rather than
+a feeling somebody has.
+
+**The prompt argues rather than forbids.** It names three warranting cases,
+forbids the rest, and says why: an answer built from cited lines is a confident
+answer, and marking it uncertain teaches the reader to ignore the marker, which
+costs the one case where it mattered. It also names the specific failure —
+`[uncertain: I am an AI and could be wrong]` — as INCORRECT, because that is the
+sentence a model reaches for when told to express uncertainty.
+
+**Parsed on the client, anchored to the end.** The answer streams, so by the
+time a marker exists the prose is already delivered and the server cannot strip
+it. The anchor is not fussiness: this tool is routinely pointed at its own
+repository, and an answer *explaining* §25 would otherwise have its prose eaten
+by its own example. There is a test for exactly that.
+
+**Three surfaces, because an answer travels.** Chat, the §21 permalink, and the
+6.2 Markdown export. Missing any one of them leaves the marker rendering as a
+stray bracket somewhere — in the export's case, in someone's PR description.
+
+**Not built: keying it to citation strength.** The catalogue suggests wiring
+this to 5.1's grounding pass. That would make the signal derived rather than
+declared, and it is a better idea — but it belongs with 5.1, and building half
+of it here would mean a marker with two sources and no clear owner.
+
+## 2026-08-02 — 2.5 dependencies: read the imports, do not resolve them
+
+FEATURE-IDEAS 2.5 built (SPEC §26, migration `015`). The sketch said "keep
+(don't drop) external import edges tagged as external" — i.e. capture what
+`§6.1` discards. **That is not what shipped, and the difference is the whole
+design.**
+
+`§6.1` resolves with Jedi, so a third-party import has two fates: it resolves
+into site-packages and is dropped, or it resolves *nowhere* because the package
+is not installed and is counted as a failure. Building the feature on those
+edges would inherit that: the answer to "what does this repo depend on" would
+have depended on what happened to be installed in the ingest environment. The
+same flaw was diagnosed here this morning, where 154 of flask's 205 import
+failures were `from werkzeug …`.
+
+So imports are read **from the tree-sitter AST instead**. `import werkzeug`
+names `werkzeug` whether or not werkzeug is installed, on any machine, forever.
+This also makes the earlier open question moot rather than answered: there is no
+longer a reason to recategorise unresolvable third-party imports in `§6.1`,
+because nothing depends on that number.
+
+**Two false-positive classes, both found by running it on real repos rather
+than by reasoning about it.**
+
+1. `_typeshed` — imported 8 times in flask under `if TYPE_CHECKING:`, and not
+   installable at all: it exists only inside type checkers. Reported as an
+   undeclared dependency, it sends a reader looking for a package that is not on
+   PyPI. Fixed with a `TYPING_ONLY` set, deliberately narrow — the broader rule
+   ("skip every import under `TYPE_CHECKING`") is wrong, because
+   `typing_extensions` is imported exactly that way and *is* a real dependency.
+
+2. `blueprintapp`, `flaskr`, `cliapp` and two more — real packages living at
+   `tests/test_apps/…`, imported by the suite after a `sys.path` insert. A
+   depth-1 scan of the import roots does not see them, so five in-repo packages
+   read as undeclared third-party ones. First-party detection now also walks for
+   package roots — a directory with `__init__.py` whose parent has none — which
+   is precisely the definition of an importable top-level package.
+
+**The alias table, and why it is not the "right" solution.** flask declares
+`python-dotenv` and imports `dotenv`, so the same package appeared in
+*undeclared* and in *unused* — one dependency producing two contradictory
+findings, which is worse than not reporting it. `MODULE_TO_DISTRIBUTION` fixes
+the common cases. The general solution is `importlib.metadata`'s
+`top_level.txt`, and it is rejected because it requires the package to be
+installed — the exact environment dependence this feature exists to avoid. A
+lookup table is never complete; an unlisted mismatch degrades to the previous
+behaviour, which is why `declared: false` is documented as "no manifest row
+under this name" rather than "undeclared".
+
+Reconciliation happens in Python, in the route, rather than in the three SQL
+joins: the table lives in Python, and pushing it into SQL would put one lookup
+in two languages. It costs one extra cheap read.
+
+**`unused` ignores `include_tests` on purpose.** A package imported only by the
+test suite is *used*. Filtering tests out of that list too would report every
+test dependency as dead weight — plausible, and wrong. It is the one place the
+flag deliberately does not apply, and there is a test for it.
+
+**Not an agent tool**, following the 2.1 precedent: this is exact SQL over
+stored rows, so spending from the 8-call budget on it would buy nothing and cost
+reproducibility. `GET /repos/{id}/dependencies` and `/{module}` instead, with a
+panel on `/repos/[id]`.

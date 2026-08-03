@@ -14,6 +14,7 @@
 import type { ChatExchange } from "@/lib/chat-types";
 import { type Citation, citationKey } from "@/lib/citations";
 import { githubBlobUrl } from "@/lib/format";
+import { parseUncertainty } from "@/lib/uncertainty";
 
 export interface TranscriptMeta {
   /** `owner/name`, already stripped of any strategy suffix. */
@@ -72,7 +73,12 @@ export function toMarkdown(
       lines.push("> _Stopped early; the answer below is partial._", "");
     }
     if (exchange.answer.trim()) {
-      lines.push(exchange.answer.trim(), "");
+      // §25's marker is a UI contract, not prose. Exported raw it reads as a
+      // stray bracket in someone's PR description; as a blockquote it says the
+      // same thing in a form Markdown already has.
+      const { body, uncertainty } = parseUncertainty(exchange.answer);
+      if (body.trim()) lines.push(body.trim(), "");
+      if (uncertainty) lines.push(`> **Not fully confirmed:** ${uncertainty}`, "");
     }
 
     if (exchange.citations.length > 0) {

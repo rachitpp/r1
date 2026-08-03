@@ -36,6 +36,10 @@ from app.api.schemas import (
     ConversationList,
     ConversationOut,
     CoverageOut,
+    DependenciesOut,
+    DependencyOut,
+    DependencyUse,
+    DependencyUsesOut,
     FileOut,
     HistoryOut,
     ModuleEdge,
@@ -49,6 +53,10 @@ from app.api.schemas import (
     ShareCreated,
     SharedAnswerOut,
     ShareRequest,
+    SymbolRef,
+    TraceNode,
+    TraceOut,
+    UnusedDependency,
 )
 from app.checklist import build_checklist
 from app.config import (
@@ -57,9 +65,13 @@ from app.config import (
     CONVERSATION_CONTEXT_TURNS,
     CONVERSATION_PAGE_MAX,
     COVERAGE_MAX_LINKS,
+    DEPENDENCY_MAX_PACKAGES,
+    DEPENDENCY_MAX_USES,
     FILE_RANGE_MAX_LINES,
     HISTORY_PAGE_MAX,
     OVERVIEW_MAX_API_SYMBOLS,
+    TRACE_MAX_DEPTH,
+    TRACE_MAX_NODES,
     get_settings,
 )
 from app.db import queries
@@ -72,8 +84,10 @@ from app.exceptions import (
     RepoNotReadyError,
     ServiceBusyError,
     SharedAnswerNotFoundError,
+    SymbolNotFoundError,
     UnauthorizedError,
 )
+from app.ingest.dependencies import distribution_for
 from app.ingest.urls import normalize_github_url
 
 logger = logging.getLogger(__name__)
@@ -473,6 +487,134 @@ async def get_repo_overview(
     return OverviewOut.from_row(row)
 
 
+@router.get("/repos/{snapshot_id}/dependencies", response_model=DependenciesOut)
+async def get_repo_dependencies(
+    snapshot_id: UUID,
+    conn: Conn,
+    user: CurrentUser,
+    include_tests: bool = False,
+) -> DependenciesOut:
+    """What this repo stands on, and what it declares (§26.2).
+
+    Three lists rather than one, because the disagreements are the useful part:
+    ``packages`` is what the code imports, ``undeclared`` is what it imports
+    without asking for, and ``unused`` is what it asks for without importing.
+
+    ``include_tests`` applies to the first two only. `unused` always counts a
+    test-suite import as usage — reporting `pytest` as an unused dependency
+    because tests were filtered out would be a false alarm of the worst kind:
+    plausible, and wrong.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    if not await queries.has_dependencies(conn, snapshot_id):
+        # §26.3: ingested before the dependency pass existed. Say so rather
+        # than let an empty list read as "this project has no dependencies".
+        return DependenciesOut(
+            indexed=False,
+            include_tests=include_tests,
+            packages=[],
+            undeclared=[],
+            unused=[],
+            truncated=False,
+        )
+
+    rows = await queries.dependency_summary(
+        conn, snapshot_id, include_tests=include_tests, limit=DEPENDENCY_MAX_PACKAGES
+    )
+    undeclared = await queries.undeclared_dependencies(
+        conn, snapshot_id, include_tests=include_tests, limit=DEPENDENCY_MAX_PACKAGES
+    )
+    unused = await queries.unused_dependencies(
+        conn, snapshot_id, limit=DEPENDENCY_MAX_PACKAGES
+    )
+
+    # Alias reconciliation (§26.2). SQL matched on the name as written, which
+    # reports `python-dotenv` as unused *and* `dotenv` as undeclared — one
+    # package, two contradictory findings. Resolving it here keeps the lookup
+    # table in one language.
+    declared = await queries.declared_by_name(conn, snapshot_id)
+    used_distributions = {
+        distribution_for(str(r["module"])) for r in rows
+    } | {distribution_for(str(r["module"])) for r in undeclared}
+
+    packages = []
+    for row in rows:
+        package = DependencyOut.from_row(row)
+        if not package.declared:
+            match = declared.get(distribution_for(package.module))
+            if match is not None:
+                # Carry the manifest across too: "declared" beside an empty
+                # requirement reads as a bug in the panel.
+                package.declared = True
+                package.requirement = str(match["requirement"])
+                package.sources = list(match["sources"] or [])
+                package.extras = list(match["extras"] or [])
+        packages.append(package)
+
+    return DependenciesOut(
+        indexed=True,
+        include_tests=include_tests,
+        packages=packages,
+        undeclared=[
+            str(r["module"])
+            for r in undeclared
+            if distribution_for(str(r["module"])) not in declared
+        ],
+        unused=[
+            UnusedDependency(
+                name=str(r["name"]),
+                requirement=str(r["requirement"]),
+                sources=list(r["sources"] or []),
+                extras=list(r["extras"] or []),
+            )
+            for r in unused
+            if str(r["name"]) not in used_distributions
+        ],
+        truncated=len(rows) >= DEPENDENCY_MAX_PACKAGES,
+    )
+
+
+@router.get(
+    "/repos/{snapshot_id}/dependencies/{module}", response_model=DependencyUsesOut
+)
+async def get_repo_dependency_uses(
+    snapshot_id: UUID,
+    module: str,
+    conn: Conn,
+    user: CurrentUser,
+    include_tests: bool = False,
+) -> DependencyUsesOut:
+    """Every import site for one package (§26.2).
+
+    An unknown module returns an empty list rather than a 404, for the §18.3
+    reason one level down: "where is X used" and "X is not used" are the same
+    answer, and a 404 would turn this into an existence oracle for package
+    names in someone else's repo.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    rows = await queries.dependency_uses(
+        conn,
+        snapshot_id,
+        module,
+        include_tests=include_tests,
+        limit=DEPENDENCY_MAX_USES,
+    )
+    return DependencyUsesOut(
+        module=module,
+        include_tests=include_tests,
+        uses=[
+            DependencyUse(
+                dotted=str(r["dotted"]),
+                file_path=str(r["file_path"]),
+                start_line=int(r["start_line"]),
+                is_test=bool(r["is_test"]),
+            )
+            for r in rows
+        ],
+        truncated=len(rows) >= DEPENDENCY_MAX_USES,
+    )
+
+
 @router.get("/repos/{snapshot_id}/coverage", response_model=CoverageOut)
 async def get_repo_coverage(
     snapshot_id: UUID,
@@ -598,6 +740,60 @@ async def delete_repo_conversation(
     if not await queries.delete_conversation(conn, conversation_id, user["id"]):
         raise ConversationNotFoundError(conversation_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/repos/{snapshot_id}/trace", response_model=TraceOut)
+async def get_repo_trace(
+    snapshot_id: UUID,
+    symbol: str,
+    conn: Conn,
+    user: CurrentUser,
+    direction: str = Query("out", pattern="^(in|out)$"),
+    depth: int = Query(TRACE_MAX_DEPTH, ge=1, le=TRACE_MAX_DEPTH),
+    include_tests: bool = Query(False),
+) -> TraceOut:
+    """Transitive call hierarchy from one symbol (§24.2).
+
+    `expand_context` and `find_references` each do **one hop** and return code;
+    this walks several and returns a **path**. The difference matters: "what
+    does this reach, eventually" is a shape question, and answering it by
+    pulling every reached body into a model context would spend the §12 token
+    budget to say something a list of pointers says better.
+
+    An endpoint rather than a seventh tool, per §18.1 — a bounded graph walk is
+    exact SQL, so routing it through the model would spend from the budget of 8
+    to compute what a recursive CTE already knows.
+
+    `direction=out` is what this symbol reaches; `in` is what reaches it.
+    """
+    await _require_owned_repo(conn, user["id"], snapshot_id)
+    root = await queries.find_symbol(
+        conn, snapshot_id, symbol, include_tests=include_tests
+    )
+    if root is None:
+        raise SymbolNotFoundError(symbol)
+    # A class is traced through its methods — see `symbol_seed_ids`.
+    seeds = await queries.symbol_seed_ids(conn, snapshot_id, root)
+    nodes = await queries.trace_graph(
+        conn,
+        snapshot_id,
+        seeds,
+        direction=direction,
+        max_depth=depth,
+        limit=TRACE_MAX_NODES,
+        include_tests=include_tests,
+    )
+    return TraceOut(
+        root=SymbolRef(
+            qualname=root["qualname"],
+            file_path=root["file_path"],
+            line=root["start_line"],
+        ),
+        direction=direction,
+        max_depth=depth,
+        nodes=[TraceNode(**dict(n)) for n in nodes],
+        truncated=len(nodes) >= TRACE_MAX_NODES,
+    )
 
 
 @router.get("/repos/{snapshot_id}/checklist", response_model=ChecklistOut)

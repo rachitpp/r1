@@ -104,3 +104,23 @@ describe("transcriptFilename", () => {
     );
   });
 });
+
+describe("uncertainty in the export", () => {
+  it("renders §25's marker as a blockquote, not a stray bracket", () => {
+    const md = toMarkdown(
+      [
+        {
+          question: "q",
+          steps: [],
+          answer: "The default is external.\n\n[uncertain: set by the caller]",
+          citations: [],
+          toolCallsUsed: 1,
+          error: null,
+        },
+      ],
+      { repoName: "owner/repo", exportedAt: new Date("2026-08-02") },
+    );
+    expect(md).toContain("> **Not fully confirmed:** set by the caller");
+    expect(md).not.toContain("[uncertain:");
+  });
+});

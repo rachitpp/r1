@@ -296,7 +296,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   `_models.py` (71/108 — the hub), which is the right answer and is why the
   ranking is worth showing at all.
 
-### 2.3 Call-hierarchy & data-flow tracing
+### 2.3 Call-hierarchy & data-flow tracing — **BUILT 2026-08-02**
 
 - **What it is.** *"Trace how a request flows end to end,"* or *"what calls this,
   transitively, and what does it call?"* — multi-hop graph walks surfaced as a
@@ -310,8 +310,20 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   table from a seed symbol to a bounded depth, dedupes, and returns an ordered
   list of `(symbol, file:line)` steps the frontend can render as a trace.
 - **Effort.** **M.**
-- **Money cost.** $0.
-- **Risks.** Explosion on hot symbols — hard depth/breadth caps are essential.
+- **Money cost.** $0, zero model calls.
+- **Risks.** Correctly identified, and bounded: `TRACE_MAX_DEPTH` 4,
+  `TRACE_MAX_NODES` 200, plus a per-branch cycle guard without which a
+  recursive CTE over a call graph does not return a big result — it does not
+  return.
+- **Shipped as.** `GET /repos/{id}/trace?symbol=&direction=&depth=` (SPEC §24)
+  and a Trace panel on the repo page. Pointers, not bodies: the one-hop tools
+  return code for a model, this returns a path for a person.
+- **The correction real output forced.** Tracing `httpx._client.Client` returned
+  **one** node — `BaseClient`, via `extends`. True about the class symbol and
+  useless as an answer, because a class's calls live in its methods. Seeding the
+  walk with the class's members turns 1 node into 78. Same failure shape as
+  6.5's example-app step: technically correct, practically wrong, invisible to a
+  structural test.
 
 ### 2.4 Test ↔ code linkage — **BUILT 2026-07-31**
 
@@ -340,7 +352,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   and the edge resolves through `httpx/__init__.py`. Real linkage, honestly
   partial — not a bug, and worth knowing before reading the numbers as coverage.
 
-### 2.5 Dependency / third-party understanding *(new)*
+### 2.5 Dependency / third-party understanding — **BUILT 2026-08-02**
 
 - **What it is.** Parse `requirements.txt` / `pyproject.toml` (and later
   `package.json`) and answer *"what libraries does this use, and where?"*
@@ -353,10 +365,27 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Implementation sketch.** Parse manifests into a `dependencies` table; keep
   (don't drop) external import edges tagged as external; add a tool to list
   deps and their usage sites.
-- **Effort.** **M.**
-- **Money cost.** $0.
-- **Risks.** External-import capture changes what `§6.1` currently discards —
-  do it behind a flag and re-run eval to confirm retrieval is unaffected.
+- **Effort.** **M.** Confirmed.
+- **Money cost.** $0 — and zero model calls; the whole panel is three SQL reads.
+- **Risks.** The stated risk did not materialise, because the sketch's approach
+  was not taken. It said to capture the external import edges `§6.1` discards;
+  doing that would have made the answer depend on **what happened to be
+  installed** in the ingest environment. Imports are read from the tree-sitter
+  AST instead, so `§6.1` is untouched, retrieval is untouched, and no flag or
+  re-run was needed.
+- **Shipped as.** `GET /repos/{id}/dependencies` and
+  `GET /repos/{id}/dependencies/{module}` (SPEC §26), plus migration `015`.
+  Three lists: what is imported, what is imported but undeclared, and what is
+  declared but never imported. Not an agent tool — exact SQL, so the 8-call
+  budget would buy nothing (the 2.1 precedent).
+- **Surfaced as.** A Dependencies panel on `/repos/[id]`, packages ranked by
+  import count with a bar, each expanding into its exact import sites.
+- **What only real repos revealed.** Two false-positive classes that no amount
+  of reasoning would have found: `_typeshed` (a type-checker-only module,
+  imported 8× in flask, not installable) and five in-repo packages under
+  `tests/test_apps/` that a depth-1 scan reads as undeclared dependencies. Also
+  `dotenv` vs `python-dotenv` — one package reported as both undeclared *and*
+  unused until an alias table reconciled them. See DECISIONS 2026-08-02.
 
 ---
 
@@ -645,7 +674,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Risks.** Correctness of the diff (partial graphs) — the immutable-snapshot
   invariant helps, but graph edges spanning changed/unchanged files need care.
 
-### 5.4 Confidence & uncertainty signals *(new)*
+### 5.4 Confidence & uncertainty signals — **BUILT 2026-08-02**
 
 - **What it is.** Let the agent say *"I'm not certain"* or *"the code doesn't
   clearly show this,"* rather than always answering confidently.
@@ -653,9 +682,20 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   trustworthy than one that always sounds sure.
 - **How it fits.** A prompt/system-message change plus a UI affordance; optionally
   keyed to citation strength from 5.1.
-- **Effort.** **S–M.**
-- **Money cost.** $0.
-- **Risks.** Over-hedging — calibrate.
+- **Effort.** **S–M.** Accurate.
+- **Money cost.** $0, zero extra model calls — it rides the answer that was
+  already being generated, unlike 5.1 which adds a second pass.
+- **Risks.** "Over-hedging — calibrate" was the entire feature, not a caveat on
+  it. The prompt names the three cases that warrant a marker, forbids the rest
+  *with a reason* (a marker on every answer is worth what a marker on none is),
+  and shows the specific wrong example — the generic "I am an AI" disclaimer.
+- **Shipped as.** A parsed `[uncertain: …]` marker (SPEC §25) rendered as a
+  dashed callout in chat, on the §21 permalink page, and as a blockquote in the
+  6.2 Markdown export. Structured rather than prose precisely so it can be
+  rendered, and so over-hedging would be *countable* rather than a feeling.
+- **One thing worth knowing.** The parser is anchored to the end of the answer
+  because this tool gets pointed at its own repository, and an answer explaining
+  §25 would otherwise have its prose eaten by its own example.
 
 ---
 
@@ -712,6 +752,8 @@ noted.
 | 3.3 Diagrams (mermaid) | ★★★ | M | `edges` table | **BUILT** — a second view of 2.2, not a second query |
 | 6.1 Answer permalinks | ★★★ | S–M | Immutable snapshots | **BUILT** — the API's only unauthenticated read |
 | 6.5 Onboarding checklist | ★★★ | S–M | §19's own fact queries | **BUILT** — zero model calls, unlike 3.1 |
+| 2.3 Call-hierarchy trace | ★★★ | M | `edges` + a recursive CTE | **BUILT** — a path, not a code dump |
+| 5.4 Confidence signals | ★★★ | S–M | The answer already being written | **BUILT** — calibration *is* the feature |
 | 5.3 Incremental re-index | ★★★ | L | Snapshots | Freshness; saves compute |
 | 4.2 IDE extension | ★★★★★ | L | The whole API | Adoption, but a new surface |
 | 1.1 TypeScript | ★★★★★ | L–XL | Chunking only; resolution is new | Highest ceiling, biggest investment |

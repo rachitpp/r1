@@ -17,7 +17,7 @@ calibrated on httpx alone and **not currently met** — flask measures 30% after
 the src-layout fix below, and the residual is undiagnosed. Read the budget as
 history, not as a threshold anything enforces.
 
-What *is* enforced is that imports can resolve at all: see :func:`_import_roots`
+What *is* enforced is that imports can resolve at all: see :func:`import_roots`
 for why a ``src/`` layout otherwise loses every test-to-implementation edge.
 """
 
@@ -328,7 +328,7 @@ def _collect_sites(root: Node) -> list[_Site]:
 # ---------------------------------------------------------------------------
 
 
-def _import_roots(repo_dir: Path) -> list[str]:
+def import_roots(repo_dir: Path) -> list[str]:
     """Directories to add to Jedi's path so in-repo imports resolve (SPEC §6.1).
 
     Jedi's ``smart_sys_path`` covers the project root and each script's own
@@ -389,7 +389,7 @@ def extract_edges(
     stats = EdgeStats()
     seen: set[tuple[tuple[str, int], tuple[str, int], str, int | None]] = set()
     edges: list[EdgeRow] = []
-    roots = _import_roots(repo_dir)
+    roots = import_roots(repo_dir)
     if roots:
         logger.info(
             "jedi import roots beyond the project root: %s",
