@@ -38,6 +38,7 @@ from typing import Any
 
 from pydantic import SecretStr
 
+from app.agent import langchain_merge_fix
 from app.config import get_settings
 from app.exceptions import AgentError
 
@@ -86,6 +87,11 @@ def build_chat_model(
     """
     if temperature is None:
         temperature = 0.0
+    # Every chat model is built here, so this is the one place that runs before
+    # any inference on any provider. See the module docstring for the upstream
+    # bug: an answer containing the word "index" crashes chunk assembly, and
+    # this tool is a codebase *indexer*.
+    langchain_merge_fix.apply()
     settings = get_settings()
     name = model or settings.AGENT_MODEL
     if not name:

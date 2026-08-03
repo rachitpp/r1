@@ -3735,3 +3735,56 @@ panel would have nothing to compare until someone used the CLI. The gap is the
 re-index-at-commit affordance, not the diff, and shipping a picker with no pairs
 to pick would be the "built with no consumer" mistake 2.2 and 2.4 already made
 once.
+
+## 2026-08-03 — the crash depended on the answer containing the word "index"
+
+Reported from the running app: an answer streamed in full, then "Something went
+wrong" underneath it, losing its citations. `TypeError: string indices must be
+integers, not 'str'`.
+
+**Upstream, and the trigger is absurd.**
+`langchain_core.utils._merge.merge_lists` assembles streamed message chunks.
+When the accumulator is a list and a later chunk is a content block, it hunts
+for a block with a matching index:
+
+    for i, e_left in enumerate(merged)
+    if ("index" in e_left and e_left["index"] == e["index"] and ...)
+
+Nothing checks that `e_left` is a dict. Mistral emits a plain string first and
+structured blocks after, so `merged` holds a `str` — and `"index" in e_left`
+quietly becomes a **substring test**. It passes exactly when the answer text
+contains the word "index", and the next line subscripts a string.
+
+Reproduced both ways, which is what makes it certain rather than plausible:
+`["the symbol index is built at ingest"]` crashes, `["the symbol map is built at
+ingest"]` does not.
+
+**This project is a codebase *indexer*.** "the symbol index", "indexed at
+ingest", "index the repo" — the crashing substring is domain vocabulary, so this
+is a frequent failure wearing the costume of a rare one. It presents as
+intermittent because it depends on word choice.
+
+Present in langchain-core 1.5.1 **and still in 1.5.3** (checked against the
+published sdist), so upgrading is not the fix.
+
+**The patch is inert unless upstream raises.** It calls the original first and
+only retries — with bare strings promoted to text blocks, the shape langchain
+itself uses — on `TypeError`. If a release ever adds the guard, the wrapper
+silently stops doing anything; it cannot cause the bug it exists to avoid. A
+test asserts the *unpatched* function still crashes, so the day upstream fixes
+it that test fails and says to delete the patch, rather than the patch being
+carried forever because nobody dared remove it.
+
+**And the patch's own first version had a worse bug than the one it fixed.**
+langchain re-exports `merge_lists` by value in several modules, so the defining
+module alone is not enough — `messages.base` is the one that actually crashes.
+Rebinding by identity meant scanning `sys.modules`… with `getattr`. A
+lazy-import package implements `__getattr__` to import submodules on demand, so
+probing an arbitrary attribute *executes code*: `getattr(transformers,
+"merge_lists")` sent transformers off to import an image processor and died on a
+missing `torchvision`, taking every chat request with it. `vars(module).get(...)`
+reads `__dict__` and cannot trigger that. Filtering to `langchain*` modules on
+top. **Never probe unknown modules with `getattr`.**
+
+Verified live afterwards: a deliberately index-heavy question returned 379 text
+deltas, 6 tool calls, 5 citations all grounded, and no error event.
