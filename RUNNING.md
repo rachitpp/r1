@@ -142,7 +142,7 @@ you why. This is the single most common way to have a broken-looking setup.
 cd backend && uv run uvicorn app.main:app --reload
 
 # terminal 2 — the worker (NOT optional)
-cd backend && uv run arq app.worker.WorkerSettings
+cd backend && uv run python -m app.worker
 
 # terminal 3 — UI on :3000
 cd frontend && pnpm install && pnpm dev
@@ -234,6 +234,7 @@ for this yet: nothing in the UI creates a second snapshot of one repo.
 |---|---|---|
 | Progress stuck at 0%, no error | **the worker isn't running** | start terminal 2 |
 | Progress stuck at 0%, and the worker terminal shows `redis.exceptions.TimeoutError` or `ConnectionError: Connection reset by peer` then exits | a managed Redis is slower to connect than ARQ's 1s default, and a mid-command reset was not retried at all | defaults now cover both (`REDIS_CONN_TIMEOUT_S=10`, `REDIS_COMMAND_RETRIES=3`); if it still happens, raise them in `backend/.env` and restart the worker |
+| Progress stuck at 0% after the worker was left running a while, worker terminal empty or exited | the free Redis tier drops idle connections, and ARQ's *poll loop* is not covered by the command retries — an exception there ends the process | use `python -m app.worker` (above), which restarts the loop with backoff. `arq app.worker.WorkerSettings` still works and is right where something else supervises (systemd, Docker `restart:`) |
 | `curl localhost:8000/health` refuses connection for ~30 s | embedder loading | wait; it's normal |
 | Every request fails with a CORS error | browser is on an origin the API doesn't allow — common when an editor forwards `:3000` elsewhere | set `FRONTEND_ORIGIN` in `backend/.env` to the exact origin in your address bar, or use `FRONTEND_ORIGIN_REGEX` |
 | 503 from `/repos` | Redis unreachable | `docker compose up -d --wait` |

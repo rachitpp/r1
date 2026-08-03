@@ -4,7 +4,8 @@ Runs the ingest pipeline off the HTTP path: the API enqueues ``ingest_repo`` and
 returns immediately (CLAUDE.md hard rule 1), and this process does the clone,
 parse, symbol pass, and embedding, writing progress to the repo row as it goes.
 
-    uv run arq app.worker.WorkerSettings
+    uv run python -m app.worker            # supervised: restarts its own loop
+    uv run arq app.worker.WorkerSettings   # bare: right under systemd/Docker
 
 Three operational choices are load-bearing and explained where they are set
 below: the 2-second poll delay (Upstash command budget), the zombie sweep on
@@ -14,6 +15,7 @@ startup, and who writes ``repos.error``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
@@ -255,3 +257,90 @@ class WorkerSettings:
     # One repo at a time: ingestion is CPU-bound (tree-sitter, Jedi, embedding)
     # on a 4-core box, so concurrent jobs would only make both slower.
     max_jobs = 1
+
+
+# ---------------------------------------------------------------------------
+# Supervised entrypoint
+# ---------------------------------------------------------------------------
+
+# Backoff between restarts. Short at first because the common case is a blip
+# that has already passed, capped because a database that has been gone for a
+# minute will not be back sooner for being asked more often.
+RESTART_BACKOFF_S = (1.0, 5.0, 15.0, 30.0, 60.0)
+
+
+async def _run_supervised() -> None:
+    """Run the worker, restarting it if its own loop dies (§10).
+
+    **Why this exists.** `retry_on_error` and `conn_timeout` (see
+    `config.redis_settings`) make a Redis blip survivable *inside a job* — the
+    retry is on the connection, so `run_job` recovers. ARQ's own poll and
+    health-check loop is not covered by any of that: an exception there leaves
+    `Worker.run()` and the process exits.
+
+    Observed on this deployment: the worker completed three jobs, sat idle for
+    54 minutes, and then died on a `TimeoutError` raised while polling — the
+    free Redis tier drops connections nothing is using. The symptom is the one
+    RUNNING.md §6 calls the most common broken-looking setup: a submitted repo
+    sits at 0% forever with no error, because the thing that would have written
+    the error is the thing that is gone.
+
+    A supervisor is the right shape rather than another timeout. No timeout
+    makes an unreachable server reachable; the honest response to "the queue
+    went away" is to keep asking until it comes back.
+    """
+    from arq.worker import Worker
+
+    attempt = 0
+    while True:
+        worker = Worker(
+            functions=list(WorkerSettings.functions),  # type: ignore[arg-type]
+            on_startup=WorkerSettings.on_startup,
+            on_shutdown=WorkerSettings.on_shutdown,
+            redis_settings=build_redis_settings(),
+            job_timeout=WorkerSettings.job_timeout,
+            max_tries=WorkerSettings.max_tries,
+            poll_delay=WorkerSettings.poll_delay,
+            max_jobs=WorkerSettings.max_jobs,
+            handle_signals=False,
+        )
+        try:
+            await worker.async_run()
+            return  # A clean stop is a stop, not something to restart.
+        except asyncio.CancelledError:
+            raise  # Ctrl-C / SIGTERM: the operator meant it.
+        except Exception as exc:  # noqa: BLE001 — the whole point is to survive
+            delay = RESTART_BACKOFF_S[min(attempt, len(RESTART_BACKOFF_S) - 1)]
+            attempt += 1
+            logger.warning(
+                "worker loop died (%s: %s); restarting in %.0fs [attempt %d]",
+                type(exc).__name__,
+                exc,
+                delay,
+                attempt,
+            )
+        finally:
+            with contextlib.suppress(Exception):
+                # Best-effort: closing talks to Redis, which is very likely the
+                # thing that just failed.
+                await worker.close()
+        await asyncio.sleep(delay)
+
+
+def main() -> None:
+    """`python -m app.worker` — the supervised worker.
+
+    `arq app.worker.WorkerSettings` still works and is still the documented
+    command for anything with its own supervisor (systemd, Docker restart
+    policies, Kubernetes). This is for the laptop, where "it was running
+    yesterday" is otherwise the whole failure report.
+    """
+    configure_logging()
+    try:
+        asyncio.run(_run_supervised())
+    except KeyboardInterrupt:
+        logger.info("worker stopped")
+
+
+if __name__ == "__main__":
+    main()

@@ -3788,3 +3788,51 @@ top. **Never probe unknown modules with `getattr`.**
 
 Verified live afterwards: a deliberately index-heavy question returned 379 text
 deltas, 6 tool calls, 5 citations all grounded, and no error event.
+
+## 2026-08-03 — the worker needed a supervisor, not another timeout
+
+The Redis resilience added earlier today was real but narrower than I described
+it. It fixed *commands*: `conn_timeout=10`, `retry_on_error=[ConnectionError]`,
+and an explicit backoff, so a blip inside a job recovers. The traceback from
+tonight's death shows that working — `retry.call_with_retry` is right there in
+the stack, it retried, and it still failed.
+
+**What it does not cover is ARQ's own poll loop.** The failure was in
+`Worker.run()`'s poll/health cycle, not inside `run_job`. Nothing in
+`RedisSettings` sits in that path: an exception there leaves `run()` and the
+process exits. Observed exactly: three jobs completed, 54 minutes idle, then
+`TimeoutError` while polling, and the worker was gone.
+
+The symptom is the worst one this project has. RUNNING.md §6 already calls it
+the most common broken-looking setup — a submitted repo sits at 0% forever with
+no error — and the reason there is no error is that the process which would have
+written it is the one that died.
+
+**A supervisor is the right shape, and another timeout is not.** No timeout
+makes an unreachable server reachable. The honest response to "the queue went
+away" is to keep asking until it comes back, which is what `python -m app.worker`
+now does: rebuild the worker, restart the loop, back off 1s → 5s → 15s → 30s →
+60s. `arq app.worker.WorkerSettings` still works and is still right wherever
+something else already supervises — systemd, a Docker restart policy,
+Kubernetes. The supervised entrypoint is for the laptop, where otherwise the
+whole failure report is "it was running yesterday".
+
+Three details the tests pin, because each is a way to get this subtly wrong:
+
+* **A clean return is not a crash.** `async_run()` returning means shutdown was
+  asked for and honoured; restarting there would make the worker unstoppable.
+* **`CancelledError` propagates.** Ctrl-C and SIGTERM are the operator's
+  decision, not a fault to recover from.
+* **Fresh `RedisSettings` per restart.** A settings object carries a connection
+  pool; reusing the dead worker's would restart onto the socket that just
+  failed.
+
+`close()` is best-effort inside `contextlib.suppress`, because closing talks to
+Redis and Redis is very likely what just broke — a supervisor that dies while
+cleaning up after a death is not a supervisor.
+
+**One test-design note.** The first version of the fake worker popped from an
+empty script when it ran out, raising `IndexError` — which the supervisor
+dutifully treated as a crash and retried forever. The test hung instead of
+failing, which is the worse outcome of the two. An exhausted script now means
+"stop cleanly".

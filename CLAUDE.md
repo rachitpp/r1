@@ -117,7 +117,7 @@ cd backend
 uv sync
 uv run python scripts/migrate.py
 uv run uvicorn app.main:app --reload      # api :8000
-uv run arq app.worker.WorkerSettings      # worker (separate terminal)
+uv run python -m app.worker               # worker (separate terminal; supervised)
 uv run pytest
 uv run ruff check . && uv run mypy app
 cd ../frontend
