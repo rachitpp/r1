@@ -543,6 +543,25 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   minimization, and making absolutely sure a private snapshot cannot be
   deduplicated into another user's library. Listed as v3 in `V2.md` for good
   reason; treat it as a security feature, not a convenience one.
+- **Deferred 2026-08-03**, deliberately and not for effort. Scoped out first,
+  and step 1 above is the part that is wrong: **"request the `repo` scope" is
+  not a small change, because GitHub has no read-only private-repo scope for an
+  OAuth App.** `repo` is all-or-nothing — full read *and write* to every private
+  repository the user owns, to run a tool that only ever needs to read. Asking a
+  reviewer for that in order to index a codebase is a bad trade and an
+  unattractive consent screen.
+
+  The alternative is a **GitHub App** rather than an OAuth App: installation
+  grants are per-repository and read-only, which is the permission this feature
+  actually wants. It is not a scope change — it is a second auth integration
+  (installation tokens, a webhook secret, a different callback), so §13 gains a
+  path rather than a parameter.
+
+  Two more things to settle before any of it: where the encryption key lives and
+  what happens when it rotates, and a hard proof that the §14.4 commit-SHA dedup
+  cannot hand a private corpus to a second user who submits the same URL. That
+  last one is the leak worth being paranoid about, and it is a test to write
+  before a line of clone code changes.
 
 ### 4.2 VS Code / IDE extension
 
