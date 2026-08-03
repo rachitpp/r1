@@ -2523,3 +2523,83 @@ the standard library.
 `DEPENDENCY_MAX_PACKAGES` (200) and `DEPENDENCY_MAX_USES` (300), ranked before
 truncation. A package list is short by nature; the use sites for one popular
 package are not.
+
+---
+
+## §27 Citation grounding
+
+Does the cited range actually support the claim it is attached to.
+
+`§7.5` validation answers a different question — *"is this a real place in this
+repo"* — and answers it well: a fabricated path is dropped, an overshot range is
+clamped. What it cannot see is a citation that is **present, valid, and wrong**,
+which is the more dangerous failure precisely because it looks correct. A
+missing citation is visibly missing; a misleading one is not.
+
+### 27.1 A heuristic, deliberately
+
+FEATURE-IDEAS 5.1 permits "a cheap model call or heuristic". This is the
+heuristic, chosen for three reasons and not for cost alone:
+
+* **Budget.** One extra call per answer, on a tier measured at 20 requests/day
+  for one configured provider, is a doubling of the scarcest resource in the
+  project.
+* **Latency.** It sits on the critical path of an answer the user is watching
+  stream.
+* **Determinism, which matters most.** A model-scored grounding signal could
+  flag the same answer differently on two runs. An advisory badge that is not
+  reproducible is worse than none: a reader cannot learn what it means, and
+  cannot tell a real warning from noise. The lexical check is free, instant,
+  reproducible, and *wrong in ways a reader can see and overrule* — the right
+  shape for advice.
+
+### 27.2 The check
+
+For each citation: take the **claim** it terminates — back to the nearest
+sentence, bullet, or line boundary, not the whole paragraph, because a paragraph
+drags in neighbouring claims and their identifiers until everything passes.
+Strip any earlier citation markers from that window; another citation's path is
+not evidence about this one.
+
+Pull **code identifiers** out of the claim. Backticked spans are the
+high-precision signal — the answer format uses them for code, so a backtick is
+the model asserting "this is an identifier" rather than us inferring it from
+shape. Outside backticks, a token must *look* like an identifier (underscore,
+dot, or CamelCase); bare prose words are not evidence, or a claim's ordinary
+English would match any code containing the same word. Dotted names contribute
+their parts, since `Signal.connect` is supported by a `connect` defined inside
+`Signal`.
+
+Then ask whether any of those identifiers appear in the lines actually cited.
+
+Deliberately broader than `retrieval.hybrid.extract_identifiers`, which drops
+plain lowercase words. That is right when injecting symbols into a search
+(`get` would match half the repo) and wrong here: a claim saying "`connect`
+registers the receiver" names `connect`, and the cited lines either contain it
+or they do not.
+
+### 27.3 Three verdicts, and the third is the honest one
+
+| verdict | meaning |
+|---|---|
+| `supported` | at least one claimed identifier appears in the cited lines |
+| `unsupported` | the claim names identifiers and **none** appear |
+| `unchecked` | the claim names no identifiers, or the file could not be read |
+
+`unchecked` is the load-bearing one. A claim like *"this is where the request
+begins"* offers nothing to match, and reporting it as `unsupported` would
+manufacture a warning out of this method's own blind spot. A check that cannot
+ask a question must say so rather than guess — and a signal that cried wolf on
+prose would be switched off within a day, taking the real warnings with it.
+
+### 27.4 Where it runs
+
+On the `citations` SSE event, as an extra `grounding` array beside the existing
+`citations` array — one verdict per surviving citation, in the same order.
+Riding on the existing event rather than adding a tenth one keeps §9's frozen
+sequence intact.
+
+It costs one read of the cited files and no model call. Failures are swallowed
+and degrade to an empty array: this is advice attached to an answer the user
+already has, and a grounding read that fails must never break the stream at its
+last event.

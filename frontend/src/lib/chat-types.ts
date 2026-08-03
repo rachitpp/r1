@@ -6,7 +6,7 @@
  * only in memory (a refresh cuts it — accepted, per the phase prompt).
  */
 
-import type { Citation } from "@/lib/citations";
+import type { Citation, Grounding } from "@/lib/citations";
 
 /**
  * sessionStorage namespace for saved transcripts: `chat:<repoId>`. Defined here,
@@ -57,6 +57,10 @@ export interface ChatExchange {
   steps: ChatStep[];
   answer: string;
   citations: Citation[];
+  /** §27 grounding verdicts, one per citation. Empty when the check did not
+   * run — it degrades rather than failing the stream, so this is never
+   * required to render an exchange. */
+  grounding?: Grounding[];
   toolCallsUsed: number | null;
   error: string | null;
   /** True when the viewer pressed Stop: whatever streamed is kept, and the

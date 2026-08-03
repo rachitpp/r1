@@ -632,7 +632,7 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 
 ## 5. Quality & trust (cross-cutting)
 
-### 5.1 Answer verification / citation grounding *(new)*
+### 5.1 Answer verification / citation grounding — **BUILT 2026-08-03**
 
 - **What it is.** After the agent answers, verify each cited range actually
   supports the claim before showing it.
@@ -644,6 +644,22 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
 - **Effort.** **M.**
 - **Money cost.** $0 (one extra small call per answer).
 - **Risks.** Adds latency — do it async / mark rather than block.
+- **Shipped as.** SPEC §27: a lexical grounding check on the `citations` SSE
+  event, three-valued (`supported` / `unsupported` / `unchecked`), plus an
+  advisory block in the answer UI that lists only the unsupported ones.
+- **The risk was avoided rather than managed.** "Adds latency" assumed the
+  model-call design; the heuristic costs one read and no provider call, so
+  there is nothing to make async. Determinism, not cost, was the deciding
+  argument: a grounding badge that changes between runs cannot be learned or
+  trusted.
+- **`unchecked` is the load-bearing verdict.** A claim naming no identifiers
+  cannot be checked, and reporting it as unsupported would invent findings out
+  of the method's blind spot — which is how an advisory signal gets switched
+  off, taking the real warnings with it.
+- **What only a real answer revealed.** A live blinker answer scored
+  `unchecked` on a claim naming `ANY` — blinker's actual sentinel — because
+  "any" was in the stopword list. Stopwords no longer apply inside backticks.
+  Same answer now scores 5/5 supported. See DECISIONS 2026-08-03.
 
 ### 5.2 Code-specific reranker — **MEASURED 2026-08-03, not adopted**
 

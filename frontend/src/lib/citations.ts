@@ -13,6 +13,37 @@ export interface Citation {
   end_line: number;
 }
 
+/**
+ * A §27 grounding verdict for one citation.
+ *
+ * Advisory, and deliberately three-valued: `unchecked` means the claim named
+ * no code identifiers, so the backend's lexical check had nothing to compare —
+ * a blind spot, not a finding. Rendering it as a warning would teach readers to
+ * ignore the badge, which costs the one case where it mattered.
+ */
+export interface Grounding {
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  verdict: "supported" | "unsupported" | "unchecked";
+  matched: string[];
+  missing: string[];
+}
+
+/** Verdict for one citation, by key. Absent when grounding did not run. */
+export function groundingFor(
+  grounding: Grounding[] | undefined,
+  citation: Citation,
+): Grounding | undefined {
+  if (!grounding) return undefined;
+  return grounding.find(
+    (g) =>
+      g.file_path === citation.file_path &&
+      g.start_line === citation.start_line &&
+      g.end_line === citation.end_line,
+  );
+}
+
 /** Mirror of the backend's CITATION_RE (app/agent/citations.py). */
 export const CITATION_RE = /\[([\w./-]+\.py):(\d+)-(\d+)\]/g;
 

@@ -19,7 +19,12 @@ import { ApiError, shareAnswer } from "@/lib/api";
 import { CitationChip } from "@/components/chat/citation-chip";
 import { StepTimeline } from "@/components/chat/step-timeline";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { type Citation, citationKey, dedupeCitations } from "@/lib/citations";
+import {
+  type Citation,
+  citationKey,
+  dedupeCitations,
+  groundingFor,
+} from "@/lib/citations";
 import type { ChatExchange, ChatStatus } from "@/lib/chat-types";
 import { inlineCitationKeys, parseMarkdown } from "@/lib/markdown";
 import { parseUncertainty } from "@/lib/uncertainty";
@@ -84,6 +89,14 @@ export function ExchangeView({
   const inlineKeys = useMemo(() => inlineCitationKeys(blocks), [blocks]);
   const extraSources = dedupeCitations(exchange.citations).filter(
     (c) => !inlineKeys.has(citationKey(c)),
+  );
+
+  // §27. Only `unsupported` is surfaced. Badging the supported ones too would
+  // put a mark on almost every chip, and a signal that fires constantly is one
+  // readers stop seeing — which costs the single case it exists for. `unchecked`
+  // stays silent by the same logic: it is the check's blind spot, not a finding.
+  const unsupported = dedupeCitations(exchange.citations).filter(
+    (c) => groundingFor(exchange.grounding, c)?.verdict === "unsupported",
   );
 
   const copyAnswer = () => {
@@ -166,6 +179,30 @@ export function ExchangeView({
               aria-hidden
               className="inline-block h-4 w-1.5 animate-pulse bg-foreground/60"
             />
+          )}
+
+          {unsupported.length > 0 && (
+            <div className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5">
+              <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                {unsupported.length === 1
+                  ? "One citation may not support its claim"
+                  : `${unsupported.length} citations may not support their claims`}
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {unsupported.map((c) => (
+                  <CitationChip
+                    key={citationKey(c)}
+                    citation={c}
+                    onClick={onCiteClick}
+                    active={activeKey === citationKey(c)}
+                  />
+                ))}
+              </div>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                The named code was not found in those exact lines. A lexical
+                check, so it can be wrong — open the citation and judge it.
+              </p>
+            </div>
           )}
 
           {extraSources.length > 0 && (

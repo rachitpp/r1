@@ -3570,3 +3570,56 @@ reranker would win" is untested because the only credible candidate is stale
 against current transformers, not because the experiment was avoided. If that
 model is ever republished against transformers 5.x, the flag and the harness are
 already in place and it is a one-line run.
+
+## 2026-08-03 — 5.1 citation grounding: a heuristic, and why not a model call
+
+FEATURE-IDEAS 5.1 built (SPEC §27). `§7.5` validation already answers *"is this
+a real place in this repo"*; it cannot answer *"does the code there say what the
+sentence says"*. A citation that is present, valid and **wrong** is the more
+dangerous failure, because a missing citation is visibly missing and a
+misleading one is not.
+
+**The doc allowed "a cheap model call or heuristic"; the heuristic was chosen,
+and cost is the least interesting reason.** A per-answer model call doubles the
+scarcest resource in the project (20 requests/day on one configured provider)
+and adds latency to a stream the user is watching. The deciding reason is
+**determinism**: a model-scored grounding badge could flag the same answer
+differently on two runs, and an advisory signal that is not reproducible is
+worse than none — a reader cannot learn what it means, and cannot separate a
+real warning from noise. The lexical check is free, instant, reproducible, and
+wrong in ways a reader can see and overrule.
+
+**Three verdicts, and the third carries the design.** `supported` /
+`unsupported` / `unchecked`. A claim naming no identifiers — "this is where the
+request begins" — offers nothing to match, and calling that *unsupported* would
+manufacture a warning out of the method's own blind spot. A signal that cried
+wolf on prose would be ignored within a day, taking the real warnings with it.
+The same applies to a file that could not be read: a gap in the check is not
+evidence against the answer.
+
+**Backticks are the precision instrument.** The answer format uses them for code,
+so a backtick is the model asserting "this is an identifier" rather than us
+inferring it from shape. Outside backticks a token must look like an identifier
+(underscore, dot, CamelCase) — bare prose would otherwise match any code
+containing the same English word. Deliberately broader than
+`retrieval.hybrid.extract_identifiers`, which drops plain lowercase words:
+correct when injecting symbols into a search (`get` matches half the repo),
+wrong here, where a claim saying "`connect` registers the receiver" names
+`connect` and the cited lines either contain it or do not.
+
+**One defect found by running it, not by testing it.** On a live blinker answer
+a citation came back `unchecked` whose claim read *"If the sender is not `ANY`
+and is weak-referenceable…"*. `ANY` is blinker's real sentinel constant — and
+"any" was in the stopword list. Stopwords are now **not applied inside
+backticks**: overriding the model's own code-marking with an English word list
+discards exactly the identifiers that happen to spell common words (`ANY`,
+`set`, `all`). After the fix the same answer scores 5/5 `supported`, with that
+citation matching on `ANY`. The failure was safe — it degraded to `unchecked`
+rather than to a false warning — which is the shape the three-verdict design was
+chosen to guarantee.
+
+**Surfaced as** an extra `grounding` array on the existing `citations` SSE
+event, keeping §9's frozen sequence intact, and in the UI as a single advisory
+block listing only `unsupported` citations. Badging the supported ones too would
+mark almost every chip, and a signal that fires constantly is one readers stop
+seeing.

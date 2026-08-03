@@ -19,7 +19,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { USER_QUERY_KEY } from "@/hooks/use-user";
 import { apiUrl } from "@/lib/api";
-import type { Citation } from "@/lib/citations";
+import type { Citation, Grounding } from "@/lib/citations";
 import {
   CHAT_STORAGE_PREFIX,
   type ChatExchange,
@@ -169,6 +169,10 @@ export function useRepoChat(repoId: string): RepoChat {
                 break;
               case "citations":
                 exchange.citations = (payload.citations ?? []) as Citation[];
+                // §27 advisory verdicts, one per citation. Optional on purpose:
+                // the backend degrades to an empty array rather than failing
+                // the stream, so the UI must render fine without them.
+                exchange.grounding = (payload.grounding ?? []) as Grounding[];
                 break;
               case "done":
                 exchange.toolCallsUsed = payload.tool_calls_used ?? null;

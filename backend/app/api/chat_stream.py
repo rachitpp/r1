@@ -57,13 +57,14 @@ from uuid import UUID
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app import metrics
-from app.agent.citations import parse_citations, validate_citations
+from app.agent.citations import Citation, parse_citations, validate_citations
 from app.agent.graph import (
     AgentState,
     build_graph,
     prior_turns_as_messages,
     repo_facts,
 )
+from app.agent.grounding import Grounding, ground_answer
 from app.agent.prompts import system_prompt
 from app.api.tool_events import summarize_tool_result
 from app.config import AGENT_TOOL_CAP, get_settings
@@ -121,6 +122,30 @@ def _tool_output_text(output: Any) -> str:
     return json.dumps(output, default=str)
 
 
+async def _ground(
+    conn: Any,
+    snapshot_id: UUID,
+    answer: str,
+    citations: list[Citation],
+) -> list[Grounding]:
+    """Grounding verdicts for ``citations`` (§27), or none if it cannot run.
+
+    Swallows its own failures on purpose. This is an *advisory* signal attached
+    to an answer the user already has; a read that fails here must degrade to
+    "no verdicts shown", never to a broken stream at the last event.
+    """
+    if not citations:
+        return []
+    try:
+        texts = await queries.file_texts(
+            conn, snapshot_id, [c["file_path"] for c in citations]
+        )
+        return ground_answer(answer, citations, texts)
+    except Exception:  # noqa: BLE001 — an advisory signal is never worth a 500
+        logger.warning("citation grounding failed", exc_info=True)
+        return []
+
+
 async def chat_event_stream(
     model: BaseChatModel,
     source: ConnSource,
@@ -147,6 +172,8 @@ async def chat_event_stream(
     outcome = "error"
     n_calls = 0
     answer = ""
+    citations: list[Citation] = []
+    grounding: list[Grounding] = []
     try:
         yield _event("status", {"state": "thinking"})
 
@@ -237,8 +264,13 @@ async def chat_event_stream(
                 citations = await validate_citations(
                     conn, snapshot_id, parse_citations(answer)
                 )
+                # §27. Validation proved these point at real places; this asks
+                # whether the code there says what the sentence says. Free and
+                # deterministic — no model call, so it costs one read and adds
+                # nothing to the provider bill.
+                grounding = await _ground(conn, snapshot_id, answer, citations)
 
-        yield _event("citations", {"citations": citations})
+        yield _event("citations", {"citations": citations, "grounding": grounding})
 
         # Store the completed turn (§23.3). **After the answer is whole and
         # inside the success path only** — a cancelled or timed-out run has no

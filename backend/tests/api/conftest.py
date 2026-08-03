@@ -798,6 +798,14 @@ class FakeConn:
             ]
         if "FROM repo_snapshots sn JOIN repo_sources s" in sql:
             return list(self.repos.values())
+        if "SELECT path, content FROM files" in sql:
+            # §27 grounding reads whole files for the cited slices.
+            wanted = set(args[1])
+            return [
+                {"path": f["path"], "content": f["content"]}
+                for f in self.files.values()
+                if f["path"] in wanted
+            ]
         if "path = ANY" in sql:
             wanted = set(args[1])
             return [

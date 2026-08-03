@@ -113,3 +113,26 @@ async def test_text_events_deliver_the_answer(client: httpx.AsyncClient) -> None
     text = "".join(data["delta"] for name, data in events if name == "text")
     assert f"[{FILE_PATH}:1-2]" in text
     assert "Tokens are verified" in text
+
+
+async def test_citations_event_carries_grounding_verdicts(
+    client: httpx.AsyncClient,
+) -> None:
+    """§27 rides along on the existing event rather than adding a tenth one."""
+    events = dict(await collect_events(client))
+    grounding = events["citations"]["grounding"]
+    # One verdict per surviving citation — the fabricated path is dropped before
+    # grounding ever sees it.
+    assert len(grounding) == len(events["citations"]["citations"])
+    assert grounding[0]["file_path"] == FILE_PATH
+
+
+async def test_a_claim_naming_no_code_is_unchecked_not_unsupported(
+    client: httpx.AsyncClient,
+) -> None:
+    """The scripted claim is prose ("Tokens are verified in"), so there is
+    nothing to match. Reporting that as *unsupported* would invent a warning
+    out of the method's own blind spot, which is the failure that would make
+    the signal worth ignoring."""
+    events = dict(await collect_events(client))
+    assert events["citations"]["grounding"][0]["verdict"] == "unchecked"

@@ -2155,3 +2155,22 @@ async def declared_by_name(
         snapshot_id,
     )
     return {str(r["name"]): r for r in rows}
+
+
+async def file_texts(
+    conn: asyncpg.Connection, snapshot_id: UUID, paths: Sequence[str]
+) -> dict[str, str]:
+    """Full contents for ``paths``, keyed by path (§27 grounding).
+
+    One round trip for every cited file rather than one per citation: an answer
+    commonly cites the same file three or four times, and the grounding check
+    runs on the critical path of a response the user is already waiting on.
+    """
+    if not paths:
+        return {}
+    rows = await conn.fetch(
+        "SELECT path, content FROM files WHERE snapshot_id = $1 AND path = ANY($2::text[])",
+        snapshot_id,
+        list(dict.fromkeys(paths)),
+    )
+    return {str(r["path"]): str(r["content"]) for r in rows}
