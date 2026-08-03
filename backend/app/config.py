@@ -315,7 +315,46 @@ class Settings(BaseSettings):
     # it builds behind itself. The worker overrides this — batch inserts of a
     # few thousand embeddings legitimately take longer.
     DB_COMMAND_TIMEOUT_S: float = 30.0
-    DB_POOL_MAX_IDLE_S: float = 300.0
+    # How long a pooled connection may sit idle before the pool retires it.
+    #
+    # Was 300.0, and that is the same class of bug the Redis `conn_timeout`
+    # was: a default sitting exactly on a boundary. A managed Postgres reaps
+    # idle connections on its own schedule — Neon suspends an idle compute at
+    # **five minutes**, which is precisely 300 s — so the pool and the server
+    # were racing to decide who dropped the connection first. When the server
+    # won, the pool handed out a socket it still believed was open and the next
+    # query died with `ConnectionDoesNotExistError: connection was closed in
+    # the middle of operation`. Observed twice: `/auth/me` returned 500 and the
+    # page rendered "Can't reach the API".
+    #
+    # 120 s retires connections well inside any reaper window worth supporting.
+    DB_POOL_MAX_IDLE_S: float = 120.0
+    # Check a pooled connection is alive before handing it out.
+    #
+    # The shorter lifetime above narrows the race; it cannot close it. A server
+    # can drop a connection between checkout and first use, and asyncpg's
+    # `is_closed()` keeps saying False until a write actually fails — so the
+    # only reliable test is to use it.
+    DB_POOL_PING_ON_ACQUIRE: bool = True
+    # ...but only after the pool has been quiet this long.
+    #
+    # Probing *every* checkout was the first design and it was measured, which
+    # is the only reason it is not what shipped: against this Neon instance a
+    # probe costs **256 ms**, turning a 509 ms checkout-and-query into 765 ms —
+    # a 50% regression on every request, and ~1.5 s added to a six-checkout
+    # agent run. Correctness bought at that price is a bad deal when the failure
+    # only happens after a gap in traffic.
+    #
+    # One timestamp, pool-wide, rather than per-connection bookkeeping:
+    # `PoolConnectionProxy` supports neither weak references nor attributes, and
+    # the case actually observed was the whole API going quiet while something
+    # else ran, then the first request afterwards finding a reaped connection.
+    # Under steady traffic this is never paid at all.
+    DB_POOL_PING_AFTER_IDLE_S: float = 60.0
+    # Attempts to find a live connection before giving up. Two, not more: if a
+    # second freshly-made connection is also dead the database is genuinely
+    # unavailable, and retrying harder just delays that answer.
+    DB_POOL_ACQUIRE_ATTEMPTS: int = 2
 
     # Concurrent SSE chat streams. Each one is an agent loop: up to 8 tool
     # calls, N provider round-trips, and real money. Past this the API answers

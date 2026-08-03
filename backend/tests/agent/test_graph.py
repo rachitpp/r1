@@ -71,6 +71,12 @@ class FakeChatModel(BaseChatModel):
 class FakeConn:
     """Enough of asyncpg for tools that only read; unused by these tests."""
 
+    def is_closed(self) -> bool:
+        """Real connections have this, and `pool.acquire` probes with it (§DB
+        pool liveness). A double standing in for a connection has to implement
+        enough of the interface to be one."""
+        return False
+
     async def fetch(self, *_a: object, **_k: object) -> list[dict]:
         return []
 

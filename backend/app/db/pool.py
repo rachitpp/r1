@@ -15,6 +15,7 @@ without either of them special-casing the other.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,6 +27,23 @@ from pgvector.asyncpg import register_vector
 from app import metrics
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
+# Bounds the liveness probe. Deliberately short: this runs before every pooled
+# checkout, so a slow probe is a tax on every query, and a probe that has not
+# answered in a second is itself the evidence the connection is no good.
+PING_TIMEOUT_S = 1.0
+# Releasing a connection known to be dead must not block on it. asyncpg would
+# otherwise wait to reset a session that is never going to reply.
+DEAD_RELEASE_TIMEOUT_S = 1.0
+
+# When the pool was last known to be talking to the server. Module-level
+# because it is a property of the process's connection to the database, not
+# of any one pool object — and because `PoolConnectionProxy` allows neither
+# weak references nor attributes, so per-connection tracking is not available
+# without reaching into asyncpg internals.
+_last_activity: float = 0.0
+
 # Either end of the "where does a connection come from" question. A pool means
 # short checkouts; a bare connection means the caller already scoped one.
 ConnSource = Any
@@ -34,6 +52,47 @@ ConnSource = Any
 async def _init_connection(conn: asyncpg.Connection) -> None:
     """Register the pgvector codec so ``vector`` columns round-trip as lists."""
     await register_vector(conn)
+
+
+async def _is_live(conn: asyncpg.Connection) -> bool:
+    """Whether ``conn`` can still talk to the server.
+
+    A real round trip, because that is the only test that works: a connection
+    the server has dropped still reports ``is_closed() is False`` on this side
+    until something tries to write to it. `SELECT 1` is the cheapest way to be
+    that something.
+
+    The timeout matters as much as the query. Without it a connection to a
+    server that has gone away — as opposed to one that closed politely — hangs
+    here instead of failing, which turns a fast retry into the stall it was
+    meant to prevent.
+    """
+    if conn.is_closed():
+        return False
+    try:
+        await conn.fetchval("SELECT 1", timeout=PING_TIMEOUT_S)
+    except (
+        asyncpg.PostgresConnectionError,
+        asyncpg.InterfaceError,
+        ConnectionError,
+        OSError,
+        TimeoutError,
+    ):
+        return False
+    return True
+
+
+async def _discard(conn: asyncpg.Connection) -> None:
+    """Close a dead connection so the pool replaces rather than re-lends it.
+
+    Best-effort by definition: this is called precisely because the connection
+    is already broken, so a close that also fails has changed nothing. What
+    matters is that the pool sees a closed connection when the block exits.
+    """
+    try:
+        await conn.close(timeout=DEAD_RELEASE_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 — it was dead before we got here
+        logger.debug("closing a dead connection also failed: %s", exc)
 
 
 async def create_pool(
@@ -99,14 +158,64 @@ async def acquire(source: ConnSource) -> AsyncIterator[asyncpg.Connection]:
     Wait time is measured, not the checkout: the number that matters is how long
     a caller sat in the queue, because that is the one that goes non-zero before
     anything else looks wrong.
+
+    **A pooled connection is checked for life before it is handed over**
+    (``DB_POOL_PING_ON_ACQUIRE``). A managed Postgres reaps idle connections on
+    its own schedule, and asyncpg cannot tell: ``is_closed()`` stays False until
+    a write fails, so the pool will happily lend out a socket the server closed
+    minutes ago and the caller's query dies with ``ConnectionDoesNotExistError``.
+    That reached a user here as a 500 from ``/auth/me`` and a page reading
+    "Can't reach the API". A dead connection is now discarded and another taken.
     """
     if not isinstance(source, asyncpg.Pool):
         yield source
         return
+
+    global _last_activity
+
+    settings = get_settings()
     started = time.perf_counter()
-    async with source.acquire() as conn:
-        metrics.db_pool_acquire_wait.observe(time.perf_counter() - started)
-        yield conn
+    attempts = max(1, settings.DB_POOL_ACQUIRE_ATTEMPTS)
+    # Probe only after a gap in traffic. See DB_POOL_PING_AFTER_IDLE_S — a probe
+    # on every checkout measured at +256 ms against this database, which is a
+    # price worth paying once after a quiet spell and not on every request.
+    quiet_for = time.monotonic() - _last_activity
+    probe = (
+        settings.DB_POOL_PING_ON_ACQUIRE
+        and quiet_for >= settings.DB_POOL_PING_AFTER_IDLE_S
+    )
+
+    # `async with source.acquire()` and not `await` + `release`: asyncpg's pool
+    # supports both, but the second form is not what every caller's test double
+    # implements, and changing a contract to add a probe would be paying for
+    # this fix in someone else's code.
+    for attempt in range(1, attempts + 1):
+        async with source.acquire() as conn:
+            if probe and not await _is_live(conn):
+                # Dead on arrival: the server dropped it while it sat idle and
+                # asyncpg had no way to know. Closing it is what makes the pool
+                # discard rather than re-lend it when this block exits.
+                logger.info(
+                    "discarding a dead pooled connection (attempt %d/%d)",
+                    attempt,
+                    attempts,
+                )
+                metrics.db_pool_dead_connections.inc()
+                await _discard(conn)
+                if attempt < attempts:
+                    continue
+                # Out of attempts. Fall through and let the caller's own query
+                # produce the real error rather than inventing one here.
+            metrics.db_pool_acquire_wait.observe(time.perf_counter() - started)
+            try:
+                yield conn
+            finally:
+                # Set on the way out, not the way in: the block having run is
+                # the evidence the connection worked. Recording it at checkout
+                # would mark a pool healthy on the strength of a handout that
+                # then failed.
+                _last_activity = time.monotonic()
+            return
 
 
 def sample_pool_gauges(pool: ConnSource | None) -> None:

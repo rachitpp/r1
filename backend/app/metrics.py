@@ -233,6 +233,13 @@ db_pool_acquire_wait = Histogram(
 )
 db_pool_size = Gauge("db_pool_size", "Connections currently held by the pool.")
 db_pool_idle = Gauge("db_pool_idle", "Pooled connections currently idle.")
+# Pooled connections the server had already dropped, caught on checkout rather
+# than as a 500 in someone's request. A steady trickle is a managed database
+# reaping idle connections and is fine; a spike is the database going away.
+db_pool_dead_connections = Counter(
+    "db_pool_dead_connections_total",
+    "Pooled connections found dead on checkout and discarded.",
+)
 
 chat_streams = Counter(
     "chat_streams_total", "Chat streams by how they ended.", ("outcome",)

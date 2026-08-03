@@ -222,6 +222,7 @@ PATH` writes every chunk as JSONL, `--sample N` prints N random full chunks.
 | `curl localhost:8000/health` refuses connection for ~30 s | embedder loading | wait; it's normal |
 | Every request fails with a CORS error | browser is on an origin the API doesn't allow — common when an editor forwards `:3000` elsewhere | set `FRONTEND_ORIGIN` in `backend/.env` to the exact origin in your address bar, or use `FRONTEND_ORIGIN_REGEX` |
 | 503 from `/repos` | Redis unreachable | `docker compose up -d --wait` |
+| 500 from any endpoint after the API sat idle, log says `ConnectionDoesNotExistError: connection was closed in the middle of operation` | a managed Postgres reaped an idle pooled connection | defaults now handle it (`DB_POOL_MAX_IDLE_S=120` plus a liveness probe after a quiet spell); if your database reaps faster, lower `DB_POOL_MAX_IDLE_S` and `DB_POOL_PING_AFTER_IDLE_S` |
 | 422 on submit | non-GitHub or malformed URL | the API only accepts `https://github.com/owner/repo` |
 | 409 on chat | repo isn't `ready` yet | wait for the status page |
 | Clone fails on a real repo | v1 is **public repos only** | private repos are v2 |

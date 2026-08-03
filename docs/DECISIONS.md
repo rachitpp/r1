@@ -3623,3 +3623,63 @@ event, keeping §9's frozen sequence intact, and in the UI as a single advisory
 block listing only `unsupported` citations. Badging the supported ones too would
 mark almost every chip, and a signal that fires constantly is one readers stop
 seeing.
+
+## 2026-08-03 — the Postgres pool had the Redis bug's twin, and the first fix was too expensive
+
+Twice this session the API returned 500 from `/auth/me` with
+`asyncpg.exceptions.ConnectionDoesNotExistError: connection was closed in the
+middle of operation`, and the page rendered "Can't reach the API". Same shape as
+the Redis incident: a managed service quietly reaping an idle connection, and a
+client that had no idea.
+
+**Cause, and it was a default sitting on a boundary — again.**
+`DB_POOL_MAX_IDLE_S` was **300.0**. Neon suspends an idle compute at **five
+minutes**, which is 300 seconds exactly. The pool and the server were racing to
+decide who dropped the connection first, and when the server won, asyncpg lent
+out a socket it still believed was open — `is_closed()` keeps returning False
+until something actually writes. Lowered to **120 s**, comfortably inside any
+reaper window worth supporting.
+
+**That alone narrows the race without closing it**, because a server can drop a
+connection between checkout and first use. So `acquire` now probes with
+`SELECT 1` and, on failure, closes the connection (which is what makes the pool
+*replace* rather than re-lend it) and takes another. Two attempts: if a second
+connection is also dead the database is genuinely gone, and the last one is
+still yielded so the caller's own query produces the real error rather than one
+invented here.
+
+**The first version probed every checkout. Measuring it is the only reason that
+is not what shipped.**
+
+| | checkout + query |
+|---|---|
+| no probe | 508.9 ms |
+| probe every checkout | 765.2 ms |
+
+**256 ms per checkout** — a 50% latency tax on every request, and ~1.5 s added to
+a six-checkout agent run. "One extra round trip, negligible" was written before
+the measurement and was simply wrong: this Neon instance is far enough away that
+a round trip is the dominant cost of a small query.
+
+So the probe is **gated on a gap in traffic** (`DB_POOL_PING_AFTER_IDLE_S`,
+60 s). Re-measured: **504.9 ms** under steady traffic — the tax is gone — and
+754.5 ms on the first checkout after a quiet spell, paid once. That matches the
+failure exactly: the incident happened when the API sat idle while a test suite
+ran, and the next request found a corpse.
+
+One timestamp, pool-wide, rather than per-connection idle tracking:
+`PoolConnectionProxy` supports neither weak references nor attribute assignment,
+so per-connection bookkeeping is unavailable without reaching into asyncpg
+internals — and the observed failure is a property of the *process* going quiet,
+not of one connection.
+
+**A contract mistake worth recording.** The first implementation replaced
+`async with source.acquire()` with `await source.acquire()` + `release()`. Real
+asyncpg supports both; four existing tests did not, because their pool double
+implements only the context-manager form. Reverted to `async with` — adding a
+probe is not a reason to change an interface other people's code implements. The
+one thing that did change elsewhere is `is_closed()` on the shared `FakeConn`,
+which is a double standing in for an asyncpg connection and should have had it.
+
+Visible as `db_pool_dead_connections_total`: a trickle is a managed database
+reaping idle connections and is fine; a spike is the database going away.
