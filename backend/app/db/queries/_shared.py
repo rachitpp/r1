@@ -19,6 +19,7 @@ ChunkRow = tuple[
     int,  # end_line
     str,  # header
     str,  # code
+    bool,  # is_prose (derived from kind, SPEC §30.4)
     list[float],  # embedding
 ]
 FileRow = tuple[str, str, int]  # path, content, n_lines

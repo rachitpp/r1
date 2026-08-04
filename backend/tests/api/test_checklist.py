@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 
-from tests.api.conftest import REPO_ID, UNKNOWN_REPO_ID, FakeArq, FakeConn
+from tests.api.fakes import REPO_ID, UNKNOWN_REPO_ID, FakeArq, FakeConn
 
 
 async def test_checklist_returns_steps_in_reading_order(

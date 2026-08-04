@@ -12,7 +12,7 @@ import uuid
 
 import httpx
 
-from tests.api.conftest import FILE_CONTENT, FILE_PATH, REPO_ID, FakeConn
+from tests.api.fakes import FILE_CONTENT, FILE_PATH, REPO_ID, FakeConn
 
 
 async def collect_events(

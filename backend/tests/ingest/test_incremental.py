@@ -38,7 +38,7 @@ def _selection(files: list[SourceFile]) -> SelectionResult:
     return SelectionResult(
         files=files,
         n_candidates=len(files),
-        skipped_non_python=0,
+        skipped_unsupported=0,
         skipped_ignored_dir=0,
         skipped_too_large=0,
         skipped_binary=0,

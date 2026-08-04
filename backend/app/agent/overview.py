@@ -51,11 +51,20 @@ from app.config import (
     OVERVIEW_MAX_ENTRY_POINTS,
     OVERVIEW_MAX_KEY_SYMBOLS,
     OVERVIEW_MAX_MODULES,
+    OVERVIEW_MAX_README_SECTIONS,
 )
 from app.db import queries
 from app.exceptions import AgentError
 
 logger = logging.getLogger(__name__)
+
+
+def _section_of(header: str) -> str | None:
+    """The heading path out of a §30.3 chunk header, or None for a preamble."""
+    for line in header.splitlines():
+        if line.startswith("# Section: "):
+            return line.removeprefix("# Section: ").strip()
+    return None
 
 
 async def gather_facts(
@@ -94,12 +103,20 @@ async def gather_facts(
     key_symbols = await queries.most_referenced_symbols(
         conn, snapshot_id, OVERVIEW_MAX_KEY_SYMBOLS
     )
+    # §30.5. Capped like every other fact group: a long README would otherwise
+    # crowd out the graph facts it is meant to sit beside.
+    readme = await queries.readme_sections(
+        conn, snapshot_id, OVERVIEW_MAX_README_SECTIONS
+    )
 
     return {
         "name": str(source["name"]),
         "url": str(source["url"]),
         "commit": repo["head_sha"],
-        "n_files": len(paths),
+        # Code files only. `files` now also holds §30 prose and config, and
+        # calling a README a "Python file indexed" in the brief would be a
+        # fact the model is entitled to reason from and wrong.
+        "n_files": sum(1 for p in paths if p.endswith(".py")),
         "top_dirs": sorted({p.split("/")[0] for p in paths if "/" in p}),
         # Only the head of the ranking reaches the prompt: everything here is
         # tokens, and module 40 of 200 informs nothing.
@@ -148,6 +165,18 @@ async def gather_facts(
                 "refs": int(r["refs"]),
             }
             for r in key_symbols
+        ],
+        "readme": [
+            {
+                "file_path": str(r["file_path"]),
+                # The heading path, recovered from the §30.3 header rather than
+                # stored twice. `symbol` is NULL for prose by design.
+                "section": _section_of(str(r["header"])),
+                "text": str(r["code"]),
+                "start_line": int(r["start_line"]),
+                "end_line": int(r["end_line"]),
+            }
+            for r in readme
         ],
     }
 

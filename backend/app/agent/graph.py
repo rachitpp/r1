@@ -63,7 +63,7 @@ class AgentState(TypedDict):
 
 
 def build_tools(source: ConnSource, snapshot_id: UUID) -> list[StructuredTool]:
-    """Bind ``source``/``snapshot_id`` into the six tools (SPEC §7.1).
+    """Bind ``source``/``snapshot_id`` into the seven tools (SPEC §7.1, §30.5).
 
     The model never sees the connection or the repo id — they are closure
     state, not parameters it could get wrong.
@@ -78,6 +78,10 @@ def build_tools(source: ConnSource, snapshot_id: UUID) -> list[StructuredTool]:
     async def search_code(query: str, k: int = 10) -> str:
         async with acquire(source) as conn:
             return json.dumps(await t.search_code(conn, snapshot_id, query, k))
+
+    async def search_docs(query: str, k: int = 10) -> str:
+        async with acquire(source) as conn:
+            return json.dumps(await t.search_docs(conn, snapshot_id, query, k))
 
     async def read_file(
         path: str, start_line: int | None = None, end_line: int | None = None
@@ -142,6 +146,16 @@ def build_tools(source: ConnSource, snapshot_id: UUID) -> list[StructuredTool]:
         (list_directory, "Repository tree, two levels deep, with file sizes. "
                          "Call this only when you are unsure of the layout and "
                          "search has not helped."),
+        (search_docs, "Semantic search over the project's DOCUMENTATION, "
+                      "manifests and CI config — README, docs/, changelog, "
+                      "pyproject.toml, requirements, Dockerfile, workflows. "
+                      "CALL THIS INSTEAD OF search_code when the question is "
+                      "about installing, running, testing, configuring, "
+                      "contributing to, or the release history of the project "
+                      "— search_code cannot answer those and will return "
+                      "plausible-looking code that does not. For how the code "
+                      "WORKS, use search_code: this returns prose ABOUT code, "
+                      "which is weaker evidence than the code itself."),
     ]
     return [
         StructuredTool.from_function(coroutine=fn, name=fn.__name__, description=desc)

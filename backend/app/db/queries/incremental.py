@@ -96,6 +96,10 @@ async def copy_chunks(
     snapshot's `symbols` table, and the backfill after the symbol pass resolves
     it against this one — copying it would leave every reused chunk pointing at
     another corpus's symbol row.
+
+    ``is_prose`` *is* copied, with ``is_test``. Both are properties of the chunk
+    rather than of the snapshot, and re-deriving them here would duplicate the
+    §30.4 mapping in a second place that could drift from the first.
     """
     if not paths:
         return 0
@@ -103,9 +107,9 @@ async def copy_chunks(
         """
         INSERT INTO chunks
           (snapshot_id, file_path, symbol, kind, part, n_parts,
-           start_line, end_line, header, code, embedding, is_test)
+           start_line, end_line, header, code, embedding, is_test, is_prose)
         SELECT $2, file_path, symbol, kind, part, n_parts,
-               start_line, end_line, header, code, embedding, is_test
+               start_line, end_line, header, code, embedding, is_test, is_prose
           FROM chunks
          WHERE snapshot_id = $1
            AND file_path = ANY($3::text[])

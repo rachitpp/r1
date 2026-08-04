@@ -18,7 +18,7 @@ import pytest
 
 from app.api import routes
 from app.config import MAX_REQUEST_BYTES, QUESTION_MAX_CHARS, get_settings
-from tests.api.conftest import FILE_CONTENT, FILE_PATH, REPO_ID, FakeArq, FakeConn
+from tests.api.fakes import FILE_CONTENT, FILE_PATH, REPO_ID, FakeArq, FakeConn
 
 # ---------------------------------------------------------------------------
 # Request correlation (#6)

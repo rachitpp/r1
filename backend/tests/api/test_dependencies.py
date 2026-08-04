@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import httpx
 
-from tests.api.conftest import (
+from tests.api.fakes import (
     FILE_PATH,
     INDEXING_REPO_ID,
     REPO_ID,

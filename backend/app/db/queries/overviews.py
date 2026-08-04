@@ -6,6 +6,37 @@ from uuid import UUID
 
 import asyncpg
 
+
+async def readme_sections(
+    conn: asyncpg.Connection, snapshot_id: UUID, limit: int
+) -> list[asyncpg.Record]:
+    """The README's chunks, in file order, for the §30.5 overview fact group.
+
+    **Only the README, and only at the repo root.** `docs/` is a whole corpus
+    and would bury the graph facts it sits beside; a root `README*` is the one
+    file a project writes for exactly the reader §19 is addressing.
+
+    Returned with line ranges like every other fact group, because the point is
+    that "How to run it" becomes citable rather than recalled — §19.3's rule
+    that a fact you want cited has to arrive with something to cite.
+    """
+    return await conn.fetch(
+        """
+        SELECT file_path, header, code, start_line, end_line
+          FROM chunks
+         WHERE snapshot_id = $1
+           AND is_prose
+           AND kind = 'document'
+           AND file_path NOT LIKE '%/%'
+           AND upper(file_path) LIKE 'README%'
+         ORDER BY file_path, start_line
+         LIMIT $2
+        """,
+        snapshot_id,
+        limit,
+    )
+
+
 # --- §19 overview storage --------------------------------------------------
 
 

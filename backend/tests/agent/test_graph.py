@@ -132,11 +132,14 @@ async def test_dispatches_tool_then_answers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_six_tools_are_bound() -> None:
+async def test_all_seven_tools_are_bound() -> None:
+    """§7.1's six, plus `search_docs` (§30.5). The set is closed on purpose:
+    every tool competes for the same cap of 8 executions."""
     model = FakeChatModel(responses=[AIMessage(content="x")], calls=[])
     build_graph(model, FakeConn(), REPO_ID)  # type: ignore[arg-type]
     assert set(model.bound_tool_names) == {
         "search_code",
+        "search_docs",
         "read_file",
         "get_definition",
         "find_references",

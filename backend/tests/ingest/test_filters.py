@@ -15,11 +15,20 @@ def _kept_paths(repo_dir: Path) -> set[str]:
     return {f.path for f in select_files(repo_dir).files}
 
 
-def test_keeps_only_python(make_repo) -> None:
-    repo = make_repo({"a.py": "x = 1\n", "README.md": "# hi\n", "b.txt": "no\n"})
+def test_keeps_code_and_prose_and_drops_the_rest(make_repo) -> None:
+    """§30.2 widened step 2: `*.py` **or** a prose/config path, nothing else."""
+    repo = make_repo(
+        {
+            "a.py": "x = 1\n",
+            "README.md": "# hi\n",
+            "notes.txt": "no\n",
+            "logo.svg": "<svg/>\n",
+            "data.csv": "a,b\n",
+        }
+    )
     result = select_files(repo)
-    assert {f.path for f in result.files} == {"a.py"}
-    assert result.skipped_non_python == 2
+    assert {f.path for f in result.files} == {"a.py", "README.md", "notes.txt"}
+    assert result.skipped_unsupported == 2  # the svg and the csv
 
 
 def test_drops_ignore_dir_segment_at_any_depth(make_repo) -> None:

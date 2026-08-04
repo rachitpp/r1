@@ -28,17 +28,31 @@ from app.ingest.embedder import encode_async, rerank_async
 Mode = Literal["vector", "fts", "hybrid", "hybrid+rerank"]
 MODES: tuple[Mode, ...] = ("vector", "fts", "hybrid", "hybrid+rerank")
 
+# What §30 prose/config chunks do to the candidate pool.
+#
+#   exclude — the default and the shipped behaviour (§30.4).
+#   include — blend prose into the default pool. The counterfactual §30.4 keeps
+#             measurable rather than merely asserted (`eval.py --include-prose`).
+#   only    — restrict the pool to prose, which is `search_docs` (§30.5).
+#
+# A tri-state rather than the SPEC sketch's `include_prose: bool`, because
+# `search_docs` needs "only" and a bool cannot say it. The alternative — a second
+# boolean — has four spellings for three meanings, one of them contradictory.
+# One entry point still, so CLAUDE.md rule 2 holds.
+ProsePolicy = Literal["exclude", "include", "only"]
+
 # Fusion returns at most this many candidates (SPEC §5.1 outer LIMIT / §5.3
 # "fusion top-40"); injection may add up to INJECT_LIMIT more before rerank.
 FUSION_LIMIT = 40
 INJECT_LIMIT = 10
 PREVIEW_CHARS = 200
 
-# Retrieval targets implementation by default (SPEC §5.4). Test chunks stay in
-# the corpus but are filtered out of every candidate-producing query unless
-# ``include_tests=True``. Appended to a WHERE clause that already has a
+# Retrieval targets implementation by default (SPEC §5.4, §30.4). Test and prose
+# chunks stay in the corpus but are filtered out of every candidate-producing
+# query unless explicitly included. Appended to a WHERE clause that already has a
 # predicate; carries no bind parameter.
 _NO_TESTS = " AND NOT is_test"
+_NO_PROSE = " AND NOT is_prose"
 
 
 def _test_filter(include_tests: bool, *, alias: str = "") -> str:
@@ -46,6 +60,29 @@ def _test_filter(include_tests: bool, *, alias: str = "") -> str:
     if include_tests:
         return ""
     return f" AND NOT {alias}is_test" if alias else _NO_TESTS
+
+
+def _prose_filter(prose: ProsePolicy, *, alias: str = "") -> str:
+    """SQL fragment applying the §30.4 prose condition.
+
+    Mechanically identical to :func:`_test_filter`, and for a stronger version of
+    the same reason. §5.4 excludes tests because they are written in user
+    vocabulary while implementation is terse; a README is not merely user
+    vocabulary, it is the *same prose register as the question*. Blended into the
+    default pool it would outrank implementation harder than tests ever did.
+    """
+    if prose == "include":
+        return ""
+    if prose == "only":
+        return f" AND {alias}is_prose"
+    return f" AND NOT {alias}is_prose" if alias else _NO_PROSE
+
+
+def _pool_filter(
+    include_tests: bool, prose: ProsePolicy, *, alias: str = ""
+) -> str:
+    """Both corpus conditions, in the order the SPEC lists them."""
+    return _test_filter(include_tests, alias=alias) + _prose_filter(prose, alias=alias)
 
 
 class SearchHit(TypedDict):
@@ -132,7 +169,12 @@ def extract_identifiers(query: str) -> list[str]:
 
 
 async def _inject_symbol_ids(
-    conn: asyncpg.Connection, snapshot_id: UUID, query: str, *, include_tests: bool = False
+    conn: asyncpg.Connection,
+    snapshot_id: UUID,
+    query: str,
+    *,
+    include_tests: bool = False,
+    prose: ProsePolicy = "exclude",
 ) -> list[int]:
     """Chunk ids whose symbol matches a query identifier (SPEC §5.2).
 
@@ -143,6 +185,10 @@ async def _inject_symbol_ids(
     identifier — was found matching `json.dumps` for a query of `json_dumps`.
     Test chunks are excluded unless ``include_tests`` (SPEC §5.4) — otherwise a
     query naming a symbol would inject its test alongside the implementation.
+
+    Prose is excluded by the same §30.4 condition as the fusion legs. It would
+    almost never match anyway — ``chunks.symbol`` is NULL for every prose chunk —
+    but "almost never" is not the guarantee the exclusion is supposed to give.
     """
     names = extract_identifiers(query)
     if not names:
@@ -155,7 +201,7 @@ async def _inject_symbol_ids(
           AND (symbol = ANY($2::text[])
                OR EXISTS (SELECT 1 FROM unnest($3::text[]) AS sfx
                            WHERE right(symbol, length(sfx)) = sfx))
-          {_test_filter(include_tests)}
+          {_pool_filter(include_tests, prose)}
         ORDER BY id
         LIMIT $4
         """,
@@ -197,12 +243,13 @@ async def _vector_leg(
     limit: int,
     *,
     include_tests: bool = False,
+    prose: ProsePolicy = "exclude",
 ) -> list[tuple[int, float]]:
     """Top-``limit`` chunk ids by cosine similarity, with similarity scores."""
     rows = await conn.fetch(
         f"""
         SELECT id, 1 - (embedding <=> $1) AS score
-        FROM chunks WHERE snapshot_id = $2{_test_filter(include_tests)}
+        FROM chunks WHERE snapshot_id = $2{_pool_filter(include_tests, prose)}
         ORDER BY embedding <=> $1, id
         LIMIT $3
         """,
@@ -220,6 +267,7 @@ async def _fts_leg(
     limit: int,
     *,
     include_tests: bool = False,
+    prose: ProsePolicy = "exclude",
 ) -> list[tuple[int, float]]:
     """Top-``limit`` chunk ids by FTS ts_rank, with rank scores."""
     rows = await conn.fetch(
@@ -227,7 +275,7 @@ async def _fts_leg(
         SELECT c.id, ts_rank(c.tsv, q) AS score
         FROM chunks c, {_fts_query_sql("$1")} AS q
         WHERE c.snapshot_id = $2 AND c.tsv @@ q
-              {_test_filter(include_tests, alias="c.")}
+              {_pool_filter(include_tests, prose, alias="c.")}
         ORDER BY score DESC, c.id
         LIMIT $3
         """,
@@ -245,6 +293,7 @@ async def _fusion(
     query: str,
     *,
     include_tests: bool = False,
+    prose: ProsePolicy = "exclude",
 ) -> list[tuple[int, float]]:
     """RRF-fuse the vector and FTS legs in one SQL statement (SPEC §5.1).
 
@@ -261,22 +310,22 @@ async def _fusion(
     leg collides exactly whenever two chunks hold the same rank in the two
     legs. Threshold metrics survive that; MRR does not (DECISIONS 2026-07-29).
 
-    Both CTEs apply the §5.4 test filter, so exclusion happens *before* the
-    per-leg LIMIT — test chunks never consume a top-40 slot that implementation
-    could have taken.
+    Both CTEs apply the §5.4 test filter **and** the §30.4 prose filter, so
+    exclusion happens *before* the per-leg LIMIT — an excluded chunk never
+    consumes a top-40 slot that implementation could have taken.
     """
-    no_tests = _test_filter(include_tests)
+    pool = _pool_filter(include_tests, prose)
     rows = await conn.fetch(
         f"""
         WITH vec AS (
           SELECT id, ROW_NUMBER() OVER (ORDER BY embedding <=> $1, id) AS rnk
-          FROM chunks WHERE snapshot_id = $2{no_tests}
+          FROM chunks WHERE snapshot_id = $2{pool}
           ORDER BY embedding <=> $1, id LIMIT $4
         ),
         fts AS (
           SELECT id, ROW_NUMBER() OVER (ORDER BY ts_rank(tsv, q) DESC, id) AS rnk
           FROM chunks, {_fts_query_sql("$3")} AS q
-          WHERE snapshot_id = $2 AND tsv @@ q{no_tests}
+          WHERE snapshot_id = $2 AND tsv @@ q{pool}
           ORDER BY ts_rank(tsv, q) DESC, id LIMIT $5
         )
         SELECT COALESCE(v.id, f.id) AS chunk_id,
@@ -344,6 +393,7 @@ async def search(
     k: int = SEARCH_K,
     mode: Mode = "hybrid+rerank",
     include_tests: bool = False,
+    prose: ProsePolicy = "exclude",
 ) -> list[SearchHit]:
     """Retrieve the top-``k`` chunks for ``query`` under the given ``mode``.
 
@@ -355,9 +405,15 @@ async def search(
     ``include_tests`` (default False) is the SPEC §5.4 corpus condition: test
     chunks are excluded from every leg and from injection. Passing True restores
     the shadowed condition and exists to keep that counterfactual measurable.
+
+    ``prose`` is the same idea for §30.4 — ``"exclude"`` is the shipped pool,
+    ``"include"`` blends prose in for the counterfactual, ``"only"`` restricts to
+    it and is what ``search_docs`` calls.
     """
     if mode == "fts":
-        scored = await _fts_leg(conn, snapshot_id, query, k, include_tests=include_tests)
+        scored = await _fts_leg(
+            conn, snapshot_id, query, k, include_tests=include_tests, prose=prose
+        )
         rows = await _fetch_rows(conn, [i for i, _ in scored])
         return [_hit(rows[i], s) for i, s in scored if i in rows]
 
@@ -369,7 +425,7 @@ async def search(
         async with conn.transaction():
             await _set_ef_search(conn)
             scored = await _vector_leg(
-                conn, snapshot_id, qvec, k, include_tests=include_tests
+                conn, snapshot_id, qvec, k, include_tests=include_tests, prose=prose
             )
         rows = await _fetch_rows(conn, [i for i, _ in scored])
         return [_hit(rows[i], s) for i, s in scored if i in rows]
@@ -377,7 +433,9 @@ async def search(
     # hybrid / hybrid+rerank both start from RRF fusion.
     async with conn.transaction():
         await _set_ef_search(conn)
-        fused = await _fusion(conn, snapshot_id, qvec, query, include_tests=include_tests)
+        fused = await _fusion(
+            conn, snapshot_id, qvec, query, include_tests=include_tests, prose=prose
+        )
 
     if mode == "hybrid":
         rows = await _fetch_rows(conn, [i for i, _ in fused])
@@ -386,7 +444,7 @@ async def search(
 
     # hybrid+rerank: fusion ∪ injection, deduped, cross-encoder reranked.
     injected = await _inject_symbol_ids(
-        conn, snapshot_id, query, include_tests=include_tests
+        conn, snapshot_id, query, include_tests=include_tests, prose=prose
     )
     pool_ids: list[int] = list(dict.fromkeys([i for i, _ in fused] + injected))
     rows = await _fetch_rows(conn, pool_ids)
@@ -406,6 +464,7 @@ async def hybrid_search(
     *,
     source: ConnSource | None = None,
     include_tests: bool = False,
+    prose: ProsePolicy = "exclude",
     rerank: bool | None = None,
 ) -> list[SearchHit]:
     """The single public retrieval entry point (SPEC §5.3, CLAUDE.md rule 2).
@@ -433,8 +492,10 @@ async def hybrid_search(
     exact configuration measured at `hybrid` hit@10 0.95.
 
     Retrieval targets implementation by default: test chunks are flagged at
-    ingest and filtered here (SPEC §5.4). They remain in the ``files`` table, so
-    ``read_file`` and ``list_directory`` still see them.
+    ingest and filtered here (SPEC §5.4), and §30 prose/config chunks are
+    excluded by ``prose="exclude"``. All of them remain in the ``files`` table,
+    so ``read_file`` and ``list_directory`` still see them; prose is reached
+    deliberately, through ``search_docs`` (§30.5).
     """
     settings = get_settings()
     use_rerank = settings.RERANK_ENABLED if rerank is None else rerank
@@ -443,14 +504,26 @@ async def hybrid_search(
     if source is not None:
         async with acquire(source) as conn:
             return await search(
-                conn, snapshot_id, query, k=k, mode=mode, include_tests=include_tests
+                conn,
+                snapshot_id,
+                query,
+                k=k,
+                mode=mode,
+                include_tests=include_tests,
+                prose=prose,
             )
 
     pool = await create_pool(settings.DATABASE_URL, min_size=1, max_size=2)
     try:
         async with acquire(pool) as conn:
             return await search(
-                conn, snapshot_id, query, k=k, mode=mode, include_tests=include_tests
+                conn,
+                snapshot_id,
+                query,
+                k=k,
+                mode=mode,
+                include_tests=include_tests,
+                prose=prose,
             )
     finally:
         await close_pool(pool)

@@ -53,7 +53,7 @@ def _result() -> IngestResult:
         selection=SelectionResult(
             files=[],
             n_candidates=10,
-            skipped_non_python=3,
+            skipped_unsupported=3,
             skipped_ignored_dir=1,
             skipped_too_large=0,
             skipped_binary=0,

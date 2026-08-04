@@ -111,8 +111,9 @@ def test_hybrid_search_mode_selection(
     """hybrid_search picks its mode from `rerank`, falling back to RERANK_ENABLED."""
     captured: dict[str, object] = {}
 
-    async def fake_search(conn, repo_id, query, *, k, mode, include_tests):
+    async def fake_search(conn, repo_id, query, *, k, mode, include_tests, prose):
         captured["mode"] = mode
+        captured["prose"] = prose
         return []
 
     async def fake_create_pool(dsn, **kwargs):
@@ -142,3 +143,6 @@ def test_hybrid_search_mode_selection(
         hybrid.hybrid_search(uuid4(), "how does auth work", rerank=explicit)
     )
     assert captured["mode"] == expected_mode
+    # §30.7: the default candidate pool must not change. A caller that does not
+    # ask for prose must not get it, whatever the rerank configuration is.
+    assert captured["prose"] == "exclude"

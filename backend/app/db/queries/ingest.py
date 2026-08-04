@@ -289,8 +289,8 @@ async def insert_chunks(
         """
         INSERT INTO chunks
           (snapshot_id, file_path, is_test, symbol, kind, part, n_parts,
-           start_line, end_line, header, code, embedding)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+           start_line, end_line, header, code, is_prose, embedding)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         """,
         [(snapshot_id, *row) for row in rows],
     )

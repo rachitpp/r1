@@ -12,13 +12,52 @@ the right file and overshot the span, which is worth keeping.
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 from typing import TypedDict
 from uuid import UUID
 
 import asyncpg
 
+from app.config import (
+    CI_WORKFLOW_EXTENSIONS,
+    CONFIG_EXTENSIONS,
+    CONFIG_FILENAMES,
+    PROSE_EXTENSIONS,
+)
+
+# Every extension a chunk can come from: `.py`, plus everything §30.2 selects.
+#
+# **Derived from the §12 constants, not restated.** This pattern used to be
+# `\.py` alone, which silently dropped every citation of a README the moment §30
+# put one in the corpus — the answer still *said* `[README.md:90-104]` and the
+# validated list came back without it, so the claim rendered as literal text
+# instead of a chip. Widening selection must widen citations in one edit, or the
+# next class of chunk repeats it.
+_CITABLE_SUFFIXES = {
+    ".py",
+    *PROSE_EXTENSIONS,
+    *CONFIG_EXTENSIONS,
+    *CI_WORKFLOW_EXTENSIONS,
+    *{s for s in (PurePosixPath(n).suffix for n in CONFIG_FILENAMES) if s},
+}
+# Config files with no extension at all. `Dockerfile.alpine` is covered by the
+# trailing `[\w.\-]*`, which is also why these are matched as a prefix.
+_BARE_NAMES = ("Dockerfile", "Makefile", "Pipfile")
+
+
+def _alt(items: object) -> str:
+    # Longest-first so `.yaml` cannot be shadowed by a `.yml` prefix match.
+    return "|".join(re.escape(s) for s in sorted(items, key=len, reverse=True))  # type: ignore[call-overload]
+
+
 # [path:start-end] — path may contain dots, slashes, dashes, underscores.
-CITATION_RE = re.compile(r"\[([\w./\-]+\.py):(\d+)-(\d+)\]")
+# A fabricated path still gets dropped by `validate_citations`; this pattern
+# only has to avoid matching ordinary prose like `[see 1-2]`.
+CITATION_RE = re.compile(
+    r"\[((?:[\w./\-]*(?:" + _alt(_CITABLE_SUFFIXES) + r"))"
+    r"|(?:[\w./\-]*(?:" + _alt(_BARE_NAMES) + r")[\w.\-]*)"
+    r"):(\d+)-(\d+)\]"
+)
 
 
 class Citation(TypedDict):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.config import CHUNK_TOKEN_MAX
 from app.ingest.chunker import SEPARATOR, chunk_file
-from app.ingest.tokens import HeuristicTokenCounter
+from app.ingest.token_budget import HeuristicTokenCounter
 
 from .conftest import parse_source
 

@@ -37,6 +37,39 @@ IGNORE_DIRS: frozenset[str] = frozenset(
 )
 TEST_DIR_SEGMENTS: frozenset[str] = frozenset({"tests", "test", "testing"})
 TEST_FILE_NAMES: frozenset[str] = frozenset({"conftest.py"})
+
+# §30.2 prose and configuration selection. Matched *after* the `*.py` keep, so a
+# file is code or it is prose and never both — `setup.py` and `noxfile.py` are
+# `*.py` and keep chunking as code, which is why they appear in no list here.
+#
+# Extensions are prose; the rest are configuration. The split is not cosmetic:
+# prose chunks on headings (§30.3) while config is never split at all, because a
+# `pyproject.toml` cut in half is a `pyproject.toml` that answers nothing.
+PROSE_EXTENSIONS: frozenset[str] = frozenset({".md", ".rst", ".txt"})
+CONFIG_FILENAMES: frozenset[str] = frozenset(
+    {
+        "setup.cfg",
+        "Pipfile",
+        "environment.yml",
+        "Makefile",
+        "tox.ini",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+    }
+)
+# Prefix rules, for the families whose names vary: `requirements-dev.txt`,
+# `Dockerfile.alpine`, `docker-compose.prod.yml`. `requirements*.txt` is covered
+# by PROSE_EXTENSIONS' `.txt` first — it is listed in §30.2 as a manifest, and it
+# is reclassified to `config` by CONFIG_NAME_PREFIXES below rather than left as
+# prose, because a requirements file has no headings to chunk on.
+CONFIG_NAME_PREFIXES: tuple[str, ...] = ("requirements", "Dockerfile", "docker-compose")
+# `pyproject.toml` is the only manifest whose extension is otherwise unmatched.
+CONFIG_EXTENSIONS: frozenset[str] = frozenset({".toml"})
+# CI workflows, matched on the directory rather than the name: `.github/workflows`
+# holds nothing but CI config, and its files are named freely.
+CI_WORKFLOW_DIR: str = ".github/workflows"
+CI_WORKFLOW_EXTENSIONS: frozenset[str] = frozenset({".yml", ".yaml"})
+
 MAX_FILE_BYTES: int = 500_000
 MAX_FILES: int = 10_000
 CHUNK_TOKEN_MAX: int = 480
@@ -84,6 +117,11 @@ OVERVIEW_MAX_MODULES: int = 15
 OVERVIEW_MAX_ENTRY_POINTS: int = 8
 OVERVIEW_MAX_API_SYMBOLS: int = 25
 OVERVIEW_MAX_KEY_SYMBOLS: int = 15
+# §30.5 README fact group. Smaller than it looks: a README's first dozen
+# sections carry install/run/test, and everything after is usually badges,
+# licence and acknowledgements. Capped for the same reason as the rest — a long
+# README would crowd out the graph facts it is meant to sit beside.
+OVERVIEW_MAX_README_SECTIONS: int = 12
 # Conventional names for "execution starts here" (§19.2). A convention is
 # evidence, not proof — the shape signal beside it catches the rest.
 ENTRY_POINT_FILENAMES: frozenset[str] = frozenset(

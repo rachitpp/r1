@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 class Embedder(Protocol):
     """The embedding interface the rest of the app depends on (SPEC §4).
 
-    Also satisfies :class:`app.ingest.tokens.TokenCounter` via ``token_len``,
+    Also satisfies :class:`app.ingest.token_budget.TokenCounter` via ``token_len``,
     so the real model tokenizer can drive oversize-split decisions in Phase 2.
     """
 

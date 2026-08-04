@@ -44,7 +44,7 @@ from app.ingest.filters import SelectionResult, select_files
 from app.ingest.naive import naive_chunk_file
 from app.ingest.parser import parse_file
 from app.ingest.pipeline import STRATEGIES, IngestStats, run_ingest
-from app.ingest.tokens import HeuristicTokenCounter
+from app.ingest.token_budget import HeuristicTokenCounter
 from app.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -181,7 +181,7 @@ def format_db_stats(result: IngestStats) -> str:
         f"candidates:  {sel.n_candidates}",
         f"stored files:{sel.n_kept}  (parsed ok={sel.n_kept - result.n_syntax_errors}, "
         f"syntax-error={result.n_syntax_errors})",
-        f"skipped:     non-python={sel.skipped_non_python} "
+        f"skipped:     non-python={sel.skipped_unsupported} "
         f"ignored-dir={sel.skipped_ignored_dir} "
         f"too-large={sel.skipped_too_large} "
         f"binary={sel.skipped_binary} "
@@ -189,7 +189,8 @@ def format_db_stats(result: IngestStats) -> str:
         "-" * 60,
         f"chunks:      {n} total  (real tokenizer)",
         f"  by kind:   module={by_kind['module']} class={by_kind['class']} "
-        f"function={by_kind['function']} method={by_kind['method']}",
+        f"function={by_kind['function']} method={by_kind['method']} "
+        f"document={by_kind['document']} config={by_kind['config']}",
         f"  oversize:  {oversize} chunk(s) split into {extra_parts} extra part(s)",
         f"  vs heuristic: {result.heuristic_chunk_count} -> {n} "
         f"({delta:+d} from real token_len)",
@@ -274,7 +275,7 @@ def format_stats(result: IngestResult) -> str:
         "-" * 60,
         f"candidates:  {sel.n_candidates}",
         f"kept:        {sel.n_kept}",
-        f"skipped:     non-python={sel.skipped_non_python} "
+        f"skipped:     non-python={sel.skipped_unsupported} "
         f"ignored-dir={sel.skipped_ignored_dir} "
         f"too-large={sel.skipped_too_large} "
         f"binary={sel.skipped_binary} "
@@ -283,7 +284,8 @@ def format_stats(result: IngestResult) -> str:
         "-" * 60,
         f"chunks:      {len(result.chunks)} total",
         f"  by kind:   module={by_kind['module']} class={by_kind['class']} "
-        f"function={by_kind['function']} method={by_kind['method']}",
+        f"function={by_kind['function']} method={by_kind['method']} "
+        f"document={by_kind['document']} config={by_kind['config']}",
         f"  oversize:  {oversize} chunk(s) split into {extra_parts} extra part(s)",
         "-" * 60,
         f"elapsed:     {result.elapsed_s:.2f}s",
@@ -316,7 +318,7 @@ def _selection_payload(sel: SelectionResult) -> dict[str, object]:
         "n_candidates": sel.n_candidates,
         "n_kept": sel.n_kept,
         "skipped": {
-            "non_python": sel.skipped_non_python,
+            "non_python": sel.skipped_unsupported,
             "ignored_dir": sel.skipped_ignored_dir,
             "too_large": sel.skipped_too_large,
             "binary": sel.skipped_binary,
@@ -329,8 +331,19 @@ def _chunk_summary(chunks: list[Chunk]) -> dict[str, object]:
     by_kind = Counter(c.kind for c in chunks)
     return {
         "total": len(chunks),
+        # §30 kinds included: without them the per-kind counts silently fail to
+        # sum to `total`, which is how a reader discovers a whole class of chunk
+        # is missing from the report rather than from the corpus.
         "by_kind": {
-            kind: by_kind[kind] for kind in ("module", "class", "function", "method")
+            kind: by_kind[kind]
+            for kind in (
+                "module",
+                "class",
+                "function",
+                "method",
+                "document",
+                "config",
+            )
         },
         "oversize": sum(1 for c in chunks if c.part == 1 and c.n_parts > 1),
         "extra_parts": sum(c.n_parts - 1 for c in chunks if c.part == 1),

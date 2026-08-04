@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from app.config import CHUNK_TOKEN_MAX
 from app.ingest.parser import BodyBlock, ParsedFile, RawChunk, body_statement_spans
-from app.ingest.tokens import TokenCounter
+from app.ingest.token_budget import TokenCounter
 
 SEPARATOR = "\n---\n"
 
@@ -37,7 +37,10 @@ class Chunk:
     """A final, embeddable chunk (SPEC §3, minus DB/embedding fields)."""
 
     file_path: str
-    symbol: str
+    # NULL for §30 prose/config chunks: a heading path is display and embedding
+    # material, not a qualname the symbol graph can join on. `chunks.symbol` has
+    # always been nullable (migration 002).
+    symbol: str | None
     kind: str
     part: int
     n_parts: int

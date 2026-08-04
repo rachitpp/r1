@@ -13,7 +13,7 @@ import uuid
 import httpx
 
 from app.config import SHARED_ANSWER_MAX_CHARS
-from tests.api.conftest import (
+from tests.api.fakes import (
     FILE_PATH,
     REPO_ID,
     SHARED_ID,

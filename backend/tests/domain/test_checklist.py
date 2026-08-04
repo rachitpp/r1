@@ -8,7 +8,7 @@ silently while every field still typechecked.
 
 from __future__ import annotations
 
-from app.checklist import CHECKLIST_MAX_ITEMS, STEP_MAX_LINES, build_checklist
+from app.domain.checklist import CHECKLIST_MAX_ITEMS, STEP_MAX_LINES, build_checklist
 
 N_LINES = {"pkg/__main__.py": 30, "pkg/core.py": 200, "pkg/api.py": 80}
 

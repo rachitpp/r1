@@ -13,7 +13,7 @@ import pytest
 
 from app.agent.prompts import overview_brief
 from app.exceptions import AgentError
-from tests.api.conftest import (
+from tests.api.fakes import (
     REPO_ID,
     UNKNOWN_REPO_ID,
     FakeArq,

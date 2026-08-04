@@ -36,6 +36,7 @@ from app.db.queries import resolve_snapshot_id  # noqa: E402
 from app.retrieval.hybrid import (  # noqa: E402
     MODES,
     Mode,
+    ProsePolicy,
     SearchHit,
     qualname_matches,
     search,
@@ -143,6 +144,7 @@ async def _measure(
     modes: list[Mode],
     *,
     include_tests: bool,
+    prose: ProsePolicy = "exclude",
 ) -> ConditionResult:
     """Run every question through every mode under one corpus condition."""
     # hits[mode][k] = #questions hitting within top-k; rr_sum -> MRR.
@@ -162,6 +164,7 @@ async def _measure(
                 k=MAX_K,
                 mode=mode,
                 include_tests=include_tests,
+                prose=prose,
             )
             rank = _first_hit_rank(found, files, symbols)
             for k in KS:
@@ -183,6 +186,7 @@ async def run(
     repo_ref: str,
     conditions: list[bool],
     benchmark: Path = EVAL_MD,
+    prose: ProsePolicy = "exclude",
 ) -> int:
     url, sha, questions = _parse_eval_md(benchmark)
     ref = repo_ref or url
@@ -206,8 +210,18 @@ async def run(
             n_chunks = await conn.fetchval(
                 "SELECT count(*) FROM chunks WHERE snapshot_id = $1", snapshot_id
             )
+            # `NOT is_prose` as well as `NOT is_test`, since §30: prose chunks
+            # are not test chunks, so without it every README section counts as
+            # implementation and the corpus line overstates the pool these
+            # numbers were measured against. Exactly the trap §30.7 predicted
+            # for the CLAUDE.md verification query, in a second place.
             n_impl = await conn.fetchval(
-                "SELECT count(*) FROM chunks WHERE snapshot_id = $1 AND NOT is_test",
+                "SELECT count(*) FROM chunks WHERE snapshot_id = $1 "
+                "AND NOT is_test AND NOT is_prose",
+                snapshot_id,
+            )
+            n_prose = await conn.fetchval(
+                "SELECT count(*) FROM chunks WHERE snapshot_id = $1 AND is_prose",
                 snapshot_id,
             )
             if sha and head_sha and not head_sha.startswith(sha[:12]):
@@ -216,26 +230,43 @@ async def run(
             await _truth_file_guard(conn, snapshot_id, questions)
 
             for include_tests in conditions:
-                print(f"\n>>> condition: {CONDITION_LABELS[include_tests]}")
+                label = CONDITION_LABELS[include_tests]
+                if prose == "include":
+                    label += " +prose"
+                print(f"\n>>> condition: {label}")
                 results.append(
                     await _measure(
-                        conn, snapshot_id, questions, modes, include_tests=include_tests
+                        conn,
+                        snapshot_id,
+                        questions,
+                        modes,
+                        include_tests=include_tests,
+                        prose=prose,
                     )
                 )
     finally:
         await close_pool(pool)
 
     total = len(questions)
-    corpus = _corpus_line(n_chunks, n_impl)
+    corpus = _corpus_line(n_chunks, n_impl, n_prose)
     print(_format_report(modes, results, url, head_sha, corpus, total))
     _append_results(modes, results, url, head_sha, corpus, total, benchmark)
     print(f"\nappended results block to {benchmark}")
     return 0
 
 
-def _corpus_line(n_chunks: int, n_impl: int) -> str:
-    """Chunk counts split by ``is_test`` — the corpus the numbers came from."""
-    return f"{n_chunks} chunks ({n_impl} implementation, {n_chunks - n_impl} test)"
+def _corpus_line(n_chunks: int, n_impl: int, n_prose: int = 0) -> str:
+    """Chunk counts by class — the corpus the numbers came from.
+
+    Three-way since §30. Prose is reported *and* named as excluded, because the
+    interesting fact about a §30 corpus is not that it contains documentation
+    but that the measured pool does not.
+    """
+    n_test = n_chunks - n_impl - n_prose
+    line = f"{n_chunks} chunks ({n_impl} implementation, {n_test} test"
+    if n_prose:
+        line += f", {n_prose} prose/config excluded"
+    return line + ")"
 
 
 def _rate(n: int, total: int) -> str:
@@ -382,6 +413,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="measure default AND --include-tests, appending one labelled block.",
     )
+    parser.add_argument(
+        "--include-prose",
+        action="store_true",
+        help="blend §30 prose/config chunks into the candidate pool. The default "
+        "excludes them (SPEC §30.4), and this flag is what keeps that exclusion a "
+        "measured decision rather than an asserted one: run it to see how far "
+        "documentation outranks implementation when nothing holds it back.",
+    )
     args = parser.parse_args(argv)
     if args.mode == "all":
         modes: list[Mode] = list(MODES)
@@ -395,7 +434,10 @@ def main(argv: list[str] | None = None) -> int:
         conditions = [False, True]
     else:
         conditions = [bool(args.include_tests)]
-    return asyncio.run(run(modes, args.repo, conditions, Path(args.benchmark)))
+    prose: ProsePolicy = "include" if args.include_prose else "exclude"
+    return asyncio.run(
+        run(modes, args.repo, conditions, Path(args.benchmark), prose=prose)
+    )
 
 
 if __name__ == "__main__":

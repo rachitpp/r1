@@ -14,7 +14,7 @@ import pytest
 
 from app.agent.context import called_by_block, format_called_by
 from app.ingest.chunker import chunk_file
-from app.ingest.tokens import HeuristicTokenCounter
+from app.ingest.token_budget import HeuristicTokenCounter
 from tests.ingest.conftest import parse_source
 
 REPO_ID = uuid.uuid4()

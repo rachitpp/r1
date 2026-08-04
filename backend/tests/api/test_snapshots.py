@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import httpx
 
-from .conftest import FAILED_REPO_ID, REPO_ID, FakeArq, FakeConn
+from .fakes import FAILED_REPO_ID, REPO_ID, FakeArq, FakeConn
 
 READY_URL = "https://github.com/owner/ready"
 FAILED_URL = "https://github.com/owner/failed"

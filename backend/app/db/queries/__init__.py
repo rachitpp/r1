@@ -94,6 +94,7 @@ from app.db.queries.overviews import (
     fail_overview,
     finish_overview,
     get_overview,
+    readme_sections,
 )
 from app.db.queries.sharing import (
     create_shared_answer,
@@ -207,6 +208,7 @@ __all__ = [
     "newest_snapshot_for_source",
     "owned_conversation",
     "public_api_symbols",
+    "readme_sections",
     "resolve_owner_id",
     "resolve_snapshot_id",
     "resolve_symbol_id",

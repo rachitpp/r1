@@ -12,7 +12,7 @@ from __future__ import annotations
 import httpx
 
 from app.config import ARCH_MAX_EDGES, ARCH_MAX_NODES, COVERAGE_MAX_LINKS
-from tests.api.conftest import (
+from tests.api.fakes import (
     FILE_PATH,
     REPO_ID,
     TEST_FILE_PATH,

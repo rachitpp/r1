@@ -1,4 +1,4 @@
-"""The six agent tools (SPEC §7.1), exact signatures.
+"""The seven agent tools (SPEC §7.1, §30.5), exact signatures.
 
 Every tool returns a JSON-serializable dict and **never raises into the loop**:
 failures come back as ``{"error": "..."}`` so the model reads the problem and
@@ -9,6 +9,13 @@ adapts, rather than the graph dying mid-run. A tool that raises is a bug.
 over implementation chunks, rerank off (§5.3), tests excluded (§5.4). It must
 not pass ``rerank=True``: the cross-encoder measured worse-or-equal to plain
 fusion at every k and at MRR (DECISIONS 2026-07-26).
+
+``search_docs`` is the same query against the complementary half of the corpus —
+the §30 prose and config chunks the default pool excludes. It is a *seventh*
+tool rather than a flag on ``search_code``, and rather than a classifier over the
+question, because the agent choosing visibly is the design: a classifier would be
+a model-dependent branch on the critical path, and finding (c) already says tool
+use does not predict correctness.
 """
 
 from __future__ import annotations
@@ -66,6 +73,31 @@ async def search_code(
         hits = await search(conn, snapshot_id, query, k=k, mode="hybrid")
     except Exception as exc:  # noqa: BLE001 — never raise into the loop
         logger.exception("search_code failed")
+        return _err(f"search failed: {exc}")
+    return {"hits": hits}
+
+
+# ---------------------------------------------------------------------------
+# search_docs
+# ---------------------------------------------------------------------------
+
+
+async def search_docs(
+    conn: asyncpg.Connection, snapshot_id: UUID, query: str, k: int = SEARCH_K
+) -> dict[str, Any]:
+    """Search documentation, manifests and CI config (SPEC §30.5).
+
+    The same fusion query as ``search_code``, restricted to the prose/config
+    chunks §30.4 keeps out of the default pool. For setup, usage, configuration
+    and release-note questions — the ones that used to match `is_running_trio`
+    on the word *running*.
+    """
+    if not query.strip():
+        return _err("query must be a non-empty string")
+    try:
+        hits = await search(conn, snapshot_id, query, k=k, mode="hybrid", prose="only")
+    except Exception as exc:  # noqa: BLE001 — never raise into the loop
+        logger.exception("search_docs failed")
         return _err(f"search failed: {exc}")
     return {"hits": hits}
 

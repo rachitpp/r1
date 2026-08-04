@@ -10,7 +10,7 @@ from __future__ import annotations
 import httpx
 
 from app.config import TRACE_MAX_DEPTH
-from tests.api.conftest import FILE_PATH, REPO_ID, UNKNOWN_REPO_ID
+from tests.api.fakes import FILE_PATH, REPO_ID, UNKNOWN_REPO_ID
 
 
 async def test_trace_returns_the_root_and_its_reachable_nodes(

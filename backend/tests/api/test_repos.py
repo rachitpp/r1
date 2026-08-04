@@ -7,7 +7,7 @@ import pytest
 
 from app.api import deps
 from app.main import app
-from tests.api.conftest import (
+from tests.api.fakes import (
     FAILED_REPO_ID,
     FILE_PATH,
     INDEXING_REPO_ID,

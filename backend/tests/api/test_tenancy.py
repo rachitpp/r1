@@ -22,7 +22,7 @@ from app.api.middleware import client_identity
 from app.auth import tokens
 from app.config import SESSION_COOKIE, get_settings
 
-from .conftest import (
+from .fakes import (
     FILE_PATH,
     INDEXING_REPO_ID,
     OTHER_USER_ID,
@@ -260,7 +260,7 @@ def test_resolve_owner_id_prefers_an_explicit_login() -> None:
 
     from app.db import queries
 
-    from .conftest import FakeConn
+    from .fakes import FakeConn
 
     conn = FakeConn()
     assert asyncio.run(queries.resolve_owner_id(conn, "owner")) == USER_ID
@@ -275,7 +275,7 @@ def test_resolve_owner_id_falls_back_to_the_bootstrap_operator(
 
     from app.db import queries
 
-    from .conftest import FakeConn
+    from .fakes import FakeConn
 
     conn = FakeConn()
     monkeypatch.setattr(get_settings(), "BOOTSTRAP_GITHUB_ID", 1)
@@ -291,7 +291,7 @@ def test_resolve_owner_id_is_none_when_there_is_nobody_to_own_it(
 
     from app.db import queries
 
-    from .conftest import FakeConn
+    from .fakes import FakeConn
 
     conn = FakeConn()
     monkeypatch.setattr(get_settings(), "BOOTSTRAP_GITHUB_ID", None)

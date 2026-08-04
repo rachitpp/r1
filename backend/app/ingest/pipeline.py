@@ -55,6 +55,7 @@ from app.ingest.dependencies import (
 )
 from app.ingest.embedder import get_embedder
 from app.ingest.filters import (
+    PROSE_CLASSES,
     SelectionResult,
     SourceFile,
     is_test_path,
@@ -63,13 +64,14 @@ from app.ingest.filters import (
 from app.ingest.history import walk_history
 from app.ingest.naive import naive_chunk_file
 from app.ingest.parser import ParsedFile, parse_file, parse_tree
+from app.ingest.prose import chunk_prose_file
 from app.ingest.symbols import (
     EdgeStats,
     extract_edges,
     extract_symbols,
     import_roots,
 )
-from app.ingest.tokens import HeuristicTokenCounter
+from app.ingest.token_budget import HeuristicTokenCounter
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +137,11 @@ def _chunk_to_row(chunk: Chunk, embedding: list[float]) -> queries.ChunkRow:
         chunk.end_line,
         chunk.header,
         chunk.code,
+        # §30.4: derived from `kind` at the one place a chunk becomes a row,
+        # rather than threaded through the chunkers. `is_prose` is how retrieval
+        # treats a chunk; `kind` is what it is, and this is the single mapping
+        # between them.
+        chunk.kind in PROSE_CLASSES,
         embedding,
     )
 
@@ -437,26 +444,39 @@ async def _run(
             conn, snapshot_id, files_total=len(file_rows), files_parsed=0
         )
 
+        # §30: prose and config are selected alongside code but never parsed —
+        # tree-sitter-python on a README is a syntax error, and counting it as
+        # one would corrupt the number below. The split is by class, once.
+        code_files = [f for f in selection.files if f.file_class == "code"]
+        prose_files = [f for f in selection.files if f.is_prose]
+
         parsed: list[ParsedFile] = []
         n_syntax_errors = 0
         last_written = 0
-        for i, source in enumerate(selection.files, start=1):
+        for i, source in enumerate(code_files, start=1):
             pf = parse_file(source)
             if pf is None:
                 n_syntax_errors += 1
             else:
                 parsed.append(pf)
-            if i - last_written >= PROGRESS_EVERY_N or i == len(selection.files):
+            if i - last_written >= PROGRESS_EVERY_N or i == len(code_files):
                 await queries.set_repo_progress(conn, snapshot_id, files_parsed=i)
                 last_written = i
-        say(f"parsed {len(parsed)} files ({n_syntax_errors} syntax errors)")
+        say(
+            f"parsed {len(parsed)} files ({n_syntax_errors} syntax errors)"
+            + (f", {len(prose_files)} prose/config" if prose_files else "")
+        )
 
         chunks: list[Chunk] = []
         if strategy == "naive":
             # SPEC §2.7 baseline. The parse above still runs so the §10 progress
             # contract and the syntax-error count are identical across the two
             # corpora, but no chunk here touches the AST.
-            for source in selection.files:
+            #
+            # Code only, deliberately: the baseline exists to measure the chunker
+            # against the AST one on the same corpus, and adding prose to one
+            # side would measure §30 instead.
+            for source in code_files:
                 chunks.extend(naive_chunk_file(source))
             # No tokenizer is involved in fixed-window splitting, so there is no
             # heuristic-vs-real delta to report.
@@ -464,11 +484,16 @@ async def _run(
         else:
             for pf in parsed:
                 chunks.extend(chunk_file(pf, embedder))
+            for source in prose_files:
+                chunks.extend(chunk_prose_file(source, embedder))
             # Same chunker, heuristic counter — count only, to report the delta
             # between the heuristic and the real tokenizer (Phase 2
             # Reconciliation 2).
             heuristic = HeuristicTokenCounter()
             heuristic_chunk_count = sum(len(chunk_file(pf, heuristic)) for pf in parsed)
+            heuristic_chunk_count += sum(
+                len(chunk_prose_file(s, heuristic)) for s in prose_files
+            )
         parse_elapsed = time.perf_counter() - parse_start
         await queries.set_repo_progress(
             conn, snapshot_id, chunks_total=len(chunks), chunks_embedded=0

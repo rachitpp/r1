@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import httpx
 
-from tests.api.conftest import (
+from tests.api.fakes import (
     NAIVE_REPO_ID,
     OLDER_REPO_ID,
     REPO_ID,
@@ -70,7 +70,7 @@ async def test_comparing_different_repos_is_rejected(
 ) -> None:
     """A cross-repo diff is every symbol in one repo against every symbol in
     another — a number that looks like a finding and means nothing."""
-    from tests.api.conftest import INDEXING_REPO_ID
+    from tests.api.fakes import INDEXING_REPO_ID
 
     resp = await client.get(f"/repos/{REPO_ID}/compare?base={INDEXING_REPO_ID}")
     assert resp.status_code == 400

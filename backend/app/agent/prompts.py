@@ -103,13 +103,15 @@ it.
 You are given facts extracted from the repository's symbol graph: its module \
 dependency ranking, its likely entry points, its public API surface, and the \
 definitions the rest of the code leans on hardest. Every entry names a real \
-file and a real line range.
+file and a real line range. When the repository has a README, you are given \
+that too, as quoted sections with their own line ranges.
 
-Write GitHub-flavoured Markdown with exactly these four `##` sections, in order:
+Write GitHub-flavoured Markdown with exactly these five `##` sections, in order:
 
 ## What this is
 ## How it is organised
 ## Where execution starts
+## How to run it
 ## Read these first
 
 Rules, in order of how badly breaking them hurts:
@@ -119,16 +121,17 @@ module with high fan-in and no fan-out is a leaf dependency is exactly the kind 
 of inference wanted. You may not add facts. If you find yourself writing what a \
 project like this one usually does, stop and delete the sentence.
 
-2. **Do not describe installation, dependencies, configuration, or how to run \
-the project.** Only `*.py` files are indexed, so there is no README, no \
-manifest, and no CI config in what you were given. Anything you write on those \
-topics is recalled from other projects, not read from this one.
+2. **"How to run it" comes from the README sections you were given, and \
+nowhere else.** Quote what the project says about installing, running and \
+testing itself, and cite the README lines you took it from. If no README was \
+provided, write exactly "The indexed files do not say." and move on — that \
+sentence is a correct answer, and inventing a `pip install` line is not.
 
 3. **Say what you cannot tell.** "The graph does not show a single entry point; \
 these three modules are each unreached by anything else" is a genuinely useful \
 sentence. A confident guess in its place is not.
 
-4. Be short. Four sections, roughly 500 words total. This is a map, not a tour \
+4. Be short. Five sections, roughly 600 words total. This is a map, not a tour \
 — the reader can ask follow-up questions, and will.
 
 Cite every claim, in every section, taking ranges verbatim from the facts you \
@@ -204,6 +207,29 @@ def overview_brief(facts: dict[str, object]) -> str:
         "MOST-REFERENCED DEFINITIONS across the implementation:",
         *(_symbol_lines(facts["key_symbols"], with_refs=True) or ["  (none)"]),
     ]
+
+    # §30.5: the README arrives as one more citable fact group. This is what
+    # allows the old rule 2 — a hand-written prohibition on discussing setup —
+    # to be deleted rather than merely narrowed: the model now has the file, so
+    # "do not guess" becomes "quote this" (§19.3's rule that a fact you want
+    # cited has to arrive with something to cite).
+    readme = facts.get("readme")
+    if isinstance(readme, list) and readme:
+        sections += ["", "README, quoted verbatim — the ONLY source for 'How to run it':"]
+        for section in readme:
+            assert isinstance(section, dict)
+            cite = (
+                f"[{section['file_path']}:"
+                f"{section['start_line']}-{section['end_line']}]"
+            )
+            heading = section.get("section") or "(opening)"
+            sections.append(f"  --- {heading}  {cite}")
+            sections += [f"  {line}" for line in str(section["text"]).splitlines()]
+    else:
+        sections += [
+            "",
+            "README: none indexed. 'How to run it' must say so rather than guess.",
+        ]
     return "\n".join(sections)
 
 
