@@ -44,8 +44,18 @@ export function groundingFor(
   );
 }
 
-/** Mirror of the backend's CITATION_RE (app/agent/citations.py). */
-export const CITATION_RE = /\[([\w./-]+\.py):(\d+)-(\d+)\]/g;
+/**
+ * Mirror of the backend's CITATION_RE (app/agent/citations.py).
+ *
+ * Widened for SPEC §30: the corpus holds documentation, manifests and CI config
+ * as well as code, and a `[README.md:90-104]` the backend validated must render
+ * as a chip here rather than as literal text. The backend builds its pattern
+ * from the §12 selection constants; this is the hand-kept mirror, so the two
+ * have to be changed together — the backend's `parse_citations` is the
+ * authority, and anything it drops never reaches this file.
+ */
+export const CITATION_RE =
+  /\[((?:[\w./-]*(?:\.py|\.md|\.rst|\.txt|\.toml|\.yaml|\.yml|\.cfg|\.ini))|(?:[\w./-]*(?:Dockerfile|Makefile|Pipfile)[\w.-]*)):(\d+)-(\d+)\]/g;
 
 /** Parse `[path:start-end]` markers, deduped, in order of appearance. */
 export function parseCitations(text: string): Citation[] {

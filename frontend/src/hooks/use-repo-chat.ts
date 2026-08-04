@@ -18,7 +18,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { USER_QUERY_KEY } from "@/hooks/use-user";
-import { apiUrl } from "@/lib/api";
+import { apiUrl } from "@/lib/api-client";
 import type { Citation, Grounding } from "@/lib/citations";
 import {
   CHAT_STORAGE_PREFIX,

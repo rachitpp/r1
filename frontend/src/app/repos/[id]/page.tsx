@@ -1,5 +1,5 @@
 import { RequireAuth } from "@/components/auth/require-auth";
-import { RepoStatusView } from "@/components/repo-status-view";
+import { RepoStatusView } from "@/components/repo/repo-status-view";
 
 export default async function RepoPage({
   params,

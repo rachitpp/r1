@@ -13,7 +13,7 @@ import {
 import { useState } from "react";
 
 import { USER_QUERY_KEY } from "@/hooks/use-user";
-import { ApiError } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
 
 export function Providers({ children }: { children: React.ReactNode }) {
   const [client] = useState(() => {

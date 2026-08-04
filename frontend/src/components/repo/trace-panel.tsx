@@ -18,7 +18,9 @@ import { useMutation } from "@tanstack/react-query";
 import { ArrowRight, CornerDownRight, GitBranch, Loader2 } from "lucide-react";
 import { useState } from "react";
 
-import { ApiError, getTrace, type TraceOut } from "@/lib/api";
+import { getTrace } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
+import type { TraceOut } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 const DIRECTIONS = [

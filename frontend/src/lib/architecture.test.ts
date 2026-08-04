@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ModuleEdge } from "@/lib/api";
+import type { ModuleEdge } from "@/lib/api-types";
 import {
   dependenciesOf,
   dependentsOf,

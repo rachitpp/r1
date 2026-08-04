@@ -22,12 +22,9 @@ import { AlertTriangle, Box, PackageX } from "lucide-react";
 import { useState } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ApiError,
-  type DependencyOut,
-  getDependencies,
-  getDependencyUses,
-} from "@/lib/api";
+import { getDependencies, getDependencyUses } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
+import type { DependencyOut } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 /** Packages listed before "show all". Enough to see what dominates. */

@@ -18,9 +18,10 @@ import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowRight, CircleHelp, ExternalLink } from "lucide-react";
 import Link from "next/link";
 
-import { AnswerBody } from "@/components/chat/answer-body";
+import { AnswerBody } from "@/components/answer/answer-body";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getSharedAnswer } from "@/lib/api";
+import { getSharedAnswer } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
 import { citationKey } from "@/lib/citations";
 import { githubBlobUrl, shortSha } from "@/lib/format";
 import { parseMarkdown } from "@/lib/markdown";

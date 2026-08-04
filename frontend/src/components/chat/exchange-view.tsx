@@ -14,9 +14,10 @@
 import { Check, CircleHelp, Copy, Link2, RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { AnswerBody } from "@/components/chat/answer-body";
-import { ApiError, shareAnswer } from "@/lib/api";
-import { CitationChip } from "@/components/chat/citation-chip";
+import { AnswerBody } from "@/components/answer/answer-body";
+import { shareAnswer } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
+import { CitationChip } from "@/components/answer/citation-chip";
 import { StepTimeline } from "@/components/chat/step-timeline";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {

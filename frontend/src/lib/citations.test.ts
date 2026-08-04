@@ -23,8 +23,26 @@ describe("parseCitations", () => {
     ]);
   });
 
-  it("rejects malformed ranges and non-.py paths", () => {
-    expect(parseCitations("[a.py:5-2] [b.py:0-3] [c.md:1-2]")).toEqual([]);
+  it("rejects malformed ranges, and paths the corpus never holds", () => {
+    // `.md` used to belong here. SPEC §30 puts documentation in the corpus, so
+    // a README citation is now correct; what stays rejected is a class
+    // selection never stores, where a citation could only be fabricated.
+    expect(parseCitations("[a.py:5-2] [b.py:0-3] [c.svg:1-2]")).toEqual([]);
+  });
+
+  it("accepts the §30 prose and config classes", () => {
+    expect(
+      parseCitations(
+        "[README.md:1-2] [docs/i.rst:3-4] [pyproject.toml:5-6] " +
+          "[.github/workflows/ci.yml:7-8] [Dockerfile:9-10]",
+      ).map((c) => c.file_path),
+    ).toEqual([
+      "README.md",
+      "docs/i.rst",
+      "pyproject.toml",
+      ".github/workflows/ci.yml",
+      "Dockerfile",
+    ]);
   });
 });
 

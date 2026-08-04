@@ -5,7 +5,7 @@
  * citation markers turned into clickable chips in place.
  */
 
-import { CitationChip } from "@/components/chat/citation-chip";
+import { CitationChip } from "@/components/answer/citation-chip";
 import { type Citation, citationKey } from "@/lib/citations";
 import { type Block, type Inline } from "@/lib/markdown";
 

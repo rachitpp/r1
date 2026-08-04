@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 
-import { SharedAnswerView } from "@/components/shared-answer-view";
+import { SharedAnswerView } from "@/components/shared-answer/shared-answer-view";
 
 /**
  * A published answer, at a permanent URL (SPEC §21).

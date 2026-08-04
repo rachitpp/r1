@@ -28,25 +28,24 @@ import {
 import Link from "next/link";
 import { Fragment, useState } from "react";
 
-import { ArchitecturePanel } from "@/components/architecture-panel";
-import { ComparePanel } from "@/components/compare-panel";
-import { DependenciesPanel } from "@/components/dependencies-panel";
-import { ChecklistPanel } from "@/components/checklist-panel";
-import { TracePanel } from "@/components/trace-panel";
-import { OverviewPanel } from "@/components/overview-panel";
+import { ArchitecturePanel } from "@/components/repo/architecture-panel";
+import { ComparePanel } from "@/components/repo/compare-panel";
+import { DependenciesPanel } from "@/components/repo/dependencies-panel";
+import { ChecklistPanel } from "@/components/repo/checklist-panel";
+import { TracePanel } from "@/components/repo/trace-panel";
+import { OverviewPanel } from "@/components/repo/overview-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
+import { createRepo, getRepo } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
 import {
-  ApiError,
   IN_FLIGHT_STATUSES,
-  createRepo,
-  getRepo,
   type RepoOut,
   type RepoStatus,
-} from "@/lib/api";
+} from "@/lib/api-types";
 import {
   shortSha,
   splitRepoName,

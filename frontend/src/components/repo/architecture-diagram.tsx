@@ -25,7 +25,7 @@ import { Loader2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useTheme } from "@/hooks/use-theme";
-import type { ModuleEdge, ModuleNode } from "@/lib/api";
+import type { ModuleEdge, ModuleNode } from "@/lib/api-types";
 import {
   DIAGRAM_MAX_NODES,
   buildDiagram,

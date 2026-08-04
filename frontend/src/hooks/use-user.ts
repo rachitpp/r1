@@ -16,7 +16,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 
-import { ApiError, getMe, logout, type UserOut } from "@/lib/api";
+import { getMe, logout } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
+import type { UserOut } from "@/lib/api-types";
 import { CHAT_STORAGE_PREFIX } from "@/lib/chat-types";
 
 export const USER_QUERY_KEY = ["auth", "me"] as const;

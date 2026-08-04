@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { ModuleEdge, ModuleNode } from "@/lib/api";
+import type { ModuleEdge, ModuleNode } from "@/lib/api-types";
 import {
   buildDiagram,
   nodeIdFromElement,

@@ -11,7 +11,7 @@
  * what keeps the escaping and the top-N rules testable without a DOM.
  */
 
-import type { ModuleEdge, ModuleNode } from "@/lib/api";
+import type { ModuleEdge, ModuleNode } from "@/lib/api-types";
 
 /**
  * Modules drawn by default.

@@ -34,7 +34,8 @@ import type { ThemedToken } from "shiki/core";
 
 import { useTheme } from "@/hooks/use-theme";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getCoverage, getFile, getHistory } from "@/lib/api";
+import { getCoverage, getFile, getHistory } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
 import type { Citation } from "@/lib/citations";
 import { githubBlobUrl, shortSha, timeAgo } from "@/lib/format";
 import { DARK_THEME, LIGHT_THEME, getHighlighter } from "@/lib/highlighter";

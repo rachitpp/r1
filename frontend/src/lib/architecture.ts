@@ -10,7 +10,7 @@
  * Pure functions only. Nothing here fetches or renders.
  */
 
-import type { ModuleEdge } from "@/lib/api";
+import type { ModuleEdge } from "@/lib/api-types";
 
 /** One end of a dependency, with every edge kind between the pair merged. */
 export interface ModuleLink {

@@ -22,9 +22,11 @@ import { ArrowRight, ChevronRight, Network } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
 
-import { ArchitectureDiagram } from "@/components/architecture-diagram";
+import { ArchitectureDiagram } from "@/components/repo/architecture-diagram";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getArchitecture, type ModuleNode } from "@/lib/api";
+import { getArchitecture } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
+import type { ModuleNode } from "@/lib/api-types";
 import {
   type ModuleLink,
   dependenciesOf,

@@ -1,5 +1,6 @@
 import { AnswerPreview } from "@/components/landing/answer-preview";
-import { RepoList, RepoSubmit } from "@/components/repo-dashboard";
+import { RepoList } from "@/components/landing/repo-list";
+import { RepoSubmit } from "@/components/landing/repo-submit";
 
 /**
  * Every figure here is measured and lives in README.md ("The comparison").

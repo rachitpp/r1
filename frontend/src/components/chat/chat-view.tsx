@@ -29,10 +29,11 @@ import { useEffect, useRef, useState } from "react";
 import { ExchangeView } from "@/components/chat/exchange-view";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { CodeViewer } from "@/components/code-viewer";
+import { CodeViewer } from "@/components/chat/code-viewer";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useRepoChat } from "@/hooks/use-repo-chat";
-import { ApiError, getRepo } from "@/lib/api";
+import { getRepo } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
 import { type Citation, citationKey, explainQuestion } from "@/lib/citations";
 import { splitRepoName, stripStrategySuffix } from "@/lib/format";
 import {

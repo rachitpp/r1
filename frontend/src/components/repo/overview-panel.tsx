@@ -22,10 +22,11 @@ import { ArrowRight, Compass, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
-import { AnswerBody } from "@/components/chat/answer-body";
+import { AnswerBody } from "@/components/answer/answer-body";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ApiError, getOverview } from "@/lib/api";
+import { getOverview } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
 import type { Citation } from "@/lib/citations";
 import { type Block, parseMarkdown } from "@/lib/markdown";
 import { sectionQuestion, splitSections } from "@/lib/overview";

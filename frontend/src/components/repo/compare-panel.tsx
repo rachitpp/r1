@@ -22,13 +22,9 @@ import { GitCompare, Loader2 } from "lucide-react";
 import { useState } from "react";
 
 import { Skeleton } from "@/components/ui/skeleton";
-import {
-  ApiError,
-  type ChangedSymbol,
-  createRepo,
-  getComparison,
-  getSiblingSnapshots,
-} from "@/lib/api";
+import { createRepo, getComparison, getSiblingSnapshots } from "@/lib/api";
+import { ApiError } from "@/lib/api-client";
+import type { ChangedSymbol } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 const SHOWN = 8;

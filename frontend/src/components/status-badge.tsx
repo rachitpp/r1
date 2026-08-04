@@ -1,6 +1,5 @@
 import { Badge } from "@/components/ui/badge";
-import type { RepoStatus } from "@/lib/api";
-import { IN_FLIGHT_STATUSES } from "@/lib/api";
+import { IN_FLIGHT_STATUSES, type RepoStatus } from "@/lib/api-types";
 import { cn } from "@/lib/utils";
 
 /**

@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import { CitationChip } from "@/components/chat/citation-chip";
+import { CitationChip } from "@/components/answer/citation-chip";
 import { type Citation, citationKey } from "@/lib/citations";
 import type { ChatStatus, ChatStep } from "@/lib/chat-types";
 import { cn } from "@/lib/utils";
