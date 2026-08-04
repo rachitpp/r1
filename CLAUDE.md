@@ -63,8 +63,10 @@ do not invent its contents.
 | Frontend | Next.js 15, TS strict, pnpm, Tailwind + shadcn/ui, custom `useRepoChat` over hand-rolled SSE (DECISIONS 2026-07-27; no Vercel AI SDK), Shiki (fine-grained, python-only), TanStack Query; markdown answers + citation viewer (2026-07-28) |
 | Local dev | Docker Compose for pg + redis; apps run on host |
 
-Agent tools (signatures in SPEC): `search_code`, `read_file`,
+Agent tools (signatures in SPEC): `search_code`, `search_docs`, `read_file`,
 `get_definition`, `find_references`, `expand_context`, `list_directory`.
+Seven since SPEC §30 (2026-08-04); the cap of 8 executions is unchanged, so
+`search_docs` competes for the same budget rather than extending it.
 
 ## Hard rules
 
@@ -76,7 +78,10 @@ Agent tools (signatures in SPEC): `search_code`, `read_file`,
    else imports sentence-transformers. Model name comes from config.
 4. **Chunk boundaries come from tree-sitter AST nodes** (function / method /
    class). Oversized nodes split on statement boundaries. Never raw
-   character splits.
+   character splits. **Prose (SPEC §30) chunks on headings instead** — a
+   line-scanner in `app/ingest/prose.py`, not a markdown grammar, because the
+   rule's purpose is that boundaries carry meaning and a heading does. Config
+   files are not split at all.
 5. **Every chunk row carries `repo_id`, `file_path`, `start_line`,
    `end_line`.** Citations are not optional; an answer without them is a bug.
 6. **Agent loop is hard-capped at 8 tool executions**, then a forced final
@@ -151,7 +156,8 @@ SELECT count(*) FILTER (WHERE NOT c.is_test) AS impl,
   JOIN repo_snapshots sn ON sn.id = c.snapshot_id
   JOIN repo_sources   s  ON s.id  = sn.source_id
  WHERE s.url = 'https://github.com/encode/httpx'
-   AND sn.strategy = 'ast';
+   AND sn.strategy = 'ast'
+   AND NOT c.is_prose;
 ```
 Should return `825 | 697`.
 
@@ -162,6 +168,17 @@ httpx corpora (`ast` and the §2.7 `naive` baseline, at the *same* commit), so
 unscoped it returns `1555 | 1170` and reads as a corrupted benchmark. Both the
 source and the strategy are needed; either one alone still counts the wrong
 rows (corrected 2026-07-31).
+
+**`AND NOT c.is_prose` is the third scope, and it is new (2026-08-04).** SPEC §30
+puts documentation, manifests and CI config into the corpus, so a re-ingested
+httpx carries `document` and `config` chunks alongside the code. They are not
+test chunks, so without this clause every one of them lands in the `impl`
+column and `825` becomes a number that looks like drift and is not. Exactly the
+lesson of the 2026-07-31 correction, one class of chunk later — which §30.7
+predicted in advance. **The `825 | 697` figure is for a corpus ingested before
+§30**; the httpx corpus has not been re-ingested since, so it still verifies
+today with or without the clause. Keep the clause: it is what makes the number
+survive the next re-ingest.
 
 ## Phase status (2026-07-28)
 

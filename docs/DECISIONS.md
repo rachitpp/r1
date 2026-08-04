@@ -4079,3 +4079,334 @@ while §30 makes the same files readable and citable.
 `kind <> 'module'` as shorthand for *is a real symbol*. `document` and `config`
 pass that filter and would leak into symbol queries. Both need narrowing to the
 code kinds.
+
+## 2026-08-04 — Frontend structure audit, applied: feature folders, an api split, and tests that can run
+
+A read-only audit of `frontend/` found the dependency graph in good shape —
+strictly layered, zero cycles, no barrel files, one dead file in 61 — and the
+organisation half-finished. The feature layer had been started (`auth/`,
+`chat/`, `landing/`) and never completed, so `components/` root was carrying
+thirteen files of which eleven belonged to a feature. Acting on the audit was
+the human's explicit call; it is not Phase 6 work and does not advance the
+`demo.gif` criterion.
+
+**`components/` now has three files.** `status-badge` and `theme-toggle`, which
+really are shared, plus nothing else. The eight-file repo-detail cluster
+(`repo-status-view` and its six panels, plus `architecture-diagram`) moved to
+`components/repo/`; `code-viewer` to `chat/`, its only consumer; the `/a/[id]`
+view to `shared-answer/`. `landing/` had held one file while
+`repo-dashboard.tsx` — landing's main component — sat at root, which is the
+inconsistency that made the folder meaningless.
+
+**`answer/` exists because three features render answers.** `answer-body` and
+`citation-chip` lived under `chat/` but were imported by `overview-panel` and
+`shared-answer-view` too. A file under a feature folder that two other features
+depend on is not that feature's file. This was the only shared/feature boundary
+leak in the codebase and it is now the only cross-feature dependency, which is
+what a shared module is supposed to look like.
+
+**`repo-dashboard.tsx` was split, not just moved.** It exported `RepoSubmit`,
+`SubmitForm` and `RepoList` — no `RepoDashboard`, so the filename named a
+component that did not exist — and the landing page renders the two halves with
+the measured-numbers strip *between* them, so they were never a unit. Now
+`landing/repo-submit.tsx` and `landing/repo-list.tsx`; `SubmitForm` is private.
+
+**`api.ts` split three ways, and deliberately without a barrel.** 563 lines and
+~60 exports doing three jobs: `api-client.ts` (base URL, `ApiError`, the one
+`fetch` wrapper), `api-types.ts` (the frozen contract), `api.ts` (endpoints
+only). A `lib/api/` folder with an `index.ts` would have changed zero consumer
+imports, and was rejected for that convenience: this frontend has no barrel
+files anywhere, that absence is consistent enough to count as a convention, and
+introducing the first one immediately after praising its absence is incoherent.
+Twenty-two consumers were updated instead. A side benefit: `architecture.ts` and
+`mermaid-graph.ts` now depend on the contract types alone, not on the transport.
+
+**Rule 11 — dependencies added, with approval.** `jsdom`,
+`@testing-library/react` and `@testing-library/dom`, all dev-only. The reason is
+that `vitest.config.ts` matched `src/**/*.test.ts` and ran in a `node`
+environment, so **no component or hook test could execute at all** — 31 of 61
+files were uncoverable by construction, which is why every test in the suite had
+ended up in `lib/`. The config now takes `.tsx` and runs in jsdom.
+
+One wrinkle worth recording: `tsconfig.json` sets `jsx: "preserve"` for Next,
+Vite reads the same field, and the first run failed on unparsed JSX. Fixed with
+`oxc: { jsx: { runtime: "automatic" } }` in the vitest config — Vite 8 is
+rolldown/oxc-based, so this is not the old `esbuild.jsx` option.
+
+**Tests were written, not just enabled.** Sixteen of them, over the seams worth
+holding: `StatusBadge` (pulses only while a worker owns the job), `CitationChip`
+(hands back the citation, not its key), `AnswerBody` (markers become chips and
+the raw `[path:a-b]` never reaches a reader), and `RequireAuth` (all four
+branches — signed-out, unreachable API, a reachable-but-erroring one, and the
+user). A jsdom config with no jsdom tests would have been decoration.
+
+**`loading.tsx` / `error.tsx` for `/repos/[id]`,** and the chat route's
+hand-rolled `<Suspense>` moved into `chat/loading.tsx`. That last one was the
+only change with real risk — the inline boundary carried a comment saying the
+build fails without it — so it was verified by building, not by reading docs. A
+segment `loading.tsx` does satisfy `useSearchParams`.
+
+**Also:** `components/ui/card.tsx` deleted (zero importers, shadcn-scaffolded,
+never adopted — the only orphan in `src/`), and `lib/grounding.test.ts` renamed
+to `citations.grounding.test.ts`, since it tests `groundingFor` from
+`citations.ts` and no `grounding.ts` has ever existed.
+
+**Not done: the ESLint flat-config migration.** `next lint` is deprecated in
+15.5 and `.eslintrc.json` is legacy, but it works, the gain is cosmetic, and
+`eslint-config-next` under flat config has enough friction to risk breaking
+`pnpm lint` on a project one demo recording from done. Deferred on purpose.
+`lib/utils.ts` keeps its vague name for a harder reason: `components.json`
+declares `"utils": "@/lib/utils"`, so the shadcn CLI writes that path into every
+component it generates.
+
+**Verified.** 105 vitest tests green across 13 files (was 89 across 9);
+`npx tsc --noEmit`, `next lint` and `next build` all clean. Bundle sizes
+measured against a stashed HEAD build on the same `node_modules`: identical —
+landing 133 kB, `/repos/[id]` 149 kB, chat 198 kB on both sides, within 0.1 kB
+on the per-route figures. The 181 kB chat figure in the 2026-07-28 entry is
+stale, not regressed: §18, §26, §28, §29 and §30 all landed after it was
+recorded.
+
+One pre-existing problem surfaced and fixed itself: `mermaid` was declared in
+`package.json` but absent from `node_modules`, so `tsc` had been failing on
+`architecture-diagram.tsx` before any of this started. Installing the test
+dependencies pulled it in.
+
+## 2026-08-04 — Backend structure audit, applied: two package splits, a domain layer, and the untested security boundary
+
+Companion to the frontend entry above, same day and same instruction. A
+read-only audit of `backend/` found the opposite balance from the frontend: the
+invariants were in excellent shape and the *concentration* was the problem.
+
+**The hard rules were verified mechanically, not assumed.** Eight of CLAUDE.md's
+twelve are checkable by inspection, and all eight held with zero leaks: every
+`<=>` / `ts_rank` / `to_tsquery` in the codebase is inside
+`retrieval/hybrid.py` (rule 2); every `sentence_transformers` import is inside
+`ingest/embedder.py`, reranker included (rule 3); no websocket anywhere (rule 7);
+no second vector store (rule 8); only `tree_sitter_python` (rule 9); the tool cap
+is `AGENT_TOOL_CAP = 8` in config rather than a literal (rule 6); `api/` imports
+only pure helpers from `ingest` (rule 1); and the single `os.environ` write
+outside `config.py` (`agent/model.py:180`) reads from settings and exports to
+google-auth, which is the rule's substance if not its letter. Import graph:
+155 edges, strictly downward, **no cycles**.
+
+**`db/queries.py` → `app/db/queries/`.** 2,468 lines and 89 functions in one
+module; the largest is now 383. The split needed no design work because the
+author had already drawn it — the file was sectioned by `# --- §NN ---` banners,
+and those banners became the modules: `sources`, `users`, `ingest`, `symbols`,
+`graph_views`, `overviews`, `history`, `sharing`, `conversations`, `trace`,
+`dependencies`, `compare`, `incremental`, plus `_shared` for the eight constants
+that genuinely cross sections.
+
+Unlike the frontend's `api.ts` split, **this one keeps a barrel and that is the
+right call**: every call site reads `from app.db import queries` then
+`queries.foo(...)`, so the package re-exporting 96 names *is* the old module's
+public surface. Zero call sites changed. The backend now has two deliberate
+barrels — this and `app.retrieval`, which exists to enforce rule 2.
+
+Two functions moved against their banner, on the authority of their own
+docstrings rather than a guess: `most_tested_files` said §22.2 while sitting
+under §21, and `implementation_covered_by_file` said it was the reverse of
+`tests_covering_file` (§18.3) while sitting under §19. Both are append-drift, and
+splitting is what surfaced them.
+
+**`api/routes.py` → `app/api/routes/`.** 1,165 lines and 24 routes in one module;
+the largest is now 234. Ten modules by resource, plus `_common` for
+`require_owned_repo`, `chat_slots` and `CACHE_IMMUTABLE`. Sub-routers are
+included in the order the routes were originally declared, because FastAPI
+matches in registration order — that ordering is behaviour, not style.
+
+**This was done as pure moves. The mapping extraction was deliberately not
+done.** The audit's stronger finding stands: handlers still carry row→schema
+assembly and domain rules — `compare_snapshots` decides when two snapshots are
+comparable, which is a domain invariant living in a request handler. Fixing that
+means changing code rather than relocating it, and the honest split is to do the
+navigable-structure half now and leave the behaviour-adjacent half as a separate,
+reviewable change. `app/domain/` was created (with `checklist.py` as its first
+resident) specifically so that work has somewhere to land.
+
+**`app/domain/` and one rename.** `checklist.py` was pure ranking logic sitting
+at `app/` root among entrypoints and cross-cutting infra; it is the proof the
+codebase already knows the right shape, since it was extracted from a route for
+exactly this reason. `ingest/tokens.py` → `ingest/token_budget.py`, ending a
+filename collision with `auth/tokens.py` where the two meant unrelated things.
+
+**One dead function, and its docstring was worse than the code.**
+`queries.count_active_ingests` was the only unreferenced public function among
+89. It was superseded when §15.5 made the submit limit per-user, but its
+docstring still asserted "``POST /repos`` refuses past ``MAX_ACTIVE_INGESTS``" —
+now `count_active_ingests_for_user`'s job. A reader auditing the rate-limiting
+story would have found the wrong function first.
+
+**The coverage gaps that mattered are closed.** Checked by import rather than by
+filename, three modules had no test reaching them. Two are now covered:
+
+* `auth/github.py` (143 lines) — the OAuth exchange, a **security boundary with
+  no direct tests**. 14 tests, network stubbed at the transport so real request
+  construction and body parsing run. Including the two ways it fails *while
+  GitHub answers 200*, and an assertion that `error_description` — which can name
+  the client id — never reaches the caller.
+* `agent/model.py` (194 lines) — the `AGENT_MODEL` prefix switch that DECISIONS
+  treats as load-bearing, with no test referencing `build_chat_model`. 21 tests:
+  the closed four-provider list, per-provider missing-credential messages, and
+  **temperature pinned to 0**, which is the invariant a pre-2026-07-26
+  measurement run violated by omission.
+
+`tests/test_inference_service.py` was the third. It is renamed
+`tests/ingest/test_embedder_http_client.py`, because it imports
+`app.ingest.embedder` and tests the *client* — the filename was asserting
+coverage of `app/inference/main.py` that it never provided. That module remains
+untested; the rename makes the gap visible instead of hiding it.
+
+**Test tree.** `tests/auth/`, `tests/db/` and `tests/domain/` now exist, so the
+tree mirrors `app/`; `test_health.py` moved into the `tests/api/` that already
+existed. And `tests/api/conftest.py` went 1,176 → 231 lines: `FakeConn` (738
+lines alone), `FakeArq` and the seed rows moved to `tests/api/fakes.py`. Thirteen
+modules imported those *from the conftest*, which is the tell — a conftest is
+loaded by pytest for fixtures, not meant to be a library. Moving the seed
+constants alongside the fakes kept every importer a pure module-name swap.
+
+**Not done, on purpose.** The `Project_123.json` in `backend/` matches the
+`Project_*.json` gitignore rule whose own comment says GCP service-account keys
+belong outside the repo — but `.env` points `GOOGLE_APPLICATION_CREDENTIALS` at
+it, so moving the file breaks local Vertex and rewriting a machine-local `.env`
+is not this refactor's business. Flagged, untouched, never committed.
+`app/api/schemas.py` (704 lines) is now the largest module in the backend and
+should be split alongside the mapping extraction, not before it.
+
+**Verified.** `ruff check .` clean across the backend. **656 tests pass, none
+fail**, against a pre-change baseline of 617 passed / 4 failed — and the
+arithmetic is exact: 617 + 4 + 35 new tests = 656.
+
+The four are worth being precise about, because it would be easy to claim credit
+for them. They failed in the baseline on
+`KeyError: '__reduce_cython__'` from `sklearn/metrics/_pairwise_distances_reduction`
+— a binary/import-order fault in the environment, nothing to do with this code —
+and they simply did not reproduce afterwards. Re-run on their own, all six tests
+in those two files pass in 398s. **Nothing here fixed them; they were flaky, and
+the baseline caught them on a bad roll.**
+
+The suite went from 413s to 1,124s, and almost all of that is those same
+integration tests now running to completion (loading `bge-reranker-v2-m3` and
+performing a real ingest) instead of crashing early. The new provider-selection
+tests add ~95s of their own, which is the cost of importing four provider
+packages — paid once per session, and the reason `app/agent/model.py` had no
+tests before.
+
+Route-table equivalence was checked directly rather than inferred: the app
+serves **28 OpenAPI operations** (24 from the split router + 4 from
+`auth_routes`), the same set as before. Worth recording that a first attempt to
+verify this by reading `app.routes` was *wrong* — this FastAPI version stores
+lazy `_IncludedRouter` entries that carry no `.methods`, so a filter on that
+attribute reported four routes and looked like a catastrophic regression. The
+OpenAPI schema is the honest check.
+
+**Unverifiable, and worth recording.** `mypy` could not be run: the host's
+Application Control policy blocks a DLL it loads (`ImportError` on `base64` in
+`mypy/ipc.py`). `strict` compliance is therefore unconfirmed for this change —
+`ruff check` is clean across the backend, and the test suite is the real gate.
+
+## 2026-08-04 — SPEC §30 built: prose and configuration in the corpus
+
+The spec was written earlier today and the code was not. Building it closed the
+gap between a DECISIONS entry that read as finished work and a `app/ingest/`
+that had no `prose.py` in it.
+
+**The corpus had a blind spot and answered anyway.** That is the whole argument
+and it is worth restating, because the feature is easy to mistake for "index
+more files". Retrieval has no score floor — §5.1 hands back top-`k` whatever the
+scores are — so "how do I run the tests" did not fail, it returned
+`is_running_trio`, matched on the word *running*. The cost of the blind spot was
+never silence; it was confident noise handed to a model as evidence.
+
+**Selection widened by exactly one step.** `filters.py` step 2 becomes "`*.py`
+**or** a §30.2 prose/config path"; ignore-dirs, size cap, binary sniff, UTF-8
+decode and `MAX_FILES` are untouched and now apply to a README exactly as they
+applied to a module. `IGNORE_DIRS` earns its keep here — without it,
+`node_modules` and vendored docs arrive as prose.
+
+Config is matched **before** prose, which is not cosmetic: `requirements-dev.txt`
+is a `.txt` and would otherwise chunk as a document, and a requirements file has
+no headings to chunk on. `setup.py` and `noxfile.py` stay code, as §30.2 says —
+a file is code or it is prose, and the extension decides.
+
+**Headings, via a line-scanner, and the rule-11 call not to add a grammar.**
+`tree-sitter-markdown` is the literal reading of hard rule 4 and was rejected:
+rule 4's purpose is that boundaries carry meaning, and a markdown heading is
+unambiguous in the first character of a line. `prose.py` handles `#`-`######`,
+rST over/underlined titles, and — the case that actually bites — headings inside
+fenced code blocks, which are content and must not open a section. A README
+demonstrating `# Install` in a shell block is common enough that getting it
+wrong would have been visible immediately.
+
+`chunks.symbol` is NULL for both classes. The heading path goes in the header
+where it is embedding and display material; putting it in `symbol` would place
+strings that resolve to nothing into a column the symbol graph joins on.
+
+**The exclusion is the feature, not the hedge.** §30.4's flag exists *before* the
+chunks do, and the reasoning is a prediction from an existing measurement rather
+than caution: §5.4 excludes tests because test prose outranks terse
+implementation for natural-language questions, and a README is not merely user
+vocabulary — it is the same register as the question. Blended in, it would
+outrank implementation harder than tests ever did.
+
+**One deviation from the SPEC's sketch, deliberately.** §30.4 writes
+`hybrid_search(..., include_prose=False)`; the code takes
+`prose: Literal["exclude", "include", "only"]`. A bool cannot express what
+`search_docs` needs — *only* prose — and the alternative is a second boolean with
+four spellings for three meanings, one of them contradictory. One entry point
+still, so rule 2 holds. The CLI flag is `--include-prose` as specced; the flag
+name is the contract, not the keyword.
+
+**§30.6's landmine does not exist, and that is worth recording rather than
+silently skipping.** The SPEC names `queries.py:1154`/`:1165` — now
+`graph_views.py` — as using `kind <> 'module'` where `document` and `config`
+would pass. Both predicates are on the **`symbols`** table, and prose writes no
+symbols: `extract_symbols` takes `list[ParsedFile]`, and only Python files are
+parsed. The guarantee is structural, not incidental. Narrowing the predicates
+anyway would have been a speculative edit to a query feeding §19 output, for
+zero benefit. Left alone, on purpose.
+
+**A migration that was already applied, by a file that does not exist.** Adding
+`017_prose_chunks.sql` and running `migrate.py` reported *skip: version 17
+already applied* — recorded on the shared Neon database on **2026-08-03**, by a
+migration in no commit and no branch. The column and an index were already
+there; only the index name differed. So `migrate.py`, which keys on the version
+number, will skip this file on that database forever, and only a fresh clone will
+ever execute it.
+
+Resolved by making the file idempotent (`ADD COLUMN IF NOT EXISTS`,
+`CREATE INDEX IF NOT EXISTS`) and by matching its index definition to the one
+that database actually has, so a fresh database converges on the same schema
+rather than a near-miss. **The lost migration is a real hole in the ledger and is
+recorded here rather than papered over**: the repo's migration history is now
+complete going forward, but version 17's provenance on that database is a file
+nobody has.
+
+**Verified.** `ruff check .` clean. Full suite: **692 passed, none failed,
+none skipped**, in 11m03s — 656 before this change plus the 36 tests it adds,
+which is exact. Three existing tests changed, each because it encoded the old
+contract rather than because it broke: `test_keeps_only_python` became
+`test_keeps_code_and_prose_and_drops_the_rest`, `test_all_six_tools_are_bound`
+became `..._seven_...`, and the `hybrid_search` mode test's fake gained the
+`prose` kwarg — with an added assertion that the default is `"exclude"`, which is
+§30.7's central claim and now the thing that fails first if the exclusion leaks.
+
+**A false alarm worth recording.** Two integration tests failed with
+`TimeoutError` mid-way through this work, which looked like §30 having slowed
+ingest by selecting more files. It had not: that test builds a repo of three
+`.py` files and no prose at all, so §30 adds nothing to its corpus. The cause was
+the API and worker left running from a live-run earlier in the session,
+contending for the managed Redis and Postgres — the exact symptom RUNNING.md
+§6 already documents. Stopped them; the tests pass in 176s where they had been
+timing out at 465s.
+
+**Not done, and not pretending otherwise.** §30.7's remaining done-when criteria
+need a *re-ingest* to evaluate, which this change does not perform: whether the
+five §30.1 questions now return prose, whether the overview's new "How to run it"
+section cites the README, and whether `scripts/eval.py` is byte-identical
+before and after. The last of those is the falsifiable one and the reason
+`--include-prose` exists. The corpus in Neon is still the pre-§30 httpx corpus,
+so the `825 | 697` invariant verifies today with or without the new
+`AND NOT c.is_prose` scope in CLAUDE.md — the clause is there for the re-ingest
+that has not happened yet.

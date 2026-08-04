@@ -479,6 +479,39 @@ Done when:
 
 Do not: add features. Anything tempting goes to the backlog below.
 
+> **Out-of-phase, 2026-08-04 — frontend structure refactor.** Not a Phase 6
+> task and it does not move the `demo.gif` criterion; done on explicit
+> instruction after a read-only audit of `frontend/`. No features, no new API
+> surface, no behaviour change: files moved into feature folders, `lib/api.ts`
+> split three ways, one dead file deleted, and `vitest` reconfigured so
+> component and hook tests can execute at all (they could not before — 16 new
+> tests, 105 green). Bundle sizes measured identical against a stashed HEAD
+> build. DECISIONS 2026-08-04. **`demo.gif` remains the only open Phase 6
+> item.**
+
+> **Out-of-phase, 2026-08-04 — backend structure refactor.** Same instruction,
+> same day, same caveat: not Phase 6 work. The audit found the twelve hard rules
+> intact (eight verified mechanically, zero leaks) and the problem to be
+> concentration, so the changes are two package splits — `db/queries.py`
+> (2,468 lines → 14 modules, largest 383) and `api/routes.py` (1,165 → 10
+> modules, largest 234) — plus `app/domain/`, one dead function deleted, the
+> test tree squared with `app/`, and coverage for the two untested modules that
+> mattered: the GitHub OAuth exchange and the `AGENT_MODEL` provider switch.
+> Routes were split as **pure moves**; the row→schema mapping extraction is
+> deliberately left as a separate change. DECISIONS 2026-08-04.
+
+> **SPEC §30 built, 2026-08-04 — prose and configuration ingestion.** The spec
+> was written the same day and the code was not; this closes that gap. `*.md`,
+> `*.rst`, `*.txt`, manifests and CI config now enter the corpus, chunked on
+> headings by a line-scanner (no new grammar — rule 11), flagged `is_prose` and
+> **excluded from the default retrieval pool** so §5 behaviour is unchanged by
+> construction. Reached deliberately: a seventh agent tool `search_docs` inside
+> the same 8-call cap, and the README as a citable fact group that let §19.3
+> rule 2 be deleted in favour of a "How to run it" section. 692 tests green.
+> **Still open:** §30.7's remaining done-when criteria need a re-ingest, which
+> this change does not perform — the Neon corpus is still pre-§30. DECISIONS
+> 2026-08-04.
+
 ---
 
 ## v2 backlog (explicitly deferred)

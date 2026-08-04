@@ -433,15 +433,17 @@ Plus a fifth cross-cutting bucket, **Quality & Trust**, and a sixth,
   claimed by a primary key so concurrent viewers cannot both spend a request.
   Four fixed sections rendered above the Architecture panel, each with an "ask
   more" link through `?q=`.
-- **Correction to the sketch.** Step 1 lists _"how to run"_ from the README.
-  There is no README — `filters.py` indexes `*.py` only. The prompt now
-  explicitly forbids that section rather than letting the model recall how
-  similar projects usually work.
-- **Superseded by SPEC §30 (specced 2026-08-04, not yet built).** Prose and
-  config ingestion puts the README in the corpus, so the sketch's step 1 becomes
-  possible as originally written. §30.5 gives the overview the README as a
-  citable fact group and deletes §19.3 rule 2 in favour of a fifth "How to run
-  it" section. Until §30 ships, the prohibition above stands and is correct.
+- **Correction to the sketch, now withdrawn.** Step 1 listed _"how to run"_ from
+  the README; the answer for a year was that there is no README, because
+  `filters.py` indexed `*.py` only, and the prompt forbade the section outright
+  rather than letting the model recall how similar projects usually work.
+- **Resolved by SPEC §30 — BUILT 2026-08-04.** Prose and config ingestion puts
+  the README in the corpus, so the sketch's step 1 is now possible as originally
+  written. The overview takes the README as a citable fact group and the old
+  §19.3 rule 2 is **deleted**, replaced by a fifth "How to run it" section
+  written from the file rather than from recall. The prohibition was correct for
+  as long as it stood, which is the point: it was a hand-written stand-in for
+  data, and it went away when the data arrived.
 
 ### 3.2 Guided tours
 
