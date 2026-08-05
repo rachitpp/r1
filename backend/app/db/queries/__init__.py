@@ -57,6 +57,7 @@ from app.db.queries.graph_views import (
     tests_covering_file,
 )
 from app.db.queries.history import (
+    CommitFileRowT,
     clear_repo_history,
     commit_history,
     has_history,
@@ -113,6 +114,7 @@ from app.db.queries.sources import (
     supersede_snapshot,
 )
 from app.db.queries.symbols import (
+    EdgeRowT,
     backfill_chunk_symbol_ids,
     clear_repo_graph,
     implementation_callers,
@@ -137,6 +139,8 @@ from app.db.queries.users import (
 __all__ = [
     "ACTIVE_STATUSES",
     "ChunkRow",
+    "CommitFileRowT",
+    "EdgeRowT",
     "FileRow",
     "IN_FLIGHT_STATUSES",
     "REPO_STATUSES",
