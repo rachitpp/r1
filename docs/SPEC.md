@@ -2952,9 +2952,19 @@ unchanged by construction — see 30.7.
 - **§29 reuse works as-is.** It hashes file content and is indifferent to what
   the chunker did with it.
 
-**One landmine, named because it is easy to miss.** `queries.py:1154` and `:1165`
-use `kind <> 'module'` as shorthand for *is a real symbol*. `document` and
-`config` pass that filter. Both predicates need narrowing to the code kinds.
+**A landmine that turned out not to be one.** This section previously warned that
+two queries use `kind <> 'module'` as shorthand for *is a real symbol*, and that
+`document` and `config` would pass it. Checked during implementation: both
+predicates — now `db/queries/graph_views.py:268` and `:279` after the §30 package
+split — are on the **symbols** table, not `chunks`, and prose contributes no
+symbols, because `extract_symbols` is fed the code-only file list. No prose row
+can reach them. The predicates are left alone.
+
+The real containment is one level up, and is worth stating positively: prose
+never enters the parser, Jedi, or `extract_symbols`, because `pipeline` splits
+the selected files into code and prose before any of them run. The `files` table
+still receives both, so `read_file` and the citation viewer serve documentation
+like anything else.
 
 ### 30.7 Done when
 
